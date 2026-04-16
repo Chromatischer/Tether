@@ -239,6 +239,16 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case agentReplyMsg:
+		// Prepend any tool calls that happened before the final reply.
+		for _, tc := range msg.ToolCalls {
+			content := tc.Name
+			if strings.TrimSpace(tc.Args) != "" {
+				content += "  " + tc.Args
+			}
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "tool_call", content)
+			m.chat = m.chat.appendLocal("tool_call", content)
+		}
+
 		clean, findings := redact.ScanAndRedact(msg.Text)
 		if len(findings) > 0 {
 			warn := "The assistant response contained secret-like content and was redacted."
@@ -296,11 +306,20 @@ func (m appModel) View() tea.View {
 	v.MouseMode = tea.MouseModeAllMotion
 
 	// Maintain cursor from the focused sub-view.
+	// Body starts at row 1 (after the header), so add 1 to all cursor Y values.
 	if m.view == viewChat {
-		v.Cursor = m.chat.cursor()
+		c := m.chat.cursor()
+		if c != nil {
+			c.Y++ // offset for the header row
+		}
+		v.Cursor = c
 	}
 	if m.view == viewLogin || m.view == viewSignup {
-		v.Cursor = m.auth.cursor()
+		c := m.auth.cursor()
+		if c != nil {
+			c.Y++ // offset for the header row
+		}
+		v.Cursor = c
 	}
 	return v
 }
@@ -1453,7 +1472,11 @@ func (m appModel) askAgentCmd(text string) tea.Cmd {
 		if err != nil {
 			return agentReplyMsg{Text: "(agent error) " + err.Error()}
 		}
-		return agentReplyMsg{Text: reply.Text}
+		entries := make([]toolCallEntry, len(reply.ToolCalls))
+		for i, tc := range reply.ToolCalls {
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+		}
+		return agentReplyMsg{Text: reply.Text, ToolCalls: entries}
 	}
 }
 

@@ -93,11 +93,12 @@ func (a *Agent) executeToolCalls(ctx context.Context, s *toolset.Session, calls 
 	return msgs
 }
 
-func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMessages []openrouter.Message) (string, error) {
+func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMessages []openrouter.Message) (string, []ToolCallInfo, error) {
 	s := a.sessionFor(userID, convID)
 
 	messages := append([]openrouter.Message{}, baseMessages...)
 	const maxIterations = 8
+	var toolCalls []ToolCallInfo
 
 	for i := 0; i < maxIterations; i++ {
 		req := openrouter.ChatRequest{
@@ -112,7 +113,7 @@ func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMe
 
 		resp, err := a.chatCached(ctx, req)
 		if err != nil {
-			return "", fmt.Errorf("llm: %w", err)
+			return "", toolCalls, fmt.Errorf("llm: %w", err)
 		}
 
 		// Best-effort: record usage + cache stats so we can verify prompt caching is
@@ -148,7 +149,18 @@ func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMe
 			if m.Content != nil {
 				text = *m.Content
 			}
-			return strings.TrimSpace(text), nil
+			return strings.TrimSpace(text), toolCalls, nil
+		}
+
+		// Collect tool call info for display in the chat UI.
+		for _, tc := range m.ToolCalls {
+			args := strings.TrimSpace(tc.Function.Arguments)
+			if args == "{}" {
+				args = ""
+			} else if len(args) > 80 {
+				args = args[:80] + "…"
+			}
+			toolCalls = append(toolCalls, ToolCallInfo{Name: tc.Function.Name, Args: args})
 		}
 
 		// Model requested tools.
@@ -157,7 +169,7 @@ func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMe
 		messages = append(messages, toolMsgs...)
 	}
 
-	return "", fmt.Errorf("agent loop: max iterations reached")
+	return "", toolCalls, fmt.Errorf("agent loop: max iterations reached")
 }
 
 func truncateAuditErr(err error) string {

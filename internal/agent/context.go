@@ -131,6 +131,9 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 		role := m.Role
 		switch role {
 		case "assistant", "user", "system", "tool":
+		case "tool_call":
+			// Display-only role stored for the chat UI; not sent to the LLM.
+			continue
 		default:
 			role = "user"
 		}

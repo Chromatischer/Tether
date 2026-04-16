@@ -26,8 +26,15 @@ type ReplyParams struct {
 	Text           string
 }
 
+// ToolCallInfo records one tool invocation for display in the chat UI.
+type ToolCallInfo struct {
+	Name string
+	Args string // truncated JSON args, may be empty
+}
+
 type Reply struct {
-	Text string
+	Text      string
+	ToolCalls []ToolCallInfo
 }
 
 type Agent struct {
@@ -239,11 +246,11 @@ func (a *Agent) Reply(ctx context.Context, p ReplyParams) (Reply, error) {
 		return Reply{}, err
 	}
 
-	text, err := a.replyWithTools(ctx, p.UserID, p.ConversationID, msgs)
+	text, toolCalls, err := a.replyWithTools(ctx, p.UserID, p.ConversationID, msgs)
 	if err != nil {
 		return Reply{}, err
 	}
 	// Update rolling summary in the background (context optimization).
 	go a.maybeUpdateSummary(p.ConversationID)
-	return Reply{Text: text}, nil
+	return Reply{Text: text, ToolCalls: toolCalls}, nil
 }

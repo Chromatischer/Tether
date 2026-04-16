@@ -50,6 +50,19 @@ var (
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleSenderSystem = lipgloss.NewStyle().Foreground(colorMuted)
 
+	// Message row backgrounds (Width set dynamically in formatMessage).
+	styleUserMsg = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(lipgloss.Color("253"))
+
+	styleAgentMsg = lipgloss.NewStyle().
+			Background(lipgloss.Color("233")).
+			Foreground(lipgloss.Color("250"))
+
+	styleToolMsg = lipgloss.NewStyle().
+			Foreground(colorDim).
+			Italic(true)
+
 	styleDivider = lipgloss.NewStyle().Foreground(colorBorder)
 
 	// ── Status / feedback ─────────────────────────────────────────────────

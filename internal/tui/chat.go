@@ -14,6 +14,12 @@ import (
 	"tether/internal/store"
 )
 
+// chatMessage holds a single chat entry with its role for layout decisions.
+type chatMessage struct {
+	role    string // user | assistant | system | tool_call
+	content string
+}
+
 type chatModel struct {
 	db     *sql.DB
 	userID int64
@@ -21,7 +27,7 @@ type chatModel struct {
 
 	viewport viewport.Model
 	textarea textarea.Model
-	messages []string
+	messages []chatMessage
 
 	polling bool
 	err     error
@@ -31,8 +37,16 @@ type chatSendMsg struct {
 	Text string
 }
 
+// toolCallEntry holds one tool call for display, mirroring agent.ToolCallInfo
+// without importing the agent package into the TUI.
+type toolCallEntry struct {
+	Name string
+	Args string
+}
+
 type agentReplyMsg struct {
-	Text string
+	Text      string
+	ToolCalls []toolCallEntry
 }
 
 type loginSuccessMsg struct {
@@ -41,13 +55,13 @@ type loginSuccessMsg struct {
 }
 
 type chatLoadedMsg struct {
-	Lines []string
+	Messages []chatMessage
 }
 
 type chatPollNotificationsMsg struct{}
 
 type chatNotificationsDeliveredMsg struct {
-	Lines []string
+	Lines []chatMessage
 }
 
 func newChatModel() chatModel {
@@ -70,7 +84,7 @@ func newChatModel() chatModel {
 	vp.KeyMap.Left.SetEnabled(false)
 	vp.KeyMap.Right.SetEnabled(false)
 
-	return chatModel{viewport: vp, textarea: ta, messages: []string{}}
+	return chatModel{viewport: vp, textarea: ta, messages: []chatMessage{}}
 }
 
 func (m chatModel) withConversation(db *sql.DB, userID, convID int64) chatModel {
@@ -105,11 +119,11 @@ func (m chatModel) loadCmd() tea.Cmd {
 		if err != nil {
 			return authStatusMsg{Text: "failed to load messages: " + err.Error(), IsErr: true}
 		}
-		lines := make([]string, 0, len(msgs))
+		chatMsgs := make([]chatMessage, 0, len(msgs))
 		for _, mm := range msgs {
-			lines = append(lines, formatMessage(mm.Role, mm.Content))
+			chatMsgs = append(chatMsgs, chatMessage{role: mm.Role, content: mm.Content})
 		}
-		return chatLoadedMsg{Lines: lines}
+		return chatLoadedMsg{Messages: chatMsgs}
 	}
 }
 
@@ -132,12 +146,12 @@ func (m chatModel) pollNotificationsCmd() tea.Cmd {
 		if err != nil || len(nots) == 0 {
 			return chatNotificationsDeliveredMsg{}
 		}
-		lines := make([]string, 0, len(nots))
+		lines := make([]chatMessage, 0, len(nots))
 		for _, n := range nots {
 			text := "[Proactive/" + n.Kind + "] " + n.Content
 			_ = store.AddMessage(db, convID, "assistant", text)
 			_ = store.MarkNotificationDelivered(db, n.ID)
-			lines = append(lines, formatMessage("assistant", text))
+			lines = append(lines, chatMessage{role: "assistant", content: text})
 		}
 		return chatNotificationsDeliveredMsg{Lines: lines}
 	}
@@ -146,7 +160,7 @@ func (m chatModel) pollNotificationsCmd() tea.Cmd {
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatLoadedMsg:
-		m.messages = msg.Lines
+		m.messages = msg.Messages
 		m.reflow()
 		m.viewport.GotoBottom()
 		if !m.polling {
@@ -214,8 +228,12 @@ func (m *chatModel) reflow() {
 	if m.viewport.Width() <= 0 {
 		return
 	}
-	content := lipgloss.NewStyle().Width(m.viewport.Width()).Render(strings.Join(m.messages, "\n"))
-	m.viewport.SetContent(content)
+	w := m.viewport.Width()
+	lines := make([]string, 0, len(m.messages))
+	for _, msg := range m.messages {
+		lines = append(lines, formatMessage(msg.role, msg.content, w))
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 func (m chatModel) appendLocal(sender, text string) chatModel {
@@ -225,23 +243,41 @@ func (m chatModel) appendLocal(sender, text string) chatModel {
 		role = "user"
 	case "Tether":
 		role = "assistant"
+	case "tool_call":
+		role = "tool_call"
 	default:
 		role = "system"
 	}
-	m.messages = append(m.messages, formatMessage(role, text))
+	m.messages = append(m.messages, chatMessage{role: role, content: text})
 	m.reflow()
 	m.viewport.GotoBottom()
 	return m
 }
 
-// formatMessage renders a single chat line with role-appropriate sender styling.
-func formatMessage(role, content string) string {
+// formatMessage renders a single chat message with role-appropriate alignment,
+// background, and sender label. width is the current viewport width.
+func formatMessage(role, content string, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+
 	switch role {
 	case "user":
-		return styleSenderUser.Render("you") + "  " + content
+		label := styleSenderUser.Render("you")
+		inner := label + "  " + content
+		return styleUserMsg.Width(width).Align(lipgloss.Right).Render(inner)
+
 	case "assistant":
-		return styleSenderBot.Render("tether") + "  " + content
-	default:
-		return styleSenderSystem.Render("system") + "  " + content
+		label := styleSenderBot.Render("tether")
+		inner := label + "  " + content
+		return styleAgentMsg.Width(width).Render(inner)
+
+	case "tool_call":
+		styled := styleToolMsg.Render("⚙ " + content)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Center, styled)
+
+	default: // system
+		styled := styleSenderSystem.Render(content)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Center, styled)
 	}
 }
