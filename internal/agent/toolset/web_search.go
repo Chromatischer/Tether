@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"tether/internal/tools"
 )
 
 type WebSearch struct{}
@@ -19,19 +21,50 @@ type webSearchArgs struct {
 	Limit int    `json:"limit"`
 }
 
-func (t WebSearch) Definition() ToolDef {
-	return ToolDef{
-		Name:        "web-search",
-		Description: "Search the web (DuckDuckGo HTML) and return a small list of results.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t WebSearch) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "web-search",
+		Summary:   "Search the web and return a small list of results.",
+		WhenToUse: "Use this to quickly find relevant pages. Then use web-fetch + fetch.summarize to read content safely.",
+		Safety:    "Network access. Only returns titles/URLs/snippets; does not fetch full pages.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string"},
-				"limit": map[string]any{"type": "integer", "description": "max results (default 5)"},
+				"query": map[string]any{"type": "string", "minLength": 1, "description": "search query"},
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "description": "max results (default 5)"},
 			},
 			"required": []string{"query"},
 		},
+		OutputSchema: map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"title":   map[string]any{"type": "string"},
+					"url":     map[string]any{"type": "string"},
+					"snippet": map[string]any{"type": "string"},
+				},
+				"required": []string{"title", "url", "snippet"},
+			},
+		},
+		Examples: []tools.ToolExample{
+			{
+				Title: "Search for a Go package",
+				Args:  map[string]any{"query": "golang sqlite migrate library", "limit": 5},
+				Result: []map[string]any{
+					{"title": "...", "url": "https://...", "snippet": "..."},
+				},
+			},
+		},
+		Tags: []string{"web"},
 	}
+}
+
+func (t WebSearch) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 type webResult struct {

@@ -60,11 +60,25 @@ type ChatRequest struct {
 	ParallelToolCalls bool        `json:"parallel_tool_calls"`
 }
 
+type Usage struct {
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	Cost             float64 `json:"cost,omitempty"`
+
+	PromptTokensDetails *struct {
+		CachedTokens     int `json:"cached_tokens,omitempty"`
+		CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
 type ChatResponse struct {
 	Choices []struct {
 		Message      Message `json:"message"`
 		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
+
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 func New(baseURL, apiKey, appName string) *Client {

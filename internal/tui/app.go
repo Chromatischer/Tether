@@ -16,6 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"tether/internal/agent"
+	"tether/internal/personality"
 	"tether/internal/proactive"
 	"tether/internal/redact"
 	"tether/internal/secrets"
@@ -68,7 +69,7 @@ type appModel struct {
 
 func NewAppModel(ctx *SessionContext) tea.Model {
 	ag := ctx.Agent
-	m := appModel{ctx: ctx, ag: ag, toolReg: tools.DefaultRegistry(), subMgr: ag.Subagents()}
+	m := appModel{ctx: ctx, ag: ag, toolReg: ag.ToolRegistry(), subMgr: ag.Subagents()}
 	m.proEng = proactive.NewEngine(ctx.DB, ag, ag.Subagents(), ctx.Config.Paths.DataDir)
 	m.view = viewLogin
 	m.auth = newAuthModel(authModeLogin)
@@ -174,6 +175,18 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rulesPath := proactive.DefaultRulesPath(dirs.Config)
 		if _, err := os.Stat(rulesPath); err != nil {
 			_ = os.WriteFile(rulesPath, b, 0o644)
+		}
+
+		// Ensure default agent personalities exist (self-editable by the agent).
+		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentChat)
+		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveDailyBrief)
+		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveOpenLoops)
+		if rules, err := proactive.LoadRules(rulesPath); err == nil {
+			for _, ar := range rules.Agents {
+				if id, ok := personality.NormalizeID(ar.ID); ok {
+					_ = userspace.EnsurePersonalityFile(dirs, personality.ProactiveAgentKey(id))
+				}
+			}
 		}
 
 		m.user = u
@@ -646,6 +659,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				"  /logout\n" +
 				"  /tools list\n" +
 				"  /tools search <query>\n" +
+				"  /tools describe <name>\n" +
 				"  /subagent spawn <prompt>\n" +
 				"  /subagent status <id>\n" +
 				"  /proactive action <name>\n" +
@@ -685,6 +699,27 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 		m.chat = m.chat.appendLocal("You", text)
 
+		if len(fields) > 1 && fields[1] == "describe" {
+			if len(fields) < 3 {
+				resp := "usage: /tools describe <name>"
+				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+				m.chat = m.chat.appendLocal("System", resp)
+				return m, true, nil
+			}
+			name := strings.TrimSpace(fields[2])
+			spec, ok := m.toolReg.Get(name)
+			if !ok {
+				resp := "unknown tool: " + name
+				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+				m.chat = m.chat.appendLocal("System", resp)
+				return m, true, nil
+			}
+			resp := strings.TrimSpace(tools.RenderToolMarkdown(spec))
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+
 		var infos []tools.ToolInfo
 		if len(fields) == 1 || fields[1] == "list" {
 			infos = m.toolReg.List()
@@ -695,7 +730,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			}
 			infos = m.toolReg.Search(q)
 		} else {
-			resp := "usage: /tools list | /tools search <query>"
+			resp := "usage: /tools list | /tools search <query> | /tools describe <name>"
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1394,6 +1429,16 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		return m, true, nil
 	}
 
+	// Fallback: unknown slash command -> treat as a Claude Code–style skill invocation.
+	// Skills live in the per-user skills/ directory (and optionally project .claude/skills/).
+	if m.conv != nil && m.user != nil && strings.HasPrefix(fields[0], "/") {
+		skillName := strings.TrimPrefix(fields[0], "/")
+		args := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+		m.chat = m.chat.appendLocal("You", text)
+		return m, true, m.invokeSkillAndAskAgentCmd(skillName, args)
+	}
+
 	return m, false, nil
 }
 
@@ -1405,6 +1450,24 @@ func (m appModel) askAgentCmd(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		reply, err := ag.Reply(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: text})
+		if err != nil {
+			return agentReplyMsg{Text: "(agent error) " + err.Error()}
+		}
+		return agentReplyMsg{Text: reply.Text}
+	}
+}
+
+func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.Cmd {
+	userID := m.user.ID
+	convID := m.conv.ID
+	ag := m.ag
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if _, err := ag.InvokeSkill(ctx, userID, convID, skillName, args, "", "user"); err != nil {
+			return agentReplyMsg{Text: "(skill error) " + err.Error()}
+		}
+		reply, err := ag.Reply(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: ""})
 		if err != nil {
 			return agentReplyMsg{Text: "(agent error) " + err.Error()}
 		}

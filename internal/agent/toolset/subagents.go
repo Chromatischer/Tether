@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
+	"tether/internal/tools"
 )
 
 type SubagentSpawn struct{}
@@ -12,18 +14,34 @@ type subagentSpawnArgs struct {
 	Prompt string `json:"prompt"`
 }
 
-func (t SubagentSpawn) Definition() ToolDef {
-	return ToolDef{
-		Name:        "subagent.spawn",
-		Description: "Spawn a sub-agent run asynchronously. Returns an id.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t SubagentSpawn) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "subagent.spawn",
+		Summary:   "Spawn a sub-agent run asynchronously.",
+		WhenToUse: "Use this for long-running, multi-step work that you don't want to block the main conversation loop (e.g., deep repo analysis).",
+		Safety:    "Subagents run with the same tool constraints as the main agent.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"prompt": map[string]any{"type": "string"},
+				"prompt": map[string]any{"type": "string", "minLength": 1},
 			},
 			"required": []string{"prompt"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+			"required":             []string{"id"},
+		},
+		Examples: []tools.ToolExample{{Title: "Spawn a repo review", Args: map[string]any{"prompt": "Review the repo for tool documentation gaps."}, Result: map[string]any{"id": "run_..."}}},
+		Tags:     []string{"async"},
 	}
+}
+
+func (t SubagentSpawn) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t SubagentSpawn) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -45,18 +63,37 @@ type subagentStatusArgs struct {
 	ID string `json:"id"`
 }
 
-func (t SubagentStatus) Definition() ToolDef {
-	return ToolDef{
-		Name:        "subagent.status",
-		Description: "Get status/result for a previously spawned sub-agent run.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t SubagentStatus) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "subagent.status",
+		Summary:   "Get status/result for a spawned sub-agent run.",
+		WhenToUse: "Use this after subagent.spawn to poll for completion and retrieve the result.",
+		Safety:    "Read-only (status retrieval).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"id": map[string]any{"type": "string"},
+				"id": map[string]any{"type": "string", "minLength": 1},
 			},
 			"required": []string{"id"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": true,
+			"properties": map[string]any{
+				"found":  map[string]any{"type": "boolean"},
+				"status": map[string]any{"description": "implementation-defined status/result object"},
+			},
+			"required": []string{"found"},
+		},
+		Examples: []tools.ToolExample{{Title: "Check a run", Args: map[string]any{"id": "run_..."}, Result: map[string]any{"found": true, "status": map[string]any{"state": "done"}}}},
+		Tags:     []string{"async"},
 	}
+}
+
+func (t SubagentStatus) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t SubagentStatus) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {

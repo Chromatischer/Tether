@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"tether/internal/tools"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,18 +24,45 @@ type readFileArgs struct {
 	Path string `json:"path"`
 }
 
-func (t ReadFile) Definition() ToolDef {
-	return ToolDef{
-		Name:        "read",
-		Description: "Read a file from the user sandbox (path is relative to the user root).",
-		Parameters: map[string]any{
-			"type": "object",
+func (t ReadFile) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:    "read",
+		Summary: "Read a file from the user sandbox (relative path).",
+		WhenToUse: "Use this to inspect code/config/data inside the sandbox. " +
+			"Output is truncated (currently ~32KiB) to protect context size.",
+		Safety: "Read-only. Cannot access absolute paths; path must stay within the sandbox.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string"},
+				"path": map[string]any{"type": "string", "minLength": 1, "description": "relative path under the user sandbox root"},
 			},
 			"required": []string{"path"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string", "description": "file content (may be truncated)"},
+			},
+			"required": []string{"path", "content"},
+		},
+		Examples: []tools.ToolExample{
+			{
+				Title:  "Read a project file",
+				Args:   map[string]any{"path": "workspace/README.md"},
+				Result: map[string]any{"path": "workspace/README.md", "content": "..."},
+				Notes:  "If the file is large, the tool will truncate content.",
+			},
+		},
+		Tags: []string{"fs", "sandbox"},
 	}
+}
+
+func (t ReadFile) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t ReadFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -83,20 +113,49 @@ type writeFileArgs struct {
 	ConfirmToken string `json:"confirm_token"`
 }
 
-func (t WriteFile) Definition() ToolDef {
-	return ToolDef{
-		Name:        "write",
-		Description: "Write a file in the user sandbox (path is relative to the user root).",
-		Parameters: map[string]any{
-			"type": "object",
+func (t WriteFile) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:    "write",
+		Summary: "Write a file in the user sandbox (relative path).",
+		WhenToUse: "Use this to create new files or update files. Prefer small, targeted writes. " +
+			"If the file already exists, you must first obtain a confirmation token via confirm.request (the error message will tell you the exact scope) — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.",
+		Safety: "Overwriting an existing file is treated as destructive and requires confirm_token, except for config/agents/**/PERSONALITY.md (self-editable; old versions are backed up). Symlinks are rejected.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"path":          map[string]any{"type": "string"},
-				"content":       map[string]any{"type": "string"},
+				"path":          map[string]any{"type": "string", "minLength": 1, "description": "relative path under the user sandbox root"},
+				"content":       map[string]any{"type": "string", "description": "full file content to write"},
 				"confirm_token": map[string]any{"type": "string", "description": "required when overwriting an existing file"},
 			},
 			"required": []string{"path", "content"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"written": map[string]any{"type": "boolean"},
+			},
+			"required": []string{"path", "written"},
+		},
+		Examples: []tools.ToolExample{
+			{
+				Title: "Create a new file",
+				Args:  map[string]any{"path": "workspace/notes/todo.md", "content": "- item 1\n- item 2\n"},
+				Result: map[string]any{
+					"path":    "workspace/notes/todo.md",
+					"written": true,
+				},
+			},
+		},
+		Tags: []string{"fs", "sandbox"},
 	}
+}
+
+func (t WriteFile) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -113,16 +172,21 @@ func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMess
 		return nil, err
 	}
 	if fi, err := os.Lstat(p); err == nil {
-		// Overwriting an existing file is considered destructive.
-		scope := writeConfirmScope(args.Path)
-		if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
-			return nil, fmt.Errorf("overwriting existing file requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
-		}
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("symlink target not allowed")
 		}
 		if !fi.Mode().IsRegular() {
 			return nil, fmt.Errorf("not a regular file")
+		}
+
+		// Overwriting an existing file is considered destructive, except for agent personality files.
+		if isPersonalityRelPath(args.Path) {
+			_ = backupExistingPersonality(p)
+		} else {
+			scope := writeConfirmScope(args.Path)
+			if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
+				return nil, fmt.Errorf("overwriting existing file requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
+			}
 		}
 	}
 	fd, err := unix.Open(p, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW, 0o644)
@@ -135,6 +199,36 @@ func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMess
 		return nil, err
 	}
 	return map[string]any{"path": args.Path, "written": true}, nil
+}
+
+func isPersonalityRelPath(relPath string) bool {
+	relPath = strings.TrimSpace(relPath)
+	clean := filepath.ToSlash(filepath.Clean(relPath))
+	// Must be under config/agents/... and end in /PERSONALITY.md
+	if !strings.HasPrefix(clean, "config/agents/") {
+		return false
+	}
+	if !strings.HasSuffix(clean, "/PERSONALITY.md") {
+		return false
+	}
+	// Basic sanity: reject weird segments.
+	if strings.Contains(clean, "..") {
+		return false
+	}
+	return true
+}
+
+func backupExistingPersonality(absPath string) error {
+	b, err := os.ReadFile(absPath)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(filepath.Dir(absPath), ".history")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".md"
+	return os.WriteFile(filepath.Join(dir, name), b, 0o644)
 }
 
 func writeConfirmScope(relPath string) string {
@@ -158,7 +252,16 @@ func resolveUnderRoot(root, rel string) (string, error) {
 		return "", fmt.Errorf("path required")
 	}
 	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path must be relative")
+		// Claude Code skills often use ${CLAUDE_SKILL_DIR} which is an absolute sandbox path.
+		// In Tether we accept /work/... as a safe alias for a path under the user root.
+		if rel == "/work" {
+			return "", fmt.Errorf("path required")
+		}
+		if strings.HasPrefix(rel, "/work/") {
+			rel = strings.TrimPrefix(rel, "/work/")
+		} else {
+			return "", fmt.Errorf("path must be relative")
+		}
 	}
 
 	rootAbs, err := filepath.Abs(root)

@@ -15,6 +15,7 @@ import (
 
 	"tether/internal/redact"
 	"tether/internal/store"
+	"tether/internal/tools"
 )
 
 type WebFetch struct{}
@@ -29,24 +30,93 @@ type webFetchArgs struct {
 	ReturnBody      bool              `json:"return_body"`
 }
 
-func (t WebFetch) Definition() ToolDef {
-	return ToolDef{
-		Name:        "web-fetch",
-		Description: "Fetch a URL over the network and store the (truncated) body for summarization. Returns a fetch_id and small preview. Use fetch.summarize to get a safe markdown summary.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t WebFetch) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:    "web-fetch",
+		Summary: "Fetch a URL over the network and cache the truncated response body.",
+		WhenToUse: "Use this to retrieve page content. Then use fetch.summarize to get a safe markdown summary. " +
+			"Prefer fetch.summarize over returning raw bodies.",
+		Safety: "Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"url":               map[string]any{"type": "string", "description": "http(s) URL"},
-				"max_bytes":         map[string]any{"type": "integer", "description": "max bytes to read (default 50000, max 200000)"},
-				"cache_ttl_seconds": map[string]any{"type": "integer", "description": "cache TTL (default 3600). set 0 to disable."},
-				"headers":           map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "plain headers"},
-				"secret_headers":    map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "headerName -> secret label (resolved locally). Requires confirm_token."},
-				"confirm_token":     map[string]any{"type": "string", "description": "required for authenticated fetches and raw body returns"},
-				"return_body":       map[string]any{"type": "boolean", "description": "return raw body to the model (discouraged); requires confirm_token"},
+				"url": map[string]any{"type": "string", "minLength": 1, "description": "http(s) URL"},
+				"max_bytes": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     200000,
+					"description": "max bytes to read (default 50000, max 200000)",
+				},
+				"cache_ttl_seconds": map[string]any{
+					"type":        "integer",
+					"minimum":     0,
+					"maximum":     86400,
+					"description": "cache TTL (default 3600). set 0 to disable.",
+				},
+				"headers": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "plain headers",
+				},
+				"secret_headers": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "headerName -> secret label (resolved locally). Requires confirm_token.",
+				},
+				"confirm_token": map[string]any{
+					"type":        "string",
+					"description": "required for authenticated fetches and raw body returns",
+				},
+				"return_body": map[string]any{
+					"type":        "boolean",
+					"description": "return raw body to the model (discouraged); requires confirm_token",
+				},
 			},
 			"required": []string{"url"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": true,
+			"properties": map[string]any{
+				"fetch_id":       map[string]any{"type": "string"},
+				"url":            map[string]any{"type": "string"},
+				"status":         map[string]any{"type": "integer"},
+				"contentType":    map[string]any{"type": "string"},
+				"truncated":      map[string]any{"type": "boolean"},
+				"bytes":          map[string]any{"type": "integer"},
+				"cache_hit":      map[string]any{"type": "boolean"},
+				"preview":        map[string]any{"type": "string"},
+				"fetched_at_utc": map[string]any{"type": "string"},
+				"body":           map[string]any{"type": "string", "description": "only present when return_body=true"},
+			},
+			"required": []string{"fetch_id", "url", "status", "contentType", "truncated", "bytes", "cache_hit", "preview", "fetched_at_utc"},
+		},
+		Examples: []tools.ToolExample{
+			{
+				Title: "Fetch a page then summarize",
+				Args:  map[string]any{"url": "https://example.com", "max_bytes": 50000},
+				Result: map[string]any{
+					"fetch_id":       "...",
+					"url":            "https://example.com",
+					"status":         200,
+					"contentType":    "text/html; charset=UTF-8",
+					"truncated":      false,
+					"bytes":          12345,
+					"cache_hit":      false,
+					"preview":        "...",
+					"fetched_at_utc": "2026-01-02T03:04:05Z",
+				},
+				Notes: "Then call fetch.summarize with the returned fetch_id.",
+			},
+		},
+		Tags: []string{"web", "cache"},
 	}
+}
+
+func (t WebFetch) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t WebFetch) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -186,14 +256,15 @@ func (t WebFetch) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 	preview, _ = redact.ScanAndRedact(preview)
 
 	out := map[string]any{
-		"fetch_id":    cacheKey,
-		"url":         u,
-		"status":      resp.StatusCode,
-		"contentType": ct,
-		"truncated":   truncated,
-		"bytes":       len(b),
-		"cache_hit":   false,
-		"preview":     preview,
+		"fetch_id":       cacheKey,
+		"url":            u,
+		"status":         resp.StatusCode,
+		"contentType":    ct,
+		"truncated":      truncated,
+		"bytes":          len(b),
+		"cache_hit":      false,
+		"preview":        preview,
+		"fetched_at_utc": time.Now().UTC().Format(time.RFC3339),
 	}
 	if args.ReturnBody {
 		body := string(b)

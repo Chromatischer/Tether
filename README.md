@@ -1,4 +1,4 @@
-# Tether (v0.1)
+# Tether (v0.2)
 
 Go-based personal AI assistant with:
 - SSH portal (custom server) exposing a Bubble Tea TUI (alt screen + mouse)
@@ -79,7 +79,7 @@ Implemented:
 - Chat view storing messages in SQLite
 - OpenRouter client (chat/completions) + basic LLM response cache (SQLite)
 - OpenRouter **tool calling loop** (OpenAI-style `tools` / `tool_calls`)
-- Tools implemented: `bash` (bubblewrap/no-net, output limits + redaction), `read`, `write`, `web-search`, `web-fetch`, `fetch.summarize`, `tool.search`, `tool.enable`, `confirm.request`, `subagent.spawn`, `subagent.status`, `proactive.run`
+- Tools implemented: `bash` (bubblewrap/no-net, output limits + redaction), `read`, `write`, `web-search`, `web-fetch`, `fetch.summarize`, `tool.search`, `tool.enable`, `tool.describe`, `confirm.request`, `subagent.spawn`, `subagent.status`, `proactive.run` (full reference: [`docs/tools.md`](docs/tools.md))
 - Proactive engine: built-in rules (daily brief/open loops/inactivity) + configurable custom agents (`agents:` in proactive rules YAML) with schedule_times/events/actions triggers
 - Secrets vault (encrypted-at-rest) user commands: `/secret add|list|delete|clear`
 - Redaction monitor for obvious token/password patterns (stores redacted content + warns)

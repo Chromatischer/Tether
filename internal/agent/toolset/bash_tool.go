@@ -10,6 +10,7 @@ import (
 
 	"tether/internal/redact"
 	"tether/internal/sandbox"
+	"tether/internal/tools"
 )
 
 type Bash struct{}
@@ -19,19 +20,55 @@ type bashArgs struct {
 	ConfirmToken string `json:"confirm_token"`
 }
 
-func (t Bash) Definition() ToolDef {
-	return ToolDef{
-		Name:        "bash",
-		Description: "Run a shell command inside the user sandbox (no network). Root contains workspace/, config/, skills/, cache/.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t Bash) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:    "bash",
+		Summary: "Run a shell command inside the user sandbox (no network).",
+		WhenToUse: "Use this for project introspection (ls/rg/go test), formatting, and other local automation. " +
+			"The sandbox has no network access. The working directory is usually workspace/.",
+		Safety: "Commands that look destructive (rm/mv/chmod/...) require a confirm_token. Prefer non-destructive commands.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":       map[string]any{"type": "string"},
+				"command":       map[string]any{"type": "string", "minLength": 1, "description": "shell command to run"},
 				"confirm_token": map[string]any{"type": "string", "description": "required for destructive commands"},
 			},
 			"required": []string{"command"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"exit_code":        map[string]any{"type": "integer"},
+				"stdout":           map[string]any{"type": "string"},
+				"stderr":           map[string]any{"type": "string"},
+				"stdout_truncated": map[string]any{"type": "boolean"},
+				"stderr_truncated": map[string]any{"type": "boolean"},
+				"stdout_max_bytes": map[string]any{"type": "integer"},
+				"stderr_max_bytes": map[string]any{"type": "integer"},
+			},
+			"required": []string{"exit_code", "stdout", "stderr"},
+		},
+		Examples: []tools.ToolExample{
+			{
+				Title: "List files",
+				Args:  map[string]any{"command": "ls"},
+				Result: map[string]any{
+					"exit_code": 0,
+					"stdout":    "...",
+					"stderr":    "",
+				},
+				Notes: "For destructive commands like rm, first call confirm.request using the scope shown in the error message.",
+			},
+		},
+		Tags: []string{"shell", "sandbox"},
 	}
+}
+
+func (t Bash) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t Bash) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {

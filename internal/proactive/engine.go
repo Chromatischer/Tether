@@ -14,6 +14,7 @@ import (
 	"charm.land/log/v2"
 	"gopkg.in/yaml.v3"
 
+	"tether/internal/personality"
 	"tether/internal/store"
 	"tether/internal/subagents"
 	"tether/internal/userspace"
@@ -129,7 +130,7 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 					continue
 				}
 				trigger := "time:" + hhmm
-				prompt := e.customAgentPrompt(uid, ar, "scheduled", hhmm, nil)
+				prompt := e.customAgentPrompt(uid, ar, agID, "scheduled", hhmm, nil)
 				e.runCustomAgent(ctx, uid, ar, agID, "agent/"+agID, trigger, dayKey, "scheduled_due", prompt, startOfDay)
 			}
 		}
@@ -196,7 +197,7 @@ func (e *Engine) RunActionNow(ctx context.Context, userID int64, action string, 
 		}
 		kind := "agent/" + agID
 		trigger := "action:" + action
-		prompt := BuildCustomAgentPrompt(e.db, userID, ar, "action", action, meta)
+		prompt := e.customAgentPrompt(userID, ar, agID, "action", action, meta)
 		text, ok2 := e.runCustomAgentNow(ctx, userID, ar, agID, kind, trigger, dayKey, prompt, startOfDay)
 		if ok2 {
 			out = append(out, AgentRunResult{AgentID: agID, Kind: kind, Output: text})
@@ -236,7 +237,7 @@ func (e *Engine) RunAgentNow(ctx context.Context, userID int64, agentID string, 
 		}
 		kind := "agent/" + agID
 		trigger := "agent:" + agID
-		prompt := BuildCustomAgentPrompt(e.db, userID, ar, "agent", agID, meta)
+		prompt := e.customAgentPrompt(userID, ar, agID, "agent", agID, meta)
 		text, ok2 := e.runCustomAgentNow(ctx, userID, ar, agID, kind, trigger, dayKey, prompt, startOfDay)
 		if !ok2 {
 			return AgentRunResult{}, errors.New("agent run skipped by limits (cooldown/max_per_day/dedup)")
@@ -279,7 +280,7 @@ func (e *Engine) triggerForAgents(ctx context.Context, userID int64, triggerType
 		}
 
 		trigger := triggerType + ":" + triggerName
-		prompt := e.customAgentPrompt(userID, ar, triggerType, triggerName, meta)
+		prompt := e.customAgentPrompt(userID, ar, agID, triggerType, triggerName, meta)
 		e.runCustomAgent(ctx, userID, ar, agID, "agent/"+agID, trigger, dayKey, "triggered", prompt, startOfDay)
 	}
 }
@@ -487,7 +488,7 @@ func (e *Engine) dailyBriefPrompt(userID int64) string {
 	if tb.Len() > 0 {
 		prompt += "Tasks:\n" + tb.String() + "\n"
 	}
-	return prompt
+	return e.prependPersonality(userID, personality.AgentProactiveDailyBrief, prompt)
 }
 
 func (e *Engine) openLoopsPrompt(userID int64) string {
@@ -516,11 +517,15 @@ func (e *Engine) openLoopsPrompt(userID int64) string {
 	if tb.Len() > 0 {
 		prompt += "Open tasks:\n" + tb.String() + "\n"
 	}
-	return prompt
+	return e.prependPersonality(userID, personality.AgentProactiveOpenLoops, prompt)
 }
 
-func (e *Engine) customAgentPrompt(userID int64, ar AgentRule, triggerType string, triggerName string, meta map[string]string) string {
-	return BuildCustomAgentPrompt(e.db, userID, ar, triggerType, triggerName, meta)
+func (e *Engine) customAgentPrompt(userID int64, ar AgentRule, normalizedID string, triggerType string, triggerName string, meta map[string]string) string {
+	prompt := BuildCustomAgentPrompt(e.db, userID, ar, triggerType, triggerName, meta)
+	if strings.TrimSpace(normalizedID) == "" {
+		return prompt
+	}
+	return e.prependPersonality(userID, personality.ProactiveAgentKey(normalizedID), prompt)
 }
 
 func (e *Engine) loadRulesForUser(userID int64) (Rules, error) {
@@ -566,6 +571,8 @@ func (e *Engine) loadRulesForUser(userID int64) (Rules, error) {
 	if strings.TrimSpace(rules.OpenLoops.Time) == "" {
 		rules.OpenLoops.Time = "20:00"
 	}
+
+	e.ensurePersonalities(userID, rules)
 	return rules, nil
 }
 

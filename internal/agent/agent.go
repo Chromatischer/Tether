@@ -13,6 +13,7 @@ import (
 	"tether/internal/cache"
 	"tether/internal/config"
 	"tether/internal/llm/openrouter"
+	"tether/internal/personality"
 	"tether/internal/secrets"
 	"tether/internal/store"
 	"tether/internal/subagents"
@@ -71,6 +72,11 @@ const systemPrompt = `You are a proactive personal agent with access to the user
 ## Gather context autonomously
 Before responding to any request, use your tools to retrieve what you need. Never ask the user for information you can look up yourself. When a task touches multiple domains — inbox, calendar, tasks, code — cross-reference them without being told to. Minimize user friction at every step.
 
+## Tool usage (important)
+- Do not guess tool argument names or shapes.
+- If you’re unsure, call tool.describe for the tool and follow its input schema exactly.
+- Do not invent extra fields not present in the schema (they will be ignored or cause errors).
+
 ## Act, then surface
 Complete the task. Then briefly surface what you noticed that the user didn’t ask about but probably should know: a deadline conflict, a related thread, a pattern worth flagging, a next step they haven’t thought of. Keep it to one or two observations — actionable, not encyclopedic.
 
@@ -107,6 +113,14 @@ High confidence + low blast radius = act.
 Low confidence OR high blast radius = surface and confirm.
 High confidence + high blast radius = state what you’re about to do, then act unless the user stops you.
 
+## Skills (playbooks)
+You have access to skills: reusable playbooks stored as SKILL.md files with optional supporting files.
+A compact skills list is provided in your context each turn.
+
+- When a skill matches the user’s request, load it by calling the tool named: skill.invoke
+- If the user types /skill-name ..., treat that as an explicit request to invoke that skill.
+- Skills may include shell injection placeholders (inline form or fenced blocks) that are pre-rendered by the host.
+
 ## Output style
 No preamble. No summary of what you just did. Be direct. Note non-obvious implications in one line. End with the next logical action when one exists.`
 
@@ -138,6 +152,36 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 		{Role: "system", Content: openrouter.Text(systemPrompt)},
 		{Role: "user", Content: openrouter.Text(prompt)},
 	}
+	req := openrouter.ChatRequest{
+		Model:       a.cfg.OpenRouter.Model,
+		Messages:    msgs,
+		Temperature: 0.2,
+		MaxTokens:   700,
+	}
+	resp, err := a.chatCached(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("llm: %w", err)
+	}
+	text := ""
+	if resp.Choices[0].Message.Content != nil {
+		text = *resp.Choices[0].Message.Content
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// RunPromptForUser is a convenience wrapper used by subsystems (e.g. subagents)
+// that only have a user_id + a standalone prompt, but still want to respect the
+// user's personality.
+func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt string) (string, error) {
+	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
+		return "", errors.New("OPENROUTER_API_KEY not configured")
+	}
+	p := a.personalityText(userID, personality.AgentChat)
+	msgs := []openrouter.Message{{Role: "system", Content: openrouter.Text(systemPrompt)}}
+	if strings.TrimSpace(p) != "" {
+		msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("Agent personality:\n" + p)})
+	}
+	msgs = append(msgs, openrouter.Message{Role: "user", Content: openrouter.Text(prompt)})
 	req := openrouter.ChatRequest{
 		Model:       a.cfg.OpenRouter.Model,
 		Messages:    msgs,

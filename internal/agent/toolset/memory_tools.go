@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tether/internal/store"
+	"tether/internal/tools"
 )
 
 type MemoryList struct{}
@@ -18,18 +19,48 @@ type memoryListArgs struct {
 	Limit int    `json:"limit"`
 }
 
-func (t MemoryList) Definition() ToolDef {
-	return ToolDef{
-		Name:        "memory.list",
-		Description: "List memory items for the current user. kind can be fact|pref|task (or empty for all).",
-		Parameters: map[string]any{
-			"type": "object",
+func (t MemoryList) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "memory.list",
+		Summary:   "List memory items (facts/preferences/tasks).",
+		WhenToUse: "Use this to inspect what long-term memory items exist for the user (facts/prefs/tasks).",
+		Safety:    "Read-only.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"kind":  map[string]any{"type": "string"},
-				"limit": map[string]any{"type": "integer"},
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "filter by kind; empty = all",
+					"enum":        []string{"", "fact", "pref", "task"},
+				},
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "max items (default 100)"},
 			},
 		},
+		OutputSchema: map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id":         map[string]any{"type": "integer"},
+					"kind":       map[string]any{"type": "string", "enum": []string{"fact", "pref", "task"}},
+					"content":    map[string]any{"type": "string"},
+					"updated_at": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "kind", "content", "updated_at"},
+			},
+		},
+		Examples: []tools.ToolExample{
+			{Title: "List facts", Args: map[string]any{"kind": "fact", "limit": 20}, Result: []map[string]any{{"id": 1, "kind": "fact", "content": "...", "updated_at": "2026-01-02T03:04:05Z"}}},
+		},
+		Tags: []string{"memory"},
 	}
+}
+
+func (t MemoryList) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t MemoryList) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -39,7 +70,22 @@ func (t MemoryList) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	if s.DB == nil {
 		return nil, errors.New("db not available")
 	}
-	items, err := store.ListMemoryItems(s.DB, s.UserID, strings.TrimSpace(args.Kind), args.Limit)
+	kind := strings.TrimSpace(args.Kind)
+	switch kind {
+	case "", "fact", "pref", "task":
+		// ok
+	default:
+		return nil, fmt.Errorf("invalid kind (expected fact|pref|task)")
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	items, err := store.ListMemoryItems(s.DB, s.UserID, kind, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -57,19 +103,39 @@ type memoryAddArgs struct {
 	Content string `json:"content"`
 }
 
-func (t MemoryAdd) Definition() ToolDef {
-	return ToolDef{
-		Name:        "memory.add",
-		Description: "Add a memory item for the current user.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t MemoryAdd) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "memory.add",
+		Summary:   "Add a memory item.",
+		WhenToUse: "Use this to store durable user facts, preferences, or tasks that should persist across conversations.",
+		Safety:    "Writes to the database (internal).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"kind":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
+				"kind":    map[string]any{"type": "string", "enum": []string{"fact", "pref", "task"}},
+				"content": map[string]any{"type": "string", "minLength": 1},
 			},
 			"required": []string{"kind", "content"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id": map[string]any{"type": "integer"},
+			},
+			"required": []string{"id"},
+		},
+		Examples: []tools.ToolExample{
+			{Title: "Remember a preference", Args: map[string]any{"kind": "pref", "content": "Prefers concise answers."}, Result: map[string]any{"id": 123}},
+		},
+		Tags: []string{"memory"},
 	}
+}
+
+func (t MemoryAdd) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t MemoryAdd) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -103,19 +169,39 @@ type memoryUpdateArgs struct {
 	Content string `json:"content"`
 }
 
-func (t MemoryUpdate) Definition() ToolDef {
-	return ToolDef{
-		Name:        "memory.update",
-		Description: "Update the content of an existing memory item by id.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t MemoryUpdate) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "memory.update",
+		Summary:   "Update a memory item by id.",
+		WhenToUse: "Use this to correct or refine an existing memory item.",
+		Safety:    "Writes to the database (internal).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"id":      map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
+				"id":      map[string]any{"type": "string", "minLength": 1, "description": "memory item id (stringified int)"},
+				"content": map[string]any{"type": "string", "minLength": 1},
 			},
 			"required": []string{"id", "content"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"updated": map[string]any{"type": "integer"},
+			},
+			"required": []string{"updated"},
+		},
+		Examples: []tools.ToolExample{
+			{Title: "Update a fact", Args: map[string]any{"id": "12", "content": "Lives in Berlin."}, Result: map[string]any{"updated": 12}},
+		},
+		Tags: []string{"memory"},
 	}
+}
+
+func (t MemoryUpdate) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t MemoryUpdate) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {
@@ -143,18 +229,38 @@ type memoryDeleteArgs struct {
 	ID string `json:"id"`
 }
 
-func (t MemoryDelete) Definition() ToolDef {
-	return ToolDef{
-		Name:        "memory.delete",
-		Description: "Delete a memory item by id.",
-		Parameters: map[string]any{
-			"type": "object",
+func (t MemoryDelete) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:      "memory.delete",
+		Summary:   "Delete a memory item by id.",
+		WhenToUse: "Use this when a memory item is wrong or no longer relevant.",
+		Safety:    "Destructive (deletes data). Consider confirming with the user first if unsure.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"id": map[string]any{"type": "string"},
+				"id": map[string]any{"type": "string", "minLength": 1, "description": "memory item id (stringified int)"},
 			},
 			"required": []string{"id"},
 		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"deleted": map[string]any{"type": "integer"},
+			},
+			"required": []string{"deleted"},
+		},
+		Examples: []tools.ToolExample{
+			{Title: "Delete an item", Args: map[string]any{"id": "12"}, Result: map[string]any{"deleted": 12}},
+		},
+		Tags: []string{"memory"},
 	}
+}
+
+func (t MemoryDelete) Definition() ToolDef {
+	spec := t.Spec()
+	return ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (t MemoryDelete) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error) {

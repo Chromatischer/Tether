@@ -4,8 +4,8 @@ import "testing"
 
 func TestRegistry_ListSortedAndSearch(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolInfo{Name: "b", Description: "bbb"})
-	r.Register(ToolInfo{Name: "a", Description: "alpha"})
+	r.Register(ToolSpec{Name: "b", Summary: "bbb", InputSchema: map[string]any{"type": "object"}})
+	r.Register(ToolSpec{Name: "a", Summary: "alpha", InputSchema: map[string]any{"type": "object"}})
 
 	list := r.List()
 	if len(list) != 2 || list[0].Name != "a" || list[1].Name != "b" {
@@ -20,18 +20,5 @@ func TestRegistry_ListSortedAndSearch(t *testing.T) {
 	res = r.Search("")
 	if len(res) != 2 {
 		t.Fatalf("expected full list on empty query")
-	}
-}
-
-func TestDefaultRegistry_HasCoreTools(t *testing.T) {
-	r := DefaultRegistry()
-	m := map[string]bool{}
-	for _, ti := range r.List() {
-		m[ti.Name] = true
-	}
-	for _, name := range []string{"bash", "read", "write", "web-search", "confirm.request"} {
-		if !m[name] {
-			t.Fatalf("expected tool %q in default registry", name)
-		}
 	}
 }

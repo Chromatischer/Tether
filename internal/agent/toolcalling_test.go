@@ -18,8 +18,21 @@ type dummyTool struct {
 	name string
 }
 
+func (d dummyTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        d.name,
+		Summary:     "d",
+		InputSchema: map[string]any{"type": "object"},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Examples: []tools.ToolExample{{Args: map[string]any{}}},
+	}
+}
+
 func (d dummyTool) Definition() toolset.ToolDef {
-	return toolset.ToolDef{Name: d.name, Description: "d", Parameters: map[string]any{"type": "object"}}
+	spec := d.Spec()
+	return toolset.ToolDef{Name: spec.Name, Description: tools.LLMDescription(spec), Parameters: spec.InputSchema}
 }
 
 func (d dummyTool) Execute(ctx context.Context, s *toolset.Session, rawArgs json.RawMessage) (any, error) {
@@ -28,7 +41,7 @@ func (d dummyTool) Execute(ctx context.Context, s *toolset.Session, rawArgs json
 
 func TestActiveTools_SortedByName(t *testing.T) {
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"b": dummyTool{name: "b"}, "a": dummyTool{name: "a"}}}
-	s := toolset.NewSession(tools.DefaultRegistry())
+	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"b": true, "a": true}
 	tools := ag.activeTools(s)
 	if len(tools) != 2 {
@@ -41,7 +54,7 @@ func TestActiveTools_SortedByName(t *testing.T) {
 
 func TestExecuteToolCalls_UnknownAndInactive(t *testing.T) {
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"known": dummyTool{name: "known"}}}
-	s := toolset.NewSession(tools.DefaultRegistry())
+	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"known": false}
 
 	msgs := ag.executeToolCalls(context.Background(), s, []openrouter.ToolCall{{ID: "1", Type: "function", Function: openrouter.ToolCallFunction{Name: "unknown", Arguments: `{}`}}})
@@ -65,7 +78,7 @@ func TestExecuteToolCalls_AuditsArgsHashOnly(t *testing.T) {
 	expectedHash := hex.EncodeToString(sum[:])
 
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"t": dummyTool{name: "t"}}}
-	s := toolset.NewSession(tools.DefaultRegistry())
+	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"t": true}
 	s.DB = db
 	s.UserID = 7

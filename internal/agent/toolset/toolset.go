@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"tether/internal/tools"
 	"tether/internal/userspace"
@@ -19,6 +21,9 @@ type ToolDef struct {
 }
 
 type Tool interface {
+	// Spec returns the canonical documentation for this tool (input/output shapes, examples).
+	Spec() tools.ToolSpec
+	// Definition returns the OpenAI/OpenRouter function-tool definition.
 	Definition() ToolDef
 	Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error)
 }
@@ -47,6 +52,12 @@ type LLM interface {
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
 }
 
+type InvokedSkill struct {
+	Name      string
+	Content   string
+	InvokedAt int64 // unix seconds; informational
+}
+
 type Session struct {
 	UserID int64
 	Dirs   userspace.Dirs
@@ -61,6 +72,30 @@ type Session struct {
 	LLM       LLM
 
 	Active map[string]bool
+
+	// SkillSessionID is used for ${CLAUDE_SESSION_ID} substitutions.
+	SkillSessionID string
+	// InvokedSkills are kept in-memory for the lifetime of the Tether process.
+	// They are re-attached to the prompt each turn so they don’t fall out of the recent-history window.
+	InvokedSkills []InvokedSkill
+}
+
+// AddInvokedSkill stores/replaces the most recent invocation of a skill.
+func (s *Session) AddInvokedSkill(name string, content string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	// Remove existing.
+	out := make([]InvokedSkill, 0, len(s.InvokedSkills)+1)
+	for _, it := range s.InvokedSkills {
+		if strings.EqualFold(it.Name, name) {
+			continue
+		}
+		out = append(out, it)
+	}
+	out = append(out, InvokedSkill{Name: name, Content: content, InvokedAt: time.Now().Unix()})
+	s.InvokedSkills = out
 }
 
 func NewSession(reg *tools.Registry) *Session {
@@ -69,6 +104,7 @@ func NewSession(reg *tools.Registry) *Session {
 	// Note: keep this reasonably small; these are the most commonly needed capabilities.
 	active["tool.search"] = true
 	active["tool.enable"] = true
+	active["tool.describe"] = true
 	active["confirm.request"] = true
 	active["read"] = true
 	active["write"] = true
@@ -77,7 +113,8 @@ func NewSession(reg *tools.Registry) *Session {
 	active["fetch.summarize"] = true
 	active["subagent.spawn"] = true
 	active["subagent.status"] = true
-	return &Session{Registry: reg, Active: active}
+	active["skill.invoke"] = true
+	return &Session{Registry: reg, Active: active, SkillSessionID: fmt.Sprintf("tether-%d", time.Now().UTC().UnixNano())}
 }
 
 func (s *Session) IsActive(name string) bool { return s.Active[name] }

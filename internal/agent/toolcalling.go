@@ -114,6 +114,33 @@ func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMe
 		if err != nil {
 			return "", fmt.Errorf("llm: %w", err)
 		}
+
+		// Best-effort: record usage + cache stats so we can verify prompt caching is
+		// actually saving money on the configured model/provider.
+		if s != nil && s.DB != nil && resp.Usage != nil {
+			cached := 0
+			cacheWrite := 0
+			if resp.Usage.PromptTokensDetails != nil {
+				cached = resp.Usage.PromptTokensDetails.CachedTokens
+				cacheWrite = resp.Usage.PromptTokensDetails.CacheWriteTokens
+			}
+			payload := map[string]any{
+				"model":              req.Model,
+				"conversation_id":    convID,
+				"iteration":          i,
+				"prompt_tokens":      resp.Usage.PromptTokens,
+				"completion_tokens":  resp.Usage.CompletionTokens,
+				"total_tokens":       resp.Usage.TotalTokens,
+				"cached_tokens":      cached,
+				"cache_write_tokens": cacheWrite,
+				"cost":               resp.Usage.Cost,
+				"tools_n":            len(req.Tools),
+			}
+			pb, _ := json.Marshal(payload)
+			uid := userID
+			_ = store.AddAuditEvent(s.DB, &uid, "llm_usage", string(pb))
+		}
+
 		m := resp.Choices[0].Message
 
 		if len(m.ToolCalls) == 0 {

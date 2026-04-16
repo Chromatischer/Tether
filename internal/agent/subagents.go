@@ -11,8 +11,7 @@ type agentSubagentRunner struct {
 }
 
 func (r agentSubagentRunner) Run(ctx context.Context, userID int64, prompt string) (string, error) {
-	_ = userID
-	return r.ag.RunPrompt(ctx, prompt)
+	return r.ag.RunPromptForUser(ctx, userID, prompt)
 }
 
 // Subagents returns the shared subagent manager.

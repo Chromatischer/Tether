@@ -95,7 +95,7 @@ func newAgent(cfg *config.Config, db *sql.DB) *Agent {
 		db:       db,
 		llm:      llm,
 		cache:    cache.NewLLMCache(db, 14*24*time.Hour),
-		registry: tools.DefaultRegistry(),
+		registry: tools.NewRegistry(),
 		sessions: map[int64]*toolset.Session{},
 		confirm:  newConfirmManager(),
 	}
@@ -111,23 +111,10 @@ func newAgent(cfg *config.Config, db *sql.DB) *Agent {
 	a.subMgr = subagents.NewManager(agentSubagentRunner{ag: a})
 	a.subStore = subagentStore{mgr: a.subMgr}
 
-	a.toolImpl = map[string]toolset.Tool{
-		"tool.search":     toolset.ToolSearch{},
-		"tool.enable":     toolset.ToolEnable{},
-		"bash":            toolset.Bash{},
-		"read":            toolset.ReadFile{},
-		"write":           toolset.WriteFile{},
-		"web-search":      toolset.WebSearch{},
-		"web-fetch":       toolset.WebFetch{},
-		"fetch.summarize": toolset.FetchSummarize{},
-		"memory.list":     toolset.MemoryList{},
-		"memory.add":      toolset.MemoryAdd{},
-		"memory.delete":   toolset.MemoryDelete{},
-		"memory.update":   toolset.MemoryUpdate{},
-		"confirm.request": toolset.ConfirmRequest{},
-		"proactive.run":   toolset.ProactiveRun{},
-		"subagent.spawn":  toolset.SubagentSpawn{},
-		"subagent.status": toolset.SubagentStatus{},
+	// Tool implementations + canonical specs.
+	a.toolImpl = toolset.DefaultTools()
+	for _, impl := range a.toolImpl {
+		a.registry.Register(impl.Spec())
 	}
 
 	return a
