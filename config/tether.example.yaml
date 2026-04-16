@@ -1,0 +1,45 @@
+# Example config for Tether
+# Copy to: config/tether.yaml
+
+log_level: info
+
+db:
+  path: ./data/tether.sqlite
+
+openrouter:
+  # Prefer env var OPENROUTER_API_KEY; you can also set it here.
+  api_key: ""
+  base_url: "https://openrouter.ai/api/v1"
+  model: "z-ai/glm-5.1"
+
+secrets:
+  # Prefer env var TETHER_MASTER_KEY (base64 32 bytes). Generate with:
+  #   go run ./cmd/tether-keygen
+  master_key: ""
+  ttl_hours: 24
+
+signal:
+  enabled: false
+  # shared signal account number, e.g. "+49123456789" (or set env TETHER_SIGNAL_NUMBER)
+  account_number: ""
+  # binary name/path
+  signal_cli_path: "signal-cli"
+  # signal-cli daemon http bind to connect to (tether will spawn a daemon here)
+  http_addr: "127.0.0.1:17800"
+
+discord:
+  enabled: false
+  # Prefer env var TETHER_DISCORD_BOT_TOKEN; you can also set it here.
+  bot_token: ""
+
+paths:
+  data_dir: ./data
+
+ssh:
+  listen_addr: ":2222"
+  host_key_path: ./config/ssh_host_ed25519
+  # bcrypt hash. Generate with: go run ./cmd/tether-passhash "your password"
+  # Default (DEV ONLY): password is "tether".
+  portal_password_hash: "$2a$10$HMd5lg9JSW7HtVUzE2ni5uii584lNj0w.5/jWMlIcBDxv4sPJBheW"
+  # optional additional portal keys (any one matches)
+  authorized_keys_path: ./config/authorized_keys

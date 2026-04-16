@@ -1,0 +1,5 @@
+# Example authorized_keys file for Tether SSH portal.
+# Copy to: config/authorized_keys
+#
+# One public key per line, e.g.
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host

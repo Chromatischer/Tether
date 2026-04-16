@@ -1,0 +1,33 @@
+# Runtime state / local data
+data/
+backups/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local config (DO NOT COMMIT secrets/keys)
+config/tether.yaml
+config/authorized_keys
+config/ssh_host_*
+config/*.key
+config/*.pem
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+*.prof
+bin/
+dist/
+coverage/
+tether
+tether.exe
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# pi-lens local state
+.pi-lens/
