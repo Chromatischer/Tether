@@ -84,6 +84,11 @@ func Load(path string) (*Config, error) {
 		cfg.Paths.DataDir = "./data"
 	}
 
+	adminEnv, err := LoadAdminEnv(cfg.Paths.DataDir)
+	if err != nil {
+		return nil, err
+	}
+
 	if cfg.SSH.PortalPasswordHash == "" {
 		return nil, errors.New("ssh.portal_password_hash is required")
 	}
@@ -93,7 +98,11 @@ func Load(path string) (*Config, error) {
 
 	// OpenRouter settings
 	if strings.TrimSpace(cfg.OpenRouter.APIKey) == "" {
-		cfg.OpenRouter.APIKey = os.Getenv("OPENROUTER_API_KEY")
+		if adminEnv.OpenRouterAPIKey != "" {
+			cfg.OpenRouter.APIKey = adminEnv.OpenRouterAPIKey
+		} else {
+			cfg.OpenRouter.APIKey = os.Getenv("OPENROUTER_API_KEY")
+		}
 	}
 	if cfg.OpenRouter.BaseURL == "" {
 		cfg.OpenRouter.BaseURL = "https://openrouter.ai/api/v1"
@@ -104,7 +113,11 @@ func Load(path string) (*Config, error) {
 
 	// Secrets
 	if strings.TrimSpace(cfg.Secrets.MasterKey) == "" {
-		cfg.Secrets.MasterKey = os.Getenv("TETHER_MASTER_KEY")
+		if adminEnv.MasterKey != "" {
+			cfg.Secrets.MasterKey = adminEnv.MasterKey
+		} else {
+			cfg.Secrets.MasterKey = os.Getenv("TETHER_MASTER_KEY")
+		}
 	}
 	if cfg.Secrets.TTLHours == 0 {
 		cfg.Secrets.TTLHours = 24
@@ -115,7 +128,11 @@ func Load(path string) (*Config, error) {
 		cfg.Signal.SignalCLIPath = "signal-cli"
 	}
 	if strings.TrimSpace(cfg.Signal.AccountNumber) == "" {
-		cfg.Signal.AccountNumber = os.Getenv("TETHER_SIGNAL_NUMBER")
+		if adminEnv.SignalNumber != "" {
+			cfg.Signal.AccountNumber = adminEnv.SignalNumber
+		} else {
+			cfg.Signal.AccountNumber = os.Getenv("TETHER_SIGNAL_NUMBER")
+		}
 	}
 	if cfg.Signal.HTTPAddr == "" {
 		cfg.Signal.HTTPAddr = "127.0.0.1:17800"
@@ -123,7 +140,11 @@ func Load(path string) (*Config, error) {
 
 	// Discord
 	if strings.TrimSpace(cfg.Discord.BotToken) == "" {
-		cfg.Discord.BotToken = os.Getenv("TETHER_DISCORD_BOT_TOKEN")
+		if adminEnv.DiscordBotToken != "" {
+			cfg.Discord.BotToken = adminEnv.DiscordBotToken
+		} else {
+			cfg.Discord.BotToken = os.Getenv("TETHER_DISCORD_BOT_TOKEN")
+		}
 	}
 
 	return &cfg, nil

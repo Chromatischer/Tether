@@ -4,11 +4,14 @@ import "charm.land/lipgloss/v2"
 
 // Color palette — ANSI 256 for broad SSH terminal compatibility.
 var (
-	colorAccent = lipgloss.Color("63")  // purple-blue
-	colorBg     = lipgloss.Color("235") // near-black (header bar)
-	colorMuted  = lipgloss.Color("245") // medium gray
-	colorDim    = lipgloss.Color("240") // dark gray
-	colorBorder = lipgloss.Color("238") // subtle border
+	colorAccent     = lipgloss.Color("179") // muted gold
+	colorBg         = lipgloss.Color("235") // near-black (header bar)
+	colorMuted      = lipgloss.Color("245") // medium gray
+	colorDim        = lipgloss.Color("240") // dark gray
+	colorBorder     = lipgloss.Color("238") // subtle border
+	colorPanel      = lipgloss.Color("237")
+	colorPanelAlt   = lipgloss.Color("233")
+	colorUserBubble = lipgloss.Color("31")
 )
 
 var (
@@ -46,21 +49,52 @@ var (
 			Padding(1, 3)
 
 	// ── Chat ──────────────────────────────────────────────────────────────
+	styleChatBanner = lipgloss.NewStyle().
+			Background(colorPanel).
+			Foreground(lipgloss.Color("252")).
+			Padding(0, 1)
+
+	styleChatTranscript = lipgloss.NewStyle().
+				Padding(0, 1)
+
+	styleChatComposer = lipgloss.NewStyle().
+				Background(colorPanelAlt).
+				Padding(0, 1, 1, 1)
+
+	styleChatInputBox = lipgloss.NewStyle().
+				Background(colorPanel).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorBorder).
+				Padding(0, 1)
+
+	styleChatHint = lipgloss.NewStyle().
+			Foreground(colorDim)
+
 	styleSenderUser   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleSenderSystem = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// Message row backgrounds (Width set dynamically in formatMessage).
 	styleUserMsg = lipgloss.NewStyle().
-			Background(lipgloss.Color("237")).
-			Foreground(lipgloss.Color("253"))
+			Background(colorUserBubble).
+			Foreground(lipgloss.Color("255")).
+			Padding(0, 1)
 
 	styleAgentMsg = lipgloss.NewStyle().
-			Background(lipgloss.Color("233")).
-			Foreground(lipgloss.Color("250"))
+			Background(colorPanelAlt).
+			Foreground(lipgloss.Color("252")).
+			Padding(0, 1)
 
 	styleToolMsg = lipgloss.NewStyle().
+			Background(colorPanel).
+			Padding(0, 1).
 			Foreground(colorDim).
+			Italic(true)
+
+	styleSystemMsg = lipgloss.NewStyle().
+			Background(colorBg).
+			Padding(0, 1).
+			Foreground(colorMuted).
 			Italic(true)
 
 	styleDivider = lipgloss.NewStyle().Foreground(colorBorder)

@@ -140,6 +140,50 @@ func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {
 	return s
 }
 
+func cloneSession(s *toolset.Session) *toolset.Session {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.Active != nil {
+		cp.Active = make(map[string]bool, len(s.Active))
+		for k, v := range s.Active {
+			cp.Active[k] = v
+		}
+	}
+	cp.InvokedSkills = append([]toolset.InvokedSkill(nil), s.InvokedSkills...)
+	return &cp
+}
+
+func (a *Agent) forkSessionFor(userID, convID int64) *toolset.Session {
+	return cloneSession(a.sessionFor(userID, convID))
+}
+
+func (a *Agent) mergeSessionFor(convID int64, s *toolset.Session) {
+	if s == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	base := a.sessions[convID]
+	if base == nil {
+		a.sessions[convID] = cloneSession(s)
+		return
+	}
+	if base.Active == nil {
+		base.Active = map[string]bool{}
+	}
+	for name, enabled := range s.Active {
+		if enabled {
+			base.Active[name] = true
+		}
+	}
+	for _, inv := range s.InvokedSkills {
+		base.AddInvokedSkill(inv.Name, inv.Content)
+	}
+}
+
 func (a *Agent) ResetConversationSession(convID int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

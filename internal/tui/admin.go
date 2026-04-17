@@ -6,10 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"tether/internal/config"
+	"tether/internal/secrets"
 	"tether/internal/store"
 )
 
@@ -20,9 +23,10 @@ const (
 	adminTabUsers
 	adminTabJobs
 	adminTabSignal
+	adminTabSetup
 )
 
-var adminTabLabels = []string{"audit", "users", "jobs", "signal"}
+var adminTabLabels = []string{"audit", "users", "jobs", "signal", "setup"}
 
 type adminModel struct {
 	ctx  *SessionContext
@@ -36,13 +40,28 @@ type adminModel struct {
 
 	userList []store.User
 	userSel  int
+
+	setupPath       string
+	setupOpenRouter textinput.Model
+	setupDiscord    textinput.Model
+	setupSignal     textinput.Model
+	setupMasterKey  textinput.Model
+	setupFocus      int
+	setupStatus     string
+	setupStatusErr  bool
 }
 
 type adminLoadMsg struct {
 	tab     adminTab
 	content string
 	users   []store.User
+	env     config.AdminEnv
 	err     error
+}
+
+type adminSetupSavedMsg struct {
+	err    error
+	status string
 }
 
 func newAdminModel(ctx *SessionContext) adminModel {
@@ -52,13 +71,34 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		vp.KeyMap.Right.SetEnabled(false)
 		return vp
 	}
-	return adminModel{
-		ctx:    ctx,
-		audit:  mk(),
-		users:  mk(),
-		jobs:   mk(),
-		signal: mk(),
+	masked := func(prompt string) textinput.Model {
+		ti := textinput.New()
+		ti.Prompt = prompt
+		ti.CharLimit = 512
+		ti.EchoMode = textinput.EchoPassword
+		return ti
 	}
+	plain := func(prompt string) textinput.Model {
+		ti := textinput.New()
+		ti.Prompt = prompt
+		ti.CharLimit = 256
+		return ti
+	}
+
+	m := adminModel{
+		ctx:             ctx,
+		audit:           mk(),
+		users:           mk(),
+		jobs:            mk(),
+		signal:          mk(),
+		setupPath:       config.AdminEnvPath(ctx.Config.Paths.DataDir),
+		setupOpenRouter: masked("OpenRouter API key: "),
+		setupDiscord:    masked("Discord bot token: "),
+		setupSignal:     plain("Signal account number: "),
+		setupMasterKey:  masked("Secrets master key: "),
+	}
+	m.setSetupFocus(0)
+	return m
 }
 
 func (m adminModel) withSize(w, h int) adminModel {
@@ -66,7 +106,7 @@ func (m adminModel) withSize(w, h int) adminModel {
 		return m
 	}
 	m.w, m.h = w, h
-	ch := max(1, h-1) // 1 line for sub-tab bar
+	ch := max(1, h-1)
 	m.audit.SetWidth(w)
 	m.audit.SetHeight(ch)
 	m.users.SetWidth(w)
@@ -75,6 +115,11 @@ func (m adminModel) withSize(w, h int) adminModel {
 	m.jobs.SetHeight(ch)
 	m.signal.SetWidth(w)
 	m.signal.SetHeight(ch)
+	inputW := max(24, w-6)
+	m.setupOpenRouter.SetWidth(inputW)
+	m.setupDiscord.SetWidth(inputW)
+	m.setupSignal.SetWidth(inputW)
+	m.setupMasterKey.SetWidth(inputW)
 	return m
 }
 
@@ -86,7 +131,6 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 	ctx := m.ctx
 	return func() tea.Msg {
 		switch tab {
-
 		case adminTabAudit:
 			evs, err := store.ListAuditEvents(ctx.DB, 100)
 			if err != nil {
@@ -146,10 +190,28 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 			}
 			content := styleTitle.Render("signal") + "\n\n" +
 				styleMuted.Render("account") + "\n  " + ctx.Config.Signal.AccountNumber + "\n\n" +
-				styleMuted.Render("http addr") + "\n  " + addr + "\n\n" +
 				styleMuted.Render("status") + "\n  " + checkLine + "\n\n" +
 				styleDim.Render("r · refresh")
 			return adminLoadMsg{tab: tab, content: content}
+
+		case adminTabSetup:
+			env, err := config.LoadAdminEnv(ctx.Config.Paths.DataDir)
+			if err != nil {
+				return adminLoadMsg{tab: tab, err: err}
+			}
+			if env.OpenRouterAPIKey == "" {
+				env.OpenRouterAPIKey = ctx.Config.OpenRouter.APIKey
+			}
+			if env.DiscordBotToken == "" {
+				env.DiscordBotToken = ctx.Config.Discord.BotToken
+			}
+			if env.SignalNumber == "" {
+				env.SignalNumber = ctx.Config.Signal.AccountNumber
+			}
+			if env.MasterKey == "" {
+				env.MasterKey = ctx.Config.Secrets.MasterKey
+			}
+			return adminLoadMsg{tab: tab, env: env}
 		}
 		return nil
 	}
@@ -159,8 +221,12 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case adminLoadMsg:
 		if msg.err != nil {
-			s := styleError.Render("error: " + msg.err.Error())
-			m.setTabContent(msg.tab, s)
+			if msg.tab == adminTabSetup {
+				m.setupStatus = "error: " + msg.err.Error()
+				m.setupStatusErr = true
+				return m, nil
+			}
+			m.setTabContent(msg.tab, styleError.Render("error: "+msg.err.Error()))
 			return m, nil
 		}
 		switch msg.tab {
@@ -168,12 +234,35 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			m.userList = msg.users
 			m.userSel = 0
 			m.rebuildUsersViewport()
+		case adminTabSetup:
+			m.setupOpenRouter.SetValue(msg.env.OpenRouterAPIKey)
+			m.setupDiscord.SetValue(msg.env.DiscordBotToken)
+			m.setupSignal.SetValue(msg.env.SignalNumber)
+			m.setupMasterKey.SetValue(msg.env.MasterKey)
 		default:
 			m.setTabContent(msg.tab, msg.content)
 		}
 		return m, nil
 
+	case adminSetupSavedMsg:
+		m.setupStatus = msg.status
+		m.setupStatusErr = msg.err != nil
+		if msg.err != nil {
+			m.setupStatus = "error: " + msg.err.Error()
+		}
+		return m, nil
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && msg.Y == 1 {
+			if tab, ok := m.hitTab(msg.X); ok {
+				return m.switchTab(tab)
+			}
+		}
+
 	case tea.KeyPressMsg:
+		if m.tab == adminTabSetup {
+			return m.updateSetupKey(msg)
+		}
 		switch msg.String() {
 		case "1":
 			return m.switchTab(adminTabAudit)
@@ -183,6 +272,8 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			return m.switchTab(adminTabJobs)
 		case "4":
 			return m.switchTab(adminTabSignal)
+		case "5":
+			return m.switchTab(adminTabSetup)
 		case "[":
 			next := (int(m.tab) - 1 + len(adminTabLabels)) % len(adminTabLabels)
 			return m.switchTab(adminTab(next))
@@ -228,8 +319,78 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 		m.jobs, cmd = m.jobs.Update(msg)
 	case adminTabSignal:
 		m.signal, cmd = m.signal.Update(msg)
+	case adminTabSetup:
+		m, cmd = m.updateSetupMsg(msg)
 	}
 	return m, cmd
+}
+
+func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "down":
+		m.setSetupFocus((m.setupFocus + 1) % 5)
+		return m, nil
+	case "shift+tab", "up":
+		m.setSetupFocus((m.setupFocus - 1 + 5) % 5)
+		return m, nil
+	case "ctrl+s":
+		return m, m.saveSetupCmd()
+	case "enter":
+		if m.setupFocus == 4 {
+			return m, m.saveSetupCmd()
+		}
+	}
+
+	return m.updateSetupMsg(msg)
+}
+
+func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
+	if m.setupFocus == 4 {
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	switch m.setupFocus {
+	case 0:
+		m.setupOpenRouter, cmd = m.setupOpenRouter.Update(msg)
+	case 1:
+		m.setupDiscord, cmd = m.setupDiscord.Update(msg)
+	case 2:
+		m.setupSignal, cmd = m.setupSignal.Update(msg)
+	case 3:
+		m.setupMasterKey, cmd = m.setupMasterKey.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m adminModel) saveSetupCmd() tea.Cmd {
+	ctx := m.ctx
+	env := config.AdminEnv{
+		OpenRouterAPIKey: m.setupOpenRouter.Value(),
+		DiscordBotToken:  m.setupDiscord.Value(),
+		SignalNumber:     m.setupSignal.Value(),
+		MasterKey:        m.setupMasterKey.Value(),
+	}
+	return func() tea.Msg {
+		if strings.TrimSpace(env.MasterKey) != "" {
+			if _, err := secrets.NewStore(ctx.DB, env.MasterKey, time.Duration(ctx.Config.Secrets.TTLHours)*time.Hour); err != nil {
+				return adminSetupSavedMsg{err: fmt.Errorf("invalid master key: %w", err)}
+			}
+		}
+		if err := config.SaveAdminEnv(ctx.Config.Paths.DataDir, env); err != nil {
+			return adminSetupSavedMsg{err: err}
+		}
+
+		ctx.Config.OpenRouter.APIKey = strings.TrimSpace(env.OpenRouterAPIKey)
+		ctx.Config.Discord.BotToken = strings.TrimSpace(env.DiscordBotToken)
+		ctx.Config.Signal.AccountNumber = strings.TrimSpace(env.SignalNumber)
+		ctx.Config.Secrets.MasterKey = strings.TrimSpace(env.MasterKey)
+		ctx.Agent.ReloadRuntimeConfig()
+
+		return adminSetupSavedMsg{
+			status: "saved to " + config.AdminEnvPath(ctx.Config.Paths.DataDir) + "  OpenRouter/master key apply now; Discord/Signal need restart",
+		}
+	}
 }
 
 func (m adminModel) switchTab(tab adminTab) (adminModel, tea.Cmd) {
@@ -271,6 +432,90 @@ func (m *adminModel) rebuildUsersViewport() {
 	m.users.SetContent(strings.TrimRight(b.String(), "\n"))
 }
 
+func (m *adminModel) setSetupFocus(focus int) {
+	m.setupFocus = focus
+	switch focus {
+	case 0:
+		m.setupOpenRouter.Focus()
+		m.setupDiscord.Blur()
+		m.setupSignal.Blur()
+		m.setupMasterKey.Blur()
+	case 1:
+		m.setupOpenRouter.Blur()
+		m.setupDiscord.Focus()
+		m.setupSignal.Blur()
+		m.setupMasterKey.Blur()
+	case 2:
+		m.setupOpenRouter.Blur()
+		m.setupDiscord.Blur()
+		m.setupSignal.Focus()
+		m.setupMasterKey.Blur()
+	case 3:
+		m.setupOpenRouter.Blur()
+		m.setupDiscord.Blur()
+		m.setupSignal.Blur()
+		m.setupMasterKey.Focus()
+	default:
+		m.setupOpenRouter.Blur()
+		m.setupDiscord.Blur()
+		m.setupSignal.Blur()
+		m.setupMasterKey.Blur()
+	}
+}
+
+func (m adminModel) tabButtons() []headerButton {
+	btns := make([]headerButton, len(adminTabLabels))
+	curX := 0
+	for i, label := range adminTabLabels {
+		rendered := styleTab.Render(label)
+		if adminTab(i) == m.tab {
+			rendered = styleTabActive.Render(label)
+		}
+		w := lipgloss.Width(rendered)
+		btns[i] = headerButton{ID: label, Label: label, X0: curX, X1: curX + w}
+		curX += w
+	}
+	return btns
+}
+
+func (m adminModel) hitTab(x int) (adminTab, bool) {
+	for i, b := range m.tabButtons() {
+		if x >= b.X0 && x < b.X1 {
+			return adminTab(i), true
+		}
+	}
+	return adminTabAudit, false
+}
+
+func (m adminModel) renderSetup() string {
+	saveLabel := styleTab.Render(" save ")
+	if m.setupFocus == 4 {
+		saveLabel = styleTabActive.Render(" save ")
+	}
+
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("admin setup") + "\n\n")
+	b.WriteString(styleMuted.Render("persistent host-side env store") + "\n")
+	b.WriteString("  " + styleDim.Render(m.setupPath) + "\n\n")
+	b.WriteString(m.setupOpenRouter.View() + "\n\n")
+	b.WriteString(m.setupDiscord.View() + "\n\n")
+	b.WriteString(m.setupSignal.View() + "\n\n")
+	b.WriteString(m.setupMasterKey.View() + "\n\n")
+	b.WriteString(saveLabel + "\n\n")
+	b.WriteString(styleDim.Render("tab/shift+tab · move   ctrl+s · save   OpenRouter/master key update live; Discord/Signal require restart"))
+	if !m.ctx.Config.Discord.Enabled || !m.ctx.Config.Signal.Enabled {
+		b.WriteString("\n" + styleDim.Render("Discord/Signal still require enabled=true in server config."))
+	}
+	if m.setupStatus != "" {
+		line := styleInfo.Render(m.setupStatus)
+		if m.setupStatusErr {
+			line = styleError.Render(m.setupStatus)
+		}
+		b.WriteString("\n\n" + line)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (m adminModel) View() tea.View {
 	tabs := make([]string, len(adminTabLabels))
 	for i, label := range adminTabLabels {
@@ -292,6 +537,8 @@ func (m adminModel) View() tea.View {
 		body = m.jobs.View()
 	case adminTabSignal:
 		body = m.signal.View()
+	case adminTabSetup:
+		body = m.renderSetup()
 	}
 	return tea.NewView(tabBar + "\n" + body)
 }

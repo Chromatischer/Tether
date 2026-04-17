@@ -35,6 +35,7 @@ type ToolCallInfo struct {
 
 type Reply struct {
 	Text      string
+	Reasoning string
 	ToolCalls []ToolCallInfo
 }
 
@@ -197,6 +198,25 @@ func extractResponsesText(resp openrouter.ResponsesResponse) string {
 	return b.String()
 }
 
+func extractResponsesReasoning(resp openrouter.ResponsesResponse) string {
+	parts := make([]string, 0, len(resp.Output))
+	for _, it := range resp.Output {
+		if it.Type != "reasoning" || len(it.Summary) == 0 {
+			continue
+		}
+		lines := make([]string, 0, len(it.Summary))
+		for _, part := range it.Summary {
+			if text := strings.TrimSpace(part.Text); text != "" {
+				lines = append(lines, text)
+			}
+		}
+		if len(lines) > 0 {
+			parts = append(parts, strings.Join(lines, "\n"))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
 func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
 		return "", errors.New("OPENROUTER_API_KEY not configured")
@@ -298,17 +318,20 @@ func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(Stream
 		return Reply{}, err
 	}
 
-	items, err := a.buildContextInputItems(p.UserID, p.ConversationID, history)
+	sess := a.forkSessionFor(p.UserID, p.ConversationID)
+	defer a.mergeSessionFor(p.ConversationID, sess)
+
+	items, err := a.buildContextInputItemsWithSession(sess, p.UserID, p.ConversationID, history)
 	if err != nil {
 		return Reply{}, err
 	}
 
-	text, toolCalls, err := a.replyWithToolsStream(ctx2, p.UserID, p.ConversationID, items, emit)
+	text, reasoning, toolCalls, err := a.replyWithToolsStream(ctx2, sess, p.UserID, p.ConversationID, items, emit)
 	if err != nil {
 		return Reply{}, err
 	}
 
 	// Update rolling summary in the background (context optimization).
 	go a.maybeUpdateSummary(p.ConversationID)
-	return Reply{Text: text, ToolCalls: toolCalls}, nil
+	return Reply{Text: text, Reasoning: reasoning, ToolCalls: toolCalls}, nil
 }

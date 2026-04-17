@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -28,8 +29,13 @@ type ResponsesRequest struct {
 	Temperature     float64 `json:"temperature,omitempty"`
 	TopP            float64 `json:"top_p,omitempty"`
 
-	Tools      []ResponsesTool `json:"tools,omitempty"`
-	ToolChoice any             `json:"tool_choice,omitempty"`
+	Tools      []ResponsesTool     `json:"tools,omitempty"`
+	ToolChoice any                 `json:"tool_choice,omitempty"`
+	Reasoning  *ResponsesReasoning `json:"reasoning,omitempty"`
+}
+
+type ResponsesReasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type ResponsesTool struct {
@@ -63,6 +69,40 @@ type ResponseItem struct {
 
 	// function_call_output
 	Output string `json:"output,omitempty"` // JSON string
+
+	// reasoning
+	EncryptedContent string                 `json:"encrypted_content,omitempty"`
+	Summary          []ReasoningSummaryPart `json:"summary,omitempty"`
+}
+
+type ReasoningSummaryPart struct {
+	Text string
+}
+
+func (p *ReasoningSummaryPart) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		p.Text = s
+		return nil
+	}
+
+	var obj struct {
+		Text    string `json:"text"`
+		Summary string `json:"summary"`
+		Value   string `json:"value"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(obj.Text) != "":
+		p.Text = obj.Text
+	case strings.TrimSpace(obj.Summary) != "":
+		p.Text = obj.Summary
+	case strings.TrimSpace(obj.Value) != "":
+		p.Text = obj.Value
+	}
+	return nil
 }
 
 type ContentPart struct {
@@ -177,6 +217,7 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 	}
 
 	final := ResponsesResponse{}
+	outputsByIndex := map[int]ResponseItem{}
 	r := bufio.NewReader(resp.Body)
 	for {
 		line, err := r.ReadString('\n')
@@ -221,8 +262,26 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 			}
 		}
 
+		switch ev.Type {
+		case "response.output_item.added", "response.output_item.done":
+			if ev.Item != nil && ev.OutputIndex != nil {
+				outputsByIndex[*ev.OutputIndex] = *ev.Item
+			}
+		}
+
 		if ev.Type == "response.done" && ev.Response != nil {
 			final = *ev.Response
+		}
+	}
+	if len(final.Output) == 0 && len(outputsByIndex) > 0 {
+		indexes := make([]int, 0, len(outputsByIndex))
+		for idx := range outputsByIndex {
+			indexes = append(indexes, idx)
+		}
+		sort.Ints(indexes)
+		final.Output = make([]ResponseItem, 0, len(indexes))
+		for _, idx := range indexes {
+			final.Output = append(final.Output, outputsByIndex[idx])
 		}
 	}
 	return final, nil

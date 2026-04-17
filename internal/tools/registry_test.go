@@ -22,3 +22,30 @@ func TestRegistry_ListSortedAndSearch(t *testing.T) {
 		t.Fatalf("expected full list on empty query")
 	}
 }
+
+func TestRegistry_SearchMatchesKeywordsAcrossMetadata(t *testing.T) {
+	r := NewRegistry()
+	r.Register(ToolSpec{
+		Name:        "bash",
+		Summary:     "Run a shell command inside the user sandbox.",
+		WhenToUse:   "Use this to execute local commands and inspect projects.",
+		InputSchema: map[string]any{"type": "object"},
+		Tags:        []string{"shell", "sandbox"},
+	})
+	r.Register(ToolSpec{
+		Name:        "proactive.run",
+		Summary:     "Run proactive agents for the current user.",
+		InputSchema: map[string]any{"type": "object"},
+		Tags:        []string{"proactive"},
+	})
+
+	for _, query := range []string{"bash shell", "execute run command"} {
+		res := r.Search(query)
+		if len(res) == 0 {
+			t.Fatalf("expected results for query %q", query)
+		}
+		if res[0].Name != "bash" {
+			t.Fatalf("expected bash ranked first for query %q, got %+v", query, res)
+		}
+	}
+}

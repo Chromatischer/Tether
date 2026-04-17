@@ -19,14 +19,15 @@ type toolSearchArgs struct {
 func (t ToolSearch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "tool.search",
-		Summary: "Search for available tools by name/description.",
+		Summary: "Search for available tools by name, purpose, tags, and usage hints.",
 		WhenToUse: "Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. " +
+			"Use natural keyword queries like 'bash shell', 'run command', or 'read files'. " +
 			"For full documentation (schemas + examples), call tool.describe.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "description": "search query (substring match); empty = list all"},
+				"query": map[string]any{"type": "string", "description": "search query; matches keywords across tool names, summaries, tags, and usage hints. Empty = list all"},
 			},
 		},
 		OutputSchema: map[string]any{

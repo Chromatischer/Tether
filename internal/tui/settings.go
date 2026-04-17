@@ -39,8 +39,8 @@ type settingsModel struct {
 	rulesContent string // loaded YAML
 
 	// confirmation strictness section
-	confirmVP  viewport.Model
-	confirmSel int // 0=ask, 1=always, 2=never
+	confirmVP   viewport.Model
+	confirmSel  int // 0=ask, 1=always, 2=never
 	confirmOpts []string
 
 	// signal section
@@ -52,12 +52,12 @@ type settingsModel struct {
 	signalInputMode bool // waiting for user to type code
 
 	// retention section
-	retentionVP    viewport.Model
-	retentionInput textinput.Model
-	retentionDays  int
-	retentionInput2 textinput.Model // memory retention days
+	retentionVP      viewport.Model
+	retentionInput   textinput.Model
+	retentionDays    int
+	retentionInput2  textinput.Model // memory retention days
 	retentionMemDays int
-	retentionFocus int // 0=chat, 1=memory
+	retentionFocus   int // 0=chat, 1=memory
 
 	status    string
 	statusErr bool
@@ -65,13 +65,13 @@ type settingsModel struct {
 
 // settingsLoadedMsg carries all settings data loaded asynchronously.
 type settingsLoadedMsg struct {
-	rulesYAML       string
+	rulesYAML         string
 	confirmStrictness string
-	signalLinked    bool
-	signalNumber    string
-	retentionDays   int
-	retentionMemDays int
-	err             error
+	signalLinked      bool
+	signalNumber      string
+	retentionDays     int
+	retentionMemDays  int
+	err               error
 }
 
 // settingsSignalLinkMsg is dispatched when a link code is generated.
@@ -176,12 +176,12 @@ func (m settingsModel) loadCmd() tea.Cmd {
 		}
 
 		return settingsLoadedMsg{
-			rulesYAML:        yaml,
+			rulesYAML:         yaml,
 			confirmStrictness: confirm,
-			signalLinked:     signalLinked,
-			signalNumber:     signalNum,
-			retentionDays:    chatDays,
-			retentionMemDays: memDays,
+			signalLinked:      signalLinked,
+			signalNumber:      signalNum,
+			retentionDays:     chatDays,
+			retentionMemDays:  memDays,
 		}
 	}
 }
@@ -256,6 +256,13 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			return m.updateSignal(msg)
 		case settingsSectionRetention:
 			return m.updateRetention(msg)
+		}
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && msg.Y == 1 {
+			if sec, ok := m.hitSection(msg.X); ok {
+				return m.switchSection(sec)
+			}
 		}
 	}
 
@@ -514,9 +521,9 @@ func (m *settingsModel) rebuildConfirm() {
 	b.WriteString(styleMuted.Render("When should Tether ask for confirmation before acting?") + "\n\n")
 	for i, opt := range m.confirmOpts {
 		if i == m.confirmSel {
-			b.WriteString(styleAccent.Render("▶ " + opt) + "\n")
+			b.WriteString(styleAccent.Render("▶ "+opt) + "\n")
 		} else {
-			b.WriteString(styleDim.Render("  " + opt) + "\n")
+			b.WriteString(styleDim.Render("  "+opt) + "\n")
 		}
 	}
 	b.WriteString("\n" + styleDim.Render("ask") + " — prompt before tool calls that look risky\n")
@@ -604,6 +611,30 @@ func (m settingsModel) hintLine(sec settingsSection) string {
 		return styleInfo.Render(m.status) + "  " + base + extra
 	}
 	return base + extra
+}
+
+func (m settingsModel) sectionButtons() []headerButton {
+	btns := make([]headerButton, len(settingsSectionLabels))
+	curX := 0
+	for i, label := range settingsSectionLabels {
+		rendered := styleTab.Render(label)
+		if settingsSection(i) == m.sec {
+			rendered = styleTabActive.Render(label)
+		}
+		w := lipgloss.Width(rendered)
+		btns[i] = headerButton{ID: label, Label: label, X0: curX, X1: curX + w}
+		curX += w
+	}
+	return btns
+}
+
+func (m settingsModel) hitSection(x int) (settingsSection, bool) {
+	for i, b := range m.sectionButtons() {
+		if x >= b.X0 && x < b.X1 {
+			return settingsSection(i), true
+		}
+	}
+	return settingsSectionRules, false
 }
 
 func (m settingsModel) View() tea.View {

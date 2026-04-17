@@ -65,11 +65,52 @@ type appModel struct {
 	toolReg *tools.Registry
 	subMgr  *subagents.Manager
 	proEng  *proactive.Engine
+
+	nextRequestID int
+	activeRuns    int
+	waitlist      []string
+	releasedRuns  map[int]bool
+}
+
+type agentAsyncMsg struct {
+	ch   <-chan tea.Msg
+	msg  tea.Msg
+	done bool
+}
+
+type agentStreamDeltaMsg struct {
+	ConversationID int64
+	RequestID      int
+	Text           string
+}
+
+type agentStreamReasoningMsg struct {
+	ConversationID int64
+	RequestID      int
+	Text           string
+}
+
+type agentStreamToolMsg struct {
+	ConversationID int64
+	RequestID      int
+	Tool           toolCallEntry
+}
+
+type agentReleaseMsg struct {
+	ConversationID int64
+	RequestID      int
 }
 
 func NewAppModel(ctx *SessionContext) tea.Model {
 	ag := ctx.Agent
-	m := appModel{ctx: ctx, ag: ag, toolReg: ag.ToolRegistry(), subMgr: ag.Subagents()}
+	m := appModel{
+		ctx:           ctx,
+		ag:            ag,
+		toolReg:       ag.ToolRegistry(),
+		subMgr:        ag.Subagents(),
+		nextRequestID: 1,
+		releasedRuns:  map[int]bool{},
+	}
 	m.proEng = proactive.NewEngine(ctx.DB, ag, ag.Subagents(), ctx.Config.Paths.DataDir)
 	m.view = viewLogin
 	m.auth = newAuthModel(authModeLogin)
@@ -108,7 +149,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			return m, tea.Quit
 		}
 
@@ -241,31 +282,40 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Store user message then ask agent in the background.
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", clean)
 		m.chat = m.chat.appendLocal("You", clean)
+		m.waitlist = append(m.waitlist, clean)
+		runCmd := m.maybeDispatchWaitlist()
 		return m, tea.Batch(
-			m.askAgentCmd(clean),
+			runCmd,
 			m.triggerProactiveEventCmd(proactive.EventUserMessage, map[string]string{"text": clean}),
 		)
 
-	case agentReplyMsg:
-		// Prepend any tool calls that happened before the final reply.
-		for _, tc := range msg.ToolCalls {
-			content := tc.Name
-			if strings.TrimSpace(tc.Args) != "" {
-				content += "  " + tc.Args
+	case agentAsyncMsg:
+		if msg.done {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		switch inner := msg.msg.(type) {
+		case agentStreamDeltaMsg:
+			if m.conv != nil && inner.ConversationID == m.conv.ID {
+				m.chat = m.chat.setStreamingAssistant(inner.RequestID, inner.Text)
 			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "tool_call", content)
-			m.chat = m.chat.appendLocal("tool_call", content)
+		case agentStreamReasoningMsg:
+			if m.conv != nil && inner.ConversationID == m.conv.ID {
+				m.chat = m.chat.setStreamingReasoning(inner.RequestID, inner.Text)
+			}
+		case agentStreamToolMsg:
+			if m.conv != nil && inner.ConversationID == m.conv.ID {
+				m.chat = m.chat.appendStreamingToolCall(inner.RequestID, inner.Tool.Name, inner.Tool.Args)
+			}
+		case agentReleaseMsg:
+			cmd = m.releaseWaitlistFor(inner.RequestID)
+		case agentReplyMsg:
+			m, cmd = m.handleAgentReply(inner)
 		}
+		return m, tea.Batch(cmd, waitAgentAsyncCmd(msg.ch))
 
-		clean, findings := redact.ScanAndRedact(msg.Text)
-		if len(findings) > 0 {
-			warn := "The assistant response contained secret-like content and was redacted."
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", warn)
-			m.chat = m.chat.appendLocal("System", warn)
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", clean)
-		m.chat = m.chat.appendLocal("Tether", clean)
-		return m, nil
+	case agentReplyMsg:
+		return m.handleAgentReply(msg)
 
 	case cursor.BlinkMsg:
 		// pass through to submodels that care (textarea).
@@ -337,7 +387,7 @@ func (m appModel) renderHeader() string {
 		return ""
 	}
 
-	brand := styleHeaderBrand.Render("tether")
+	brand := styleHeaderBrand.Render("Tether")
 
 	buttons := m.headerButtons()
 	tabParts := make([]string, 0, len(buttons))
@@ -1561,22 +1611,54 @@ func (m appModel) handleSkillCommand(text string) (appModel, bool, tea.Cmd) {
 }
 
 func (m appModel) askAgentCmd(text string) tea.Cmd {
+	return m.askAgentCmdWithID(m.nextRequestID, text)
+}
+
+func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 	userID := m.user.ID
 	convID := m.conv.ID
 	ag := m.ag
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ch := make(chan tea.Msg, 64)
+	go func() {
+		defer close(ch)
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		reply, err := ag.Reply(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: text})
+
+		released := false
+		var reasoning strings.Builder
+		reply, err := ag.ReplyStream(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: text}, func(ev agent.StreamEvent) {
+			switch ev.Type {
+			case "assistant_delta":
+				ch <- agentStreamDeltaMsg{ConversationID: convID, RequestID: requestID, Text: ev.Text}
+			case "reasoning_delta":
+				reasoning.WriteString(ev.Delta)
+				ch <- agentStreamReasoningMsg{ConversationID: convID, RequestID: requestID, Text: reasoning.String()}
+			case "tool_call":
+				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args}}
+			case "tool_result":
+				if !released {
+					released = true
+					ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+				}
+			}
+		})
 		if err != nil {
-			return agentReplyMsg{Text: "(agent error) " + err.Error()}
+			if !released {
+				ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+			}
+			ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: "(agent error) " + err.Error()}
+			return
+		}
+		if !released {
+			ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
 		}
 		entries := make([]toolCallEntry, len(reply.ToolCalls))
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
 		}
-		return agentReplyMsg{Text: reply.Text, ToolCalls: entries}
-	}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+	}()
+	return waitAgentAsyncCmd(ch)
 }
 
 func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.Cmd {
@@ -1587,14 +1669,118 @@ func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.C
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if _, err := ag.InvokeSkill(ctx, userID, convID, skillName, args, "", "user"); err != nil {
-			return agentReplyMsg{Text: "(skill error) " + err.Error()}
+			return agentReplyMsg{ConversationID: convID, Text: "(skill error) " + err.Error()}
 		}
 		reply, err := ag.Reply(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: ""})
 		if err != nil {
-			return agentReplyMsg{Text: "(agent error) " + err.Error()}
+			return agentReplyMsg{ConversationID: convID, Text: "(agent error) " + err.Error()}
 		}
-		return agentReplyMsg{Text: reply.Text}
+		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning}
 	}
+}
+
+func waitAgentAsyncCmd(ch <-chan tea.Msg) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return agentAsyncMsg{ch: ch, done: true}
+		}
+		return agentAsyncMsg{ch: ch, msg: msg}
+	}
+}
+
+func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
+	if m.activeRuns > 0 {
+		m.activeRuns--
+	}
+	delete(m.releasedRuns, msg.RequestID)
+	targetConvID := int64(0)
+	if msg.ConversationID != 0 {
+		targetConvID = msg.ConversationID
+	} else if m.conv != nil {
+		targetConvID = m.conv.ID
+	}
+	renderInActiveChat := m.conv != nil && targetConvID != 0 && m.conv.ID == targetConvID
+	seen := map[string]bool{}
+	for _, tc := range msg.ToolCalls {
+		key := tc.Name + "\x00" + tc.Args
+		if seen[key] || !isValidToolName(tc.Name) {
+			continue
+		}
+		seen[key] = true
+		content := tc.Name
+		if strings.TrimSpace(tc.Args) != "" {
+			content += "  " + tc.Args
+		}
+		if targetConvID != 0 {
+			_ = store.AddMessage(m.ctx.DB, targetConvID, "tool_call", content)
+		}
+		if renderInActiveChat && !m.chat.hasStreamingToolCall(msg.RequestID, tc.Name, tc.Args) {
+			m.chat = m.chat.appendLocal("tool_call", content)
+		}
+	}
+
+	clean, findings := redact.ScanAndRedact(msg.Text)
+	if len(findings) > 0 {
+		warn := "The assistant response contained secret-like content and was redacted."
+		if targetConvID != 0 {
+			_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", warn)
+		}
+		if renderInActiveChat {
+			m.chat = m.chat.appendLocal("System", warn)
+		}
+	}
+	if strings.TrimSpace(clean) == "" {
+		if renderInActiveChat {
+			m.chat = m.chat.finishStreamingAssistant(msg.RequestID, "", msg.Reasoning)
+		}
+		return m, m.maybeDispatchWaitlist()
+	}
+	if targetConvID != 0 {
+		_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", clean)
+	}
+	if renderInActiveChat {
+		m.chat = m.chat.finishStreamingAssistant(msg.RequestID, clean, msg.Reasoning)
+	}
+	return m, m.maybeDispatchWaitlist()
+}
+
+func (m *appModel) maybeDispatchWaitlist() tea.Cmd {
+	if len(m.waitlist) == 0 {
+		return nil
+	}
+	if m.activeRuns > 0 {
+		return nil
+	}
+	return m.dispatchNextWaitlist()
+}
+
+func (m *appModel) dispatchNextWaitlist() tea.Cmd {
+	if len(m.waitlist) == 0 {
+		return nil
+	}
+	text := m.waitlist[0]
+	m.waitlist = m.waitlist[1:]
+	requestID := m.nextRequestID
+	m.nextRequestID++
+	m.activeRuns++
+	m.releasedRuns[requestID] = false
+	m.chat = m.chat.startStreamingAssistant(requestID)
+	return m.askAgentCmdWithID(requestID, text)
+}
+
+func (m *appModel) releaseWaitlistFor(requestID int) tea.Cmd {
+	if m.releasedRuns[requestID] {
+		return nil
+	}
+	m.releasedRuns[requestID] = true
+	if len(m.waitlist) == 0 {
+		return nil
+	}
+	return m.dispatchNextWaitlist()
 }
 
 func (m appModel) triggerProactiveEventCmd(event string, meta map[string]string) tea.Cmd {

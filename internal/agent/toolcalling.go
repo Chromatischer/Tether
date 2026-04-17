@@ -134,12 +134,11 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 	return outputs, infos
 }
 
-func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, baseItems []openrouter.ResponseItem, emit func(StreamEvent)) (string, []ToolCallInfo, error) {
-	s := a.sessionFor(userID, convID)
-
+func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, userID, convID int64, baseItems []openrouter.ResponseItem, emit func(StreamEvent)) (string, string, []ToolCallInfo, error) {
 	items := append([]openrouter.ResponseItem{}, baseItems...)
 	const maxIterations = 8
 	toolCalls := make([]ToolCallInfo, 0, 8)
+	var streamedReasoning strings.Builder
 
 	for i := 0; i < maxIterations; i++ {
 		req := openrouter.ResponsesRequest{
@@ -150,6 +149,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 			Tools:           a.activeTools(s),
 			ToolChoice:      "auto",
 			Stream:          true,
+			Reasoning:       &openrouter.ResponsesReasoning{Effort: "medium"},
 		}
 
 		// Accumulate tool calls as they arrive.
@@ -178,6 +178,12 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 						}
 						emit(StreamEvent{Type: "tool_call", Tool: ToolCallInfo{Name: c.Name, Args: args}})
 					}
+				} else if ev.Item != nil && ev.Item.Type == "reasoning" {
+					emitReasoningSummaryDelta(&streamedReasoning, reasoningSummaryText(ev.Item.Summary), emit)
+				}
+			case "response.output_item.done":
+				if ev.Item != nil && ev.Item.Type == "reasoning" {
+					emitReasoningSummaryDelta(&streamedReasoning, reasoningSummaryText(ev.Item.Summary), emit)
 				}
 			case "response.function_call_arguments.done":
 				if strings.TrimSpace(ev.Arguments) == "" {
@@ -203,6 +209,20 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 						emit(StreamEvent{Type: "assistant_delta", Delta: ev.Delta, Text: streamed.String()})
 					}
 				}
+			case "response.output_text.delta":
+				if ev.Delta != "" {
+					streamed.WriteString(ev.Delta)
+					if emit != nil {
+						emit(StreamEvent{Type: "assistant_delta", Delta: ev.Delta, Text: streamed.String()})
+					}
+				}
+			case "response.reasoning.delta", "response.reasoning_text.delta":
+				if ev.Delta != "" {
+					streamedReasoning.WriteString(ev.Delta)
+				}
+				if ev.Delta != "" && emit != nil {
+					emit(StreamEvent{Type: "reasoning_delta", Delta: ev.Delta})
+				}
 			}
 			return nil
 		})
@@ -210,7 +230,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 			if emit != nil {
 				emit(StreamEvent{Type: "error", Err: err.Error()})
 			}
-			return "", toolCalls, fmt.Errorf("llm: %w", err)
+			return "", "", toolCalls, fmt.Errorf("llm: %w", err)
 		}
 
 		// Usage audit (best-effort)
@@ -239,10 +259,17 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 
 		if len(calls) == 0 {
 			text := strings.TrimSpace(extractResponsesText(final))
+			if text == "" {
+				text = strings.TrimSpace(streamed.String())
+			}
+			reasoning := strings.TrimSpace(streamedReasoning.String())
+			if reasoning == "" {
+				reasoning = extractResponsesReasoning(final)
+			}
 			if emit != nil {
 				emit(StreamEvent{Type: "done", Text: text})
 			}
-			return text, toolCalls, nil
+			return text, reasoning, toolCalls, nil
 		}
 
 		// Append tool call info for display.
@@ -256,8 +283,8 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 			toolCalls = append(toolCalls, ToolCallInfo{Name: c.Name, Args: args})
 		}
 
-		// Add the model's output items (function_call etc.) to history.
-		items = append(items, final.Output...)
+		// Add only replay-safe model output items to history.
+		items = append(items, replayableResponseItems(final.Output)...)
 
 		// Execute tools and add function_call_output items.
 		toolOutputs, infos := a.executeFunctionCalls(ctx, s, calls)
@@ -269,7 +296,57 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, 
 		items = append(items, toolOutputs...)
 	}
 
-	return "", toolCalls, fmt.Errorf("agent loop: max iterations reached")
+	return "", strings.TrimSpace(streamedReasoning.String()), toolCalls, fmt.Errorf("agent loop: max iterations reached")
+}
+
+func emitReasoningSummaryDelta(dst *strings.Builder, summary string, emit func(StreamEvent)) {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return
+	}
+	current := dst.String()
+	if current == summary {
+		return
+	}
+	if strings.HasPrefix(summary, current) {
+		delta := summary[len(current):]
+		dst.WriteString(delta)
+		if delta != "" && emit != nil {
+			emit(StreamEvent{Type: "reasoning_delta", Delta: delta})
+		}
+		return
+	}
+	if current != "" {
+		dst.Reset()
+	}
+	dst.WriteString(summary)
+	if emit != nil {
+		emit(StreamEvent{Type: "reasoning_delta", Delta: summary})
+	}
+}
+
+func reasoningSummaryText(parts []openrouter.ReasoningSummaryPart) string {
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if text := strings.TrimSpace(part.Text); text != "" {
+			lines = append(lines, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func replayableResponseItems(items []openrouter.ResponseItem) []openrouter.ResponseItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]openrouter.ResponseItem, 0, len(items))
+	for _, it := range items {
+		switch it.Type {
+		case "message", "function_call":
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func truncateAuditErr(err error) string {

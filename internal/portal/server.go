@@ -76,3 +76,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.s.Shutdown(ctx)
 }
+
+func (s *Server) Close() error {
+	return s.s.Close()
+}

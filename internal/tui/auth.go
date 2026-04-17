@@ -176,7 +176,7 @@ func (m authModel) View() tea.View {
 	box := styleAuthBox.Render(formInner)
 
 	// ── Hint ──────────────────────────────────────────────────────────────
-	hint := styleDim.Render("tab · switch   enter · submit   q · quit")
+	hint := styleDim.Render("tab · switch   enter · submit   ctrl+c · quit")
 
 	// ── Stack all pieces, centered horizontally ───────────────────────────
 	block := lipgloss.JoinVertical(lipgloss.Center,

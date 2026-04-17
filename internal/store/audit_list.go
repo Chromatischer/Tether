@@ -17,7 +17,9 @@ func ListAuditEvents(db *sql.DB, limit int) ([]AuditEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.Query(`SELECT id, user_id, type, COALESCE(payload_json,''), created_at FROM audit_events ORDER BY id DESC LIMIT ?`, limit)
+	// Routine scheduler heartbeats are useful for status checks, but they drown out
+	// actionable audit entries in operator-facing audit views.
+	rows, err := db.Query(`SELECT id, user_id, type, COALESCE(payload_json,''), created_at FROM audit_events WHERE type <> 'proactive_tick' ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

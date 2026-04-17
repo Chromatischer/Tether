@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"tether/internal/agent/toolset"
 	"tether/internal/llm/openrouter"
 	"tether/internal/personality"
 	"tether/internal/skills"
@@ -13,7 +14,10 @@ import (
 )
 
 func (a *Agent) buildContextInputItems(userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
-	sess := a.sessionFor(userID, convID)
+	return a.buildContextInputItemsWithSession(a.sessionFor(userID, convID), userID, convID, history)
+}
+
+func (a *Agent) buildContextInputItemsWithSession(sess *toolset.Session, userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
 	items := make([]openrouter.ResponseItem, 0, len(history)+10)
 
 	items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: systemPrompt}}})
@@ -122,6 +126,9 @@ func (a *Agent) buildContextInputItems(userID, convID int64, history []store.Mes
 		role := m.Role
 		switch role {
 		case "assistant":
+			if strings.TrimSpace(m.Content) == "" {
+				continue
+			}
 			items = append(items, openrouter.ResponseItem{
 				Type:   "message",
 				Role:   "assistant",

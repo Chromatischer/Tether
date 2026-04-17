@@ -115,6 +115,44 @@ func TestTruncateAuditErr(t *testing.T) {
 	}
 }
 
+func TestReplayableResponseItems_FiltersReasoning(t *testing.T) {
+	in := []openrouter.ResponseItem{
+		{Type: "reasoning", ID: "rs_1"},
+		{Type: "message", ID: "msg_1"},
+		{Type: "function_call", ID: "fc_1"},
+		{Type: "function_call_output", ID: "fco_1"},
+	}
+	got := replayableResponseItems(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 replayable items, got %d", len(got))
+	}
+	if got[0].Type != "message" || got[1].Type != "function_call" {
+		t.Fatalf("unexpected replayable items: %+v", got)
+	}
+}
+
+func TestEmitReasoningSummaryDelta_AppendsOnlyNewSuffix(t *testing.T) {
+	var b strings.Builder
+	var deltas []string
+
+	emitReasoningSummaryDelta(&b, "step 1", func(ev StreamEvent) {
+		deltas = append(deltas, ev.Delta)
+	})
+	emitReasoningSummaryDelta(&b, "step 1\nstep 2", func(ev StreamEvent) {
+		deltas = append(deltas, ev.Delta)
+	})
+	emitReasoningSummaryDelta(&b, "step 1\nstep 2", func(ev StreamEvent) {
+		deltas = append(deltas, ev.Delta)
+	})
+
+	if b.String() != "step 1\nstep 2" {
+		t.Fatalf("unexpected reasoning buffer %q", b.String())
+	}
+	if len(deltas) != 2 || deltas[0] != "step 1" || deltas[1] != "\nstep 2" {
+		t.Fatalf("unexpected reasoning deltas: %#v", deltas)
+	}
+}
+
 type testErr struct{ s string }
 
 func (e *testErr) Error() string { return e.s }

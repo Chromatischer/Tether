@@ -27,7 +27,7 @@ Notes:
 - [`subagent.status`](#subagentstatus) — Get status/result for a spawned sub-agent run.
 - [`tool.describe`](#tooldescribe) — Get full documentation for a tool (schemas, examples, safety notes).
 - [`tool.enable`](#toolenable) — Enable a tool for the current agent session.
-- [`tool.search`](#toolsearch) — Search for available tools by name/description.
+- [`tool.search`](#toolsearch) — Search for available tools by name, purpose, tags, and usage hints.
 - [`web-fetch`](#web-fetch) — Fetch a URL over the network and cache the truncated response body.
 - [`web-search`](#web-search) — Search the web and return a small list of results.
 - [`write`](#write) — Write a file in the user sandbox (relative path).
@@ -1177,11 +1177,11 @@ Example result:
 
 ## `tool.search`
 
-Search for available tools by name/description.
+Search for available tools by name, purpose, tags, and usage hints.
 
 **When to use**
 
-Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. For full documentation (schemas + examples), call tool.describe.
+Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. Use natural keyword queries like 'bash shell', 'run command', or 'read files'. For full documentation (schemas + examples), call tool.describe.
 
 ### Input schema
 
@@ -1190,7 +1190,7 @@ Use this when you need to discover what capabilities exist (or what a tool is ca
   "additionalProperties": false,
   "properties": {
     "query": {
-      "description": "search query (substring match); empty = list all",
+      "description": "search query; matches keywords across tool names, summaries, tags, and usage hints. Empty = list all",
       "type": "string"
     }
   },
