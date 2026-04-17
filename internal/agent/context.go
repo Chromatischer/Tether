@@ -12,10 +12,11 @@ import (
 	"tether/internal/userspace"
 )
 
-func (a *Agent) buildContextMessages(userID, convID int64, history []store.Message) ([]openrouter.Message, error) {
+func (a *Agent) buildContextInputItems(userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
 	sess := a.sessionFor(userID, convID)
-	msgs := make([]openrouter.Message, 0, len(history)+10)
-	msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text(systemPrompt)})
+	items := make([]openrouter.ResponseItem, 0, len(history)+10)
+
+	items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: systemPrompt}}})
 
 	// Per-user personality (self-editable in the sandbox).
 	if sess != nil {
@@ -24,11 +25,12 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 			if r2, ok := userspace.PersonalityRelPath(personality.AgentChat); ok {
 				rel = r2
 			}
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text(
-				"Agent personality (from " + rel + "). Follow this.\n" +
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{
+				Type: "input_text",
+				Text: "Agent personality (from " + rel + "). Follow this.\n" +
 					"Self-editable: you may update this file as you learn stable user preferences (backups are kept).\n" +
 					"Proactive agent personalities live under config/agents/proactive/<agent_id>/PERSONALITY.md (incl. daily_brief, open_loops).\n\n" + p,
-			)})
+			}}})
 		}
 	}
 
@@ -36,7 +38,7 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 	if sum, _, ok, err := store.GetConversationSummary(a.db, convID); err == nil && ok {
 		sum = strings.TrimSpace(sum)
 		if sum != "" {
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("Conversation summary:\n" + sum)})
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "Conversation summary:\n" + sum}}})
 		}
 	}
 
@@ -67,13 +69,13 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 			}
 		}
 		if len(facts) > 0 {
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("User facts (top):\n- " + strings.Join(facts, "\n- "))})
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "User facts (top):\n- " + strings.Join(facts, "\n- ")}}})
 		}
 		if len(prefs) > 0 {
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("User preferences (top):\n- " + strings.Join(prefs, "\n- "))})
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "User preferences (top):\n- " + strings.Join(prefs, "\n- ")}}})
 		}
 		if len(tasks) > 0 {
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("Open tasks:\n- " + strings.Join(tasks, "\n- "))})
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "Open tasks:\n- " + strings.Join(tasks, "\n- ")}}})
 		}
 		if len(usedIDs) > 0 {
 			_ = store.TouchMemoryItems(a.db, usedIDs)
@@ -86,7 +88,7 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 		if list, err := mgr.List(sess.Dirs); err == nil {
 			idx := strings.TrimSpace(mgr.BuildIndexMessage(list))
 			if idx != "" {
-				msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text(idx)})
+				items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: idx}}})
 			}
 		}
 
@@ -109,37 +111,38 @@ func (a *Agent) buildContextMessages(userID, convID int64, history []store.Messa
 		}
 		// Preserve chronological order (older → newer).
 		for i := len(picked) - 1; i >= 0; i-- {
-			msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text(picked[i])})
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: picked[i]}}})
 		}
 	}
 
-	// OpenRouter prompt caching is provider-side. To maximize cache hits, OpenRouter
-	// uses provider sticky routing after cached requests. Sticky routing groups
-	// requests into "conversations" by hashing the first system message and the
-	// first *non-system* message.
-	//
-	// We only include a sliding recent-history window, so the first non-system
-	// message would drift over time, lowering cache hit rates. Inject a tiny,
-	// stable metadata message so the conversation identity stays stable.
-	msgs = append(msgs, openrouter.Message{
-		Role:    "user",
-		Name:    "tether_meta",
-		Content: openrouter.Text(fmt.Sprintf("(tether metadata; ignore) conversation_id=%d", convID)),
-	})
+	// Stable metadata marker to keep provider-side caching/sticky routing stable.
+	items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: fmt.Sprintf("(tether metadata; ignore) conversation_id=%d", convID)}}})
 
 	for _, m := range history {
 		role := m.Role
 		switch role {
-		case "assistant", "user", "system", "tool":
+		case "assistant":
+			items = append(items, openrouter.ResponseItem{
+				Type:   "message",
+				Role:   "assistant",
+				ID:     fmt.Sprintf("msg_db_%d", m.ID),
+				Status: "completed",
+				Content: []openrouter.ContentPart{{
+					Type: "output_text",
+					Text: m.Content,
+				}},
+			})
+		case "system":
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: m.Content}}})
 		case "tool_call":
-			// Display-only role stored for the chat UI; not sent to the LLM.
+			// Display-only role stored for the chat UI; do not send it back to the model.
 			continue
 		default:
-			role = "user"
+			// user + any unknown role
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: m.Content}}})
 		}
-		msgs = append(msgs, openrouter.Message{Role: role, Content: openrouter.Text(m.Content)})
 	}
-	return msgs, nil
+	return items, nil
 }
 
 func loadPersonalityText(d userspace.Dirs, agentKey string) string {

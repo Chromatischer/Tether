@@ -14,7 +14,29 @@ import (
 	"tether/internal/store"
 )
 
-func (a *Agent) activeTools(s *toolset.Session) []openrouter.Tool {
+// StreamEvent is an optional callback payload used by the TUI to render incremental output.
+// It is best-effort and may omit some details.
+//
+// Types:
+// - assistant_delta: incremental assistant text
+// - tool_call: model requested a tool
+// - tool_result: tool finished (success/failure)
+// - done: final assistant message
+// - error: fatal error
+//
+// Note: For safety, tool results are not streamed by default; only tool names and (truncated) args.
+// The final assistant message is still returned via Reply/ReplyStream.
+type StreamEvent struct {
+	Type string
+
+	Delta string
+	Text  string
+
+	Tool ToolCallInfo
+	Err  string
+}
+
+func (a *Agent) activeTools(s *toolset.Session) []openrouter.ResponsesTool {
 	defs := make([]toolset.ToolDef, 0, len(s.Active))
 	for name := range s.Active {
 		impl := a.toolImpl[name]
@@ -24,31 +46,42 @@ func (a *Agent) activeTools(s *toolset.Session) []openrouter.Tool {
 		defs = append(defs, impl.Definition())
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	out := make([]openrouter.Tool, 0, len(defs))
+	out := make([]openrouter.ResponsesTool, 0, len(defs))
 	for _, d := range defs {
-		out = append(out, openrouter.Tool{
-			Type: "function",
-			Function: openrouter.ToolFunction{
-				Name:        d.Name,
-				Description: d.Description,
-				Parameters:  d.Parameters,
-			},
+		out = append(out, openrouter.ResponsesTool{
+			Type:        "function",
+			Name:        d.Name,
+			Description: d.Description,
+			Parameters:  d.Parameters,
+			Strict:      nil,
 		})
 	}
 	return out
 }
 
-func (a *Agent) executeToolCalls(ctx context.Context, s *toolset.Session, calls []openrouter.ToolCall) []openrouter.Message {
-	msgs := make([]openrouter.Message, 0, len(calls))
+func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, calls []openrouter.ResponseItem) (outputs []openrouter.ResponseItem, infos []ToolCallInfo) {
+	outputs = make([]openrouter.ResponseItem, 0, len(calls))
+	infos = make([]ToolCallInfo, 0, len(calls))
+
 	for _, c := range calls {
-		name := c.Function.Name
-		impl := a.toolImpl[name]
-
-		rawArgs := json.RawMessage(strings.TrimSpace(c.Function.Arguments))
-		if len(rawArgs) == 0 {
-			rawArgs = json.RawMessage(`{}`)
+		name := strings.TrimSpace(c.Name)
+		callID := strings.TrimSpace(c.CallID)
+		argsStr := strings.TrimSpace(c.Arguments)
+		if argsStr == "" {
+			argsStr = "{}"
 		}
+		rawArgs := json.RawMessage(argsStr)
 
+		// Collect tool call info for UI.
+		argsUI := strings.TrimSpace(argsStr)
+		if argsUI == "{}" {
+			argsUI = ""
+		} else if len(argsUI) > 80 {
+			argsUI = argsUI[:80] + "…"
+		}
+		infos = append(infos, ToolCallInfo{Name: name, Args: argsUI})
+
+		impl := a.toolImpl[name]
 		var execErr error
 		var result any
 		if impl == nil {
@@ -68,13 +101,14 @@ func (a *Agent) executeToolCalls(ctx context.Context, s *toolset.Session, calls 
 		}
 
 		b, _ := json.Marshal(result)
+
 		// Audit tool call (best-effort). Avoid storing raw args/results.
 		if s.DB != nil {
 			uid := s.UserID
 			sum := sha256.Sum256(rawArgs)
 			payload := map[string]any{
 				"tool":           name,
-				"tool_call_id":   c.ID,
+				"call_id":        callID,
 				"args_sha256":    hex.EncodeToString(sum[:]),
 				"ok":             execErr == nil,
 				"error":          truncateAuditErr(execErr),
@@ -84,89 +118,155 @@ func (a *Agent) executeToolCalls(ctx context.Context, s *toolset.Session, calls 
 			_ = store.AddAuditEvent(s.DB, &uid, "tool_call", string(pb))
 		}
 
-		msgs = append(msgs, openrouter.Message{
-			Role:       "tool",
-			ToolCallID: c.ID,
-			Content:    openrouter.Text(string(b)),
+		outID := "fco_" + callID
+		if strings.TrimSpace(callID) == "" {
+			// Should not happen, but keep the loop alive.
+			outID = "fco_" + name
+		}
+		outputs = append(outputs, openrouter.ResponseItem{
+			Type:   "function_call_output",
+			ID:     outID,
+			CallID: callID,
+			Output: string(b),
 		})
 	}
-	return msgs
+
+	return outputs, infos
 }
 
-func (a *Agent) replyWithTools(ctx context.Context, userID, convID int64, baseMessages []openrouter.Message) (string, []ToolCallInfo, error) {
+func (a *Agent) replyWithToolsStream(ctx context.Context, userID, convID int64, baseItems []openrouter.ResponseItem, emit func(StreamEvent)) (string, []ToolCallInfo, error) {
 	s := a.sessionFor(userID, convID)
 
-	messages := append([]openrouter.Message{}, baseMessages...)
+	items := append([]openrouter.ResponseItem{}, baseItems...)
 	const maxIterations = 8
-	var toolCalls []ToolCallInfo
+	toolCalls := make([]ToolCallInfo, 0, 8)
 
 	for i := 0; i < maxIterations; i++ {
-		req := openrouter.ChatRequest{
-			Model:             a.cfg.OpenRouter.Model,
-			Messages:          messages,
-			Temperature:       0.2,
-			MaxTokens:         700,
-			Tools:             a.activeTools(s),
-			ParallelToolCalls: false,
-			ToolChoice:        "auto",
+		req := openrouter.ResponsesRequest{
+			Model:           a.cfg.OpenRouter.Model,
+			Input:           items,
+			Temperature:     0.2,
+			MaxOutputTokens: 700,
+			Tools:           a.activeTools(s),
+			ToolChoice:      "auto",
+			Stream:          true,
 		}
 
-		resp, err := a.chatCached(ctx, req)
+		// Accumulate tool calls as they arrive.
+		pendingCallsByOutputIdx := map[int]*openrouter.ResponseItem{}
+		pendingCalls := make([]*openrouter.ResponseItem, 0, 4)
+
+		// Best-effort incremental text stream.
+		var streamed strings.Builder
+
+		final, err := a.llm.ResponsesStream(ctx, req, func(ev openrouter.ResponsesStreamEvent) error {
+			switch ev.Type {
+			case "response.output_item.added":
+				if ev.Item != nil && ev.Item.Type == "function_call" {
+					// Copy so we can mutate args later.
+					c := *ev.Item
+					pendingCalls = append(pendingCalls, &c)
+					if ev.OutputIndex != nil {
+						pendingCallsByOutputIdx[*ev.OutputIndex] = &c
+					}
+					if emit != nil {
+						args := strings.TrimSpace(c.Arguments)
+						if args == "{}" {
+							args = ""
+						} else if len(args) > 80 {
+							args = args[:80] + "…"
+						}
+						emit(StreamEvent{Type: "tool_call", Tool: ToolCallInfo{Name: c.Name, Args: args}})
+					}
+				}
+			case "response.function_call_arguments.done":
+				if strings.TrimSpace(ev.Arguments) == "" {
+					return nil
+				}
+				// Attach args to the best candidate call.
+				if ev.OutputIndex != nil {
+					if c := pendingCallsByOutputIdx[*ev.OutputIndex]; c != nil {
+						c.Arguments = ev.Arguments
+						return nil
+					}
+				}
+				for j := len(pendingCalls) - 1; j >= 0; j-- {
+					if strings.TrimSpace(pendingCalls[j].Arguments) == "" {
+						pendingCalls[j].Arguments = ev.Arguments
+						break
+					}
+				}
+			case "response.content_part.delta":
+				if ev.Delta != "" {
+					streamed.WriteString(ev.Delta)
+					if emit != nil {
+						emit(StreamEvent{Type: "assistant_delta", Delta: ev.Delta, Text: streamed.String()})
+					}
+				}
+			}
+			return nil
+		})
 		if err != nil {
+			if emit != nil {
+				emit(StreamEvent{Type: "error", Err: err.Error()})
+			}
 			return "", toolCalls, fmt.Errorf("llm: %w", err)
 		}
 
-		// Best-effort: record usage + cache stats so we can verify prompt caching is
-		// actually saving money on the configured model/provider.
-		if s != nil && s.DB != nil && resp.Usage != nil {
-			cached := 0
-			cacheWrite := 0
-			if resp.Usage.PromptTokensDetails != nil {
-				cached = resp.Usage.PromptTokensDetails.CachedTokens
-				cacheWrite = resp.Usage.PromptTokensDetails.CacheWriteTokens
-			}
+		// Usage audit (best-effort)
+		if s != nil && s.DB != nil && final.Usage != nil {
 			payload := map[string]any{
-				"model":              req.Model,
-				"conversation_id":    convID,
-				"iteration":          i,
-				"prompt_tokens":      resp.Usage.PromptTokens,
-				"completion_tokens":  resp.Usage.CompletionTokens,
-				"total_tokens":       resp.Usage.TotalTokens,
-				"cached_tokens":      cached,
-				"cache_write_tokens": cacheWrite,
-				"cost":               resp.Usage.Cost,
-				"tools_n":            len(req.Tools),
+				"model":           req.Model,
+				"conversation_id": convID,
+				"iteration":       i,
+				"input_tokens":    final.Usage.InputTokens,
+				"output_tokens":   final.Usage.OutputTokens,
+				"total_tokens":    final.Usage.TotalTokens,
+				"tools_n":         len(req.Tools),
 			}
 			pb, _ := json.Marshal(payload)
 			uid := userID
 			_ = store.AddAuditEvent(s.DB, &uid, "llm_usage", string(pb))
 		}
 
-		m := resp.Choices[0].Message
-
-		if len(m.ToolCalls) == 0 {
-			text := ""
-			if m.Content != nil {
-				text = *m.Content
+		// Identify tool calls in the completed response.
+		calls := make([]openrouter.ResponseItem, 0, 4)
+		for _, it := range final.Output {
+			if it.Type == "function_call" {
+				calls = append(calls, it)
 			}
-			return strings.TrimSpace(text), toolCalls, nil
 		}
 
-		// Collect tool call info for display in the chat UI.
-		for _, tc := range m.ToolCalls {
-			args := strings.TrimSpace(tc.Function.Arguments)
+		if len(calls) == 0 {
+			text := strings.TrimSpace(extractResponsesText(final))
+			if emit != nil {
+				emit(StreamEvent{Type: "done", Text: text})
+			}
+			return text, toolCalls, nil
+		}
+
+		// Append tool call info for display.
+		for _, c := range calls {
+			args := strings.TrimSpace(c.Arguments)
 			if args == "{}" {
 				args = ""
 			} else if len(args) > 80 {
 				args = args[:80] + "…"
 			}
-			toolCalls = append(toolCalls, ToolCallInfo{Name: tc.Function.Name, Args: args})
+			toolCalls = append(toolCalls, ToolCallInfo{Name: c.Name, Args: args})
 		}
 
-		// Model requested tools.
-		messages = append(messages, m)
-		toolMsgs := a.executeToolCalls(ctx, s, m.ToolCalls)
-		messages = append(messages, toolMsgs...)
+		// Add the model's output items (function_call etc.) to history.
+		items = append(items, final.Output...)
+
+		// Execute tools and add function_call_output items.
+		toolOutputs, infos := a.executeFunctionCalls(ctx, s, calls)
+		if emit != nil {
+			for _, tc := range infos {
+				emit(StreamEvent{Type: "tool_result", Tool: tc})
+			}
+		}
+		items = append(items, toolOutputs...)
 	}
 
 	return "", toolCalls, fmt.Errorf("agent loop: max iterations reached")

@@ -43,35 +43,36 @@ func TestActiveTools_SortedByName(t *testing.T) {
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"b": dummyTool{name: "b"}, "a": dummyTool{name: "a"}}}
 	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"b": true, "a": true}
-	tools := ag.activeTools(s)
-	if len(tools) != 2 {
+	ts := ag.activeTools(s)
+	if len(ts) != 2 {
 		t.Fatalf("expected 2 tools")
 	}
-	if tools[0].Function.Name != "a" || tools[1].Function.Name != "b" {
-		t.Fatalf("expected sorted tools, got %+v", tools)
+	if ts[0].Name != "a" || ts[1].Name != "b" {
+		t.Fatalf("expected sorted tools, got %+v", ts)
 	}
 }
 
-func TestExecuteToolCalls_UnknownAndInactive(t *testing.T) {
+func TestExecuteFunctionCalls_UnknownAndInactive(t *testing.T) {
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"known": dummyTool{name: "known"}}}
 	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"known": false}
 
-	msgs := ag.executeToolCalls(context.Background(), s, []openrouter.ToolCall{{ID: "1", Type: "function", Function: openrouter.ToolCallFunction{Name: "unknown", Arguments: `{}`}}})
-	if len(msgs) != 1 || msgs[0].Role != "tool" {
-		t.Fatalf("unexpected msgs: %+v", msgs)
+	outs, _ := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{
+		{Type: "function_call", CallID: "c1", Name: "unknown", Arguments: `{}`},
+		{Type: "function_call", CallID: "c2", Name: "known", Arguments: `{}`},
+	})
+	if len(outs) != 2 {
+		t.Fatalf("expected 2 outputs, got %d", len(outs))
 	}
-	if !strings.Contains(*msgs[0].Content, "unknown tool") {
-		t.Fatalf("expected unknown tool error, got %q", *msgs[0].Content)
+	if !strings.Contains(outs[0].Output, "unknown tool") {
+		t.Fatalf("expected unknown tool error, got %q", outs[0].Output)
 	}
-
-	msgs = ag.executeToolCalls(context.Background(), s, []openrouter.ToolCall{{ID: "2", Type: "function", Function: openrouter.ToolCallFunction{Name: "known", Arguments: `{}`}}})
-	if !strings.Contains(*msgs[0].Content, "tool not enabled") {
-		t.Fatalf("expected not enabled error, got %q", *msgs[0].Content)
+	if !strings.Contains(outs[1].Output, "tool not enabled") {
+		t.Fatalf("expected not enabled error, got %q", outs[1].Output)
 	}
 }
 
-func TestExecuteToolCalls_AuditsArgsHashOnly(t *testing.T) {
+func TestExecuteFunctionCalls_AuditsArgsHashOnly(t *testing.T) {
 	db := testutil.OpenTestDB(t)
 	secretArgs := `{"x":"supersecret"}`
 	sum := sha256.Sum256([]byte(secretArgs))
@@ -83,7 +84,12 @@ func TestExecuteToolCalls_AuditsArgsHashOnly(t *testing.T) {
 	s.DB = db
 	s.UserID = 7
 
-	_ = ag.executeToolCalls(context.Background(), s, []openrouter.ToolCall{{ID: "c", Type: "function", Function: openrouter.ToolCallFunction{Name: "t", Arguments: secretArgs}}})
+	_, _ = ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{{
+		Type:      "function_call",
+		CallID:    "call_123",
+		Name:      "t",
+		Arguments: secretArgs,
+	}})
 
 	var payload string
 	if err := db.QueryRow(`SELECT payload_json FROM audit_events WHERE type='tool_call' ORDER BY id DESC LIMIT 1`).Scan(&payload); err != nil {

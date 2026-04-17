@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 )
 
 type Client struct {
@@ -89,9 +88,8 @@ func New(baseURL, apiKey, appName string) *Client {
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		AppName: appName,
-		HTTP: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		// Use context deadlines for timeouts; streaming (SSE) requires no fixed client timeout.
+		HTTP: &http.Client{Timeout: 0},
 	}
 }
 

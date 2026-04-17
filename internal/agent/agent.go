@@ -61,6 +61,28 @@ func New(cfg *config.Config, db *sql.DB) *Agent {
 	return newAgent(cfg, db)
 }
 
+func (a *Agent) ReloadRuntimeConfig() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.llm != nil {
+		a.llm.BaseURL = a.cfg.OpenRouter.BaseURL
+		a.llm.APIKey = a.cfg.OpenRouter.APIKey
+	}
+
+	if strings.TrimSpace(a.cfg.Secrets.MasterKey) == "" {
+		a.secrets = nil
+		return
+	}
+
+	st, err := secrets.NewStore(a.db, a.cfg.Secrets.MasterKey, time.Duration(a.cfg.Secrets.TTLHours)*time.Hour)
+	if err != nil {
+		a.secrets = nil
+		return
+	}
+	a.secrets = st
+}
+
 const proactiveSystemPrompt = `You are Tether running in autonomous proactive mode. The user is not present. No one will review your output before it reaches them as a push notification. That changes everything about how you operate.
 
 You are acting on behalf of the user. Your words will be read as if the user wrote or approved them. Your actions — if you take any — carry the user's name. Get it wrong and the cost lands on them, not you.

@@ -45,27 +45,24 @@ func (a *Agent) maybeUpdateSummary(conversationID int64) {
 		b.WriteString("\n")
 	}
 
-	msgs := []openrouter.Message{
-		{Role: "system", Content: openrouter.Text("You write concise conversation summaries.")},
-		{Role: "user", Content: openrouter.Text(b.String())},
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "You write concise conversation summaries."}}},
+		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: b.String()}}},
 	}
-	req := openrouter.ChatRequest{
-		Model:       a.cfg.OpenRouter.Model,
-		Messages:    msgs,
-		Temperature: 0.2,
-		MaxTokens:   350,
-		ToolChoice:  "none",
+	req := openrouter.ResponsesRequest{
+		Model:           a.cfg.OpenRouter.Model,
+		Input:           items,
+		Temperature:     0.2,
+		MaxOutputTokens: 350,
+		ToolChoice:      "none",
 	}
 
-	resp, err := a.chatCached(ctx, req)
+	resp, err := a.responsesCached(ctx, req)
 	if err != nil {
 		log.Debug("summary update failed", "error", err)
 		return
 	}
-	sum := ""
-	if resp.Choices[0].Message.Content != nil {
-		sum = strings.TrimSpace(*resp.Choices[0].Message.Content)
-	}
+	sum := strings.TrimSpace(extractResponsesText(resp))
 	if sum == "" {
 		return
 	}
