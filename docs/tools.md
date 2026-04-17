@@ -801,7 +801,7 @@ Load and apply a Claude Code–style skill by name.
 
 **When to use**
 
-Use this when a skill’s description matches the user’s request, or when the user explicitly invokes /<skill-name>. This tool loads the full SKILL.md content (with substitutions and shell injections) into the session so it remains in context.
+Use this when a skill’s description matches the user’s request, or when the user explicitly invokes $<skill-name>. This tool loads the full SKILL.md content (with substitutions and shell injections) into the session so it remains in context.
 
 ### Input schema
 

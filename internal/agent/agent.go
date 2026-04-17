@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"tether/internal/agent/toolset"
 	"tether/internal/cache"
@@ -125,55 +126,78 @@ You have access to skills: reusable playbooks stored as SKILL.md files with opti
 A compact skills list is provided in your context each turn.
 
 - When a skill matches the user’s request, load it by calling the tool named: skill.invoke
-- If the user types /skill-name ..., treat that as an explicit request to invoke that skill.
+- If the user types $skill-name ..., treat that as an explicit request to invoke that skill.
 - Skills may include shell injection placeholders (inline form or fenced blocks) that are pre-rendered by the host.
 
 ## Output style
 No preamble. No summary of what you just did. Be direct. Note non-obvious implications in one line. End with the next logical action when one exists.`
 
-func (a *Agent) chatCached(ctx context.Context, req openrouter.ChatRequest) (openrouter.ChatResponse, error) {
+func (a *Agent) responsesCached(ctx context.Context, req openrouter.ResponsesRequest) (openrouter.ResponsesResponse, error) {
 	payload, _ := json.Marshal(req)
 	key := cache.KeyFromBytes(payload)
 	if cached, ok, err := a.cache.Get(key); err == nil && ok {
-		var resp openrouter.ChatResponse
+		var resp openrouter.ResponsesResponse
 		if err := json.Unmarshal([]byte(cached), &resp); err == nil {
 			return resp, nil
 		}
 		// Cache corruption; ignore.
 	}
 
-	resp, err := a.llm.Chat(ctx, req)
+	resp, err := a.llm.Responses(ctx, req)
 	if err != nil {
-		return openrouter.ChatResponse{}, err
+		return openrouter.ResponsesResponse{}, err
 	}
 	b, _ := json.Marshal(resp)
 	_ = a.cache.Put(key, string(b))
 	return resp, nil
 }
 
+func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+func extractResponsesText(resp openrouter.ResponsesResponse) string {
+	var b strings.Builder
+	for _, it := range resp.Output {
+		if it.Type != "message" || it.Role != "assistant" {
+			continue
+		}
+		for _, p := range it.Content {
+			switch p.Type {
+			case "output_text", "input_text":
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
 func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
 		return "", errors.New("OPENROUTER_API_KEY not configured")
 	}
-	msgs := []openrouter.Message{
-		{Role: "system", Content: openrouter.Text(systemPrompt)},
-		{Role: "user", Content: openrouter.Text(prompt)},
+	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: systemPrompt}}},
+		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-	req := openrouter.ChatRequest{
-		Model:       a.cfg.OpenRouter.Model,
-		Messages:    msgs,
-		Temperature: 0.2,
-		MaxTokens:   700,
+	req := openrouter.ResponsesRequest{
+		Model:           a.cfg.OpenRouter.Model,
+		Input:           items,
+		Temperature:     0.2,
+		MaxOutputTokens: 700,
+		ToolChoice:      "none",
 	}
-	resp, err := a.chatCached(ctx, req)
+	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
 	}
-	text := ""
-	if resp.Choices[0].Message.Content != nil {
-		text = *resp.Choices[0].Message.Content
-	}
-	return strings.TrimSpace(text), nil
+	return strings.TrimSpace(extractResponsesText(resp)), nil
 }
 
 // RunPromptForUser is a convenience wrapper used by subsystems (e.g. subagents)
@@ -183,73 +207,85 @@ func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt strin
 	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
 		return "", errors.New("OPENROUTER_API_KEY not configured")
 	}
+	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
+	defer cancel()
+
 	p := a.personalityText(userID, personality.AgentChat)
-	msgs := []openrouter.Message{{Role: "system", Content: openrouter.Text(systemPrompt)}}
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: systemPrompt}}},
+	}
 	if strings.TrimSpace(p) != "" {
-		msgs = append(msgs, openrouter.Message{Role: "system", Content: openrouter.Text("Agent personality:\n" + p)})
+		items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "Agent personality:\n" + p}}})
 	}
-	msgs = append(msgs, openrouter.Message{Role: "user", Content: openrouter.Text(prompt)})
-	req := openrouter.ChatRequest{
-		Model:       a.cfg.OpenRouter.Model,
-		Messages:    msgs,
-		Temperature: 0.2,
-		MaxTokens:   700,
+	items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}})
+
+	req := openrouter.ResponsesRequest{
+		Model:           a.cfg.OpenRouter.Model,
+		Input:           items,
+		Temperature:     0.2,
+		MaxOutputTokens: 700,
+		ToolChoice:      "none",
 	}
-	resp, err := a.chatCached(ctx, req)
+	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
 	}
-	text := ""
-	if resp.Choices[0].Message.Content != nil {
-		text = *resp.Choices[0].Message.Content
-	}
-	return strings.TrimSpace(text), nil
+	return strings.TrimSpace(extractResponsesText(resp)), nil
 }
 
 func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, error) {
 	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
 		return "", errors.New("OPENROUTER_API_KEY not configured")
 	}
-	msgs := []openrouter.Message{
-		{Role: "system", Content: openrouter.Text(proactiveSystemPrompt)},
-		{Role: "user", Content: openrouter.Text(prompt)},
+	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: proactiveSystemPrompt}}},
+		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-	req := openrouter.ChatRequest{
-		Model:       a.cfg.OpenRouter.Model,
-		Messages:    msgs,
-		Temperature: 0.2,
-		MaxTokens:   700,
+	req := openrouter.ResponsesRequest{
+		Model:           a.cfg.OpenRouter.Model,
+		Input:           items,
+		Temperature:     0.2,
+		MaxOutputTokens: 700,
+		ToolChoice:      "none",
 	}
-	resp, err := a.chatCached(ctx, req)
+	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
 	}
-	text := ""
-	if resp.Choices[0].Message.Content != nil {
-		text = *resp.Choices[0].Message.Content
-	}
-	return strings.TrimSpace(text), nil
+	return strings.TrimSpace(extractResponsesText(resp)), nil
 }
 
 func (a *Agent) Reply(ctx context.Context, p ReplyParams) (Reply, error) {
+	return a.ReplyStream(ctx, p, nil)
+}
+
+// ReplyStream is like Reply, but optionally emits incremental streaming events.
+// The returned Reply is the final assistant text + the list of tool calls invoked.
+func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(StreamEvent)) (Reply, error) {
 	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
 		return Reply{}, errors.New("OPENROUTER_API_KEY not configured")
 	}
+	ctx2, cancel := withDefaultTimeout(ctx, 90*time.Second)
+	defer cancel()
 
 	history, err := store.ListRecentMessages(a.db, p.ConversationID, 25)
 	if err != nil {
 		return Reply{}, err
 	}
 
-	msgs, err := a.buildContextMessages(p.UserID, p.ConversationID, history)
+	items, err := a.buildContextInputItems(p.UserID, p.ConversationID, history)
 	if err != nil {
 		return Reply{}, err
 	}
 
-	text, toolCalls, err := a.replyWithTools(ctx, p.UserID, p.ConversationID, msgs)
+	text, toolCalls, err := a.replyWithToolsStream(ctx2, p.UserID, p.ConversationID, items, emit)
 	if err != nil {
 		return Reply{}, err
 	}
+
 	// Update rolling summary in the background (context optimization).
 	go a.maybeUpdateSummary(p.ConversationID)
 	return Reply{Text: text, ToolCalls: toolCalls}, nil

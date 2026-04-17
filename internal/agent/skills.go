@@ -19,7 +19,8 @@ func (a *Agent) InvokeSkill(ctx context.Context, userID, convID int64, skillName
 	}
 	skill, ok := mgr.Resolve(list, skillName)
 	if !ok {
-		return skills.Invocation{}, errors.New("skill not found: " + strings.TrimPrefix(skillName, "/"))
+		name := strings.TrimPrefix(strings.TrimPrefix(skillName, "/"), "$")
+		return skills.Invocation{}, errors.New("skill not found: " + name)
 	}
 
 	inv, err := mgr.Invoke(ctx, s.Dirs, s.Confirm, skill, skills.InvokeOptions{

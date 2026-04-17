@@ -30,4 +30,4 @@ Do **not** create user skills under `.claude/skills/` unless the user explicitly
 5) Ensure SKILL.md links to supporting files with relative markdown links.
 
 ## Output
-- Print created paths and a usage example like: `/<skill-name> ...`
+- Print created paths and a usage example like: `$<skill-name> ...`

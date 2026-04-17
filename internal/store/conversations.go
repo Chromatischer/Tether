@@ -2,7 +2,12 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
+	"strconv"
+	"strings"
 )
+
+const activeConversationSettingKey = "active_conversation_id"
 
 func GetOrCreateDefaultConversation(db *sql.DB, userID int64) (*Conversation, error) {
 	var c Conversation
@@ -20,6 +25,77 @@ func GetOrCreateDefaultConversation(db *sql.DB, userID int64) (*Conversation, er
 	}
 	id, _ := res.LastInsertId()
 	return &Conversation{ID: id, UserID: userID, Title: ""}, nil
+}
+
+func CreateConversation(db *sql.DB, userID int64, title string) (*Conversation, error) {
+	res, err := db.Exec(`INSERT INTO conversations(user_id, title) VALUES (?, ?)`, userID, title)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Conversation{ID: id, UserID: userID, Title: title}, nil
+}
+
+func GetConversation(db *sql.DB, userID, conversationID int64) (*Conversation, bool, error) {
+	var c Conversation
+	row := db.QueryRow(`SELECT id, user_id, COALESCE(title,'') FROM conversations WHERE id=? AND user_id=?`, conversationID, userID)
+	err := row.Scan(&c.ID, &c.UserID, &c.Title)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &c, true, nil
+}
+
+func GetOrCreateActiveConversation(db *sql.DB, userID int64) (*Conversation, error) {
+	if raw, ok, err := GetUserSetting(db, userID, activeConversationSettingKey); err == nil && ok {
+		if convID, parseErr := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); parseErr == nil && convID > 0 {
+			if conv, found, getErr := GetConversation(db, userID, convID); getErr != nil {
+				return nil, getErr
+			} else if found {
+				return conv, nil
+			}
+		}
+	} else if err != nil {
+		return nil, err
+	}
+
+	conv, err := GetOrCreateDefaultConversation(db, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := SetActiveConversation(db, userID, conv.ID); err != nil {
+		return nil, err
+	}
+	return conv, nil
+}
+
+func SetActiveConversation(db *sql.DB, userID, conversationID int64) error {
+	if _, ok, err := GetConversation(db, userID, conversationID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("conversation not found")
+	}
+	return SetUserSetting(db, userID, activeConversationSettingKey, strconv.FormatInt(conversationID, 10))
+}
+
+func EncodeResumeCode(conversationID int64) string {
+	return "r" + strings.ToLower(strconv.FormatInt(conversationID, 36))
+}
+
+func DecodeResumeCode(code string) (int64, error) {
+	code = strings.TrimSpace(strings.ToLower(code))
+	if code == "" {
+		return 0, fmt.Errorf("resume code required")
+	}
+	code = strings.TrimPrefix(code, "r")
+	convID, err := strconv.ParseInt(code, 36, 64)
+	if err != nil || convID <= 0 {
+		return 0, fmt.Errorf("invalid resume code")
+	}
+	return convID, nil
 }
 
 func ListRecentMessages(db *sql.DB, conversationID int64, limit int) ([]Message, error) {

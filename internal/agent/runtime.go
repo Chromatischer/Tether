@@ -139,3 +139,9 @@ func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {
 	}
 	return s
 }
+
+func (a *Agent) ResetConversationSession(convID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.sessions, convID)
+}

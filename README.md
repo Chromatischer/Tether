@@ -87,7 +87,7 @@ Implemented:
 - Discord DM gateway + link commands: `/discord status|link|unlink`
 - Memory commands: `/memory list|add|update|delete`
 - Task shortcuts: `/task list|add|edit|done`
-- Slash commands: `/help`, `/tools …`, `/subagent …`, `/secret …`, `/signal …`, `/discord …`, `/memory …`, `/task …`, `/admin …`, `/confirm …`
+- Slash commands: `/help`, `/clear`, `/resume <code>`, `/tools …`, `/subagent …`, `/secret …`, `/signal …`, `/discord …`, `/memory …`, `/task …`, `/admin …`, `/confirm …`
 
 Next:
 - Hardening/polish: more sandbox restrictions + tests

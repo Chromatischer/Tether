@@ -48,7 +48,7 @@ allowed-tools: Bash Read
 
 ## Invoking skills
 
-- User: type `/<skill-name> [args]` in chat.
+- User: type `$<skill-name> [args]` in chat.
 - Model: the assistant can call the tool `skill.invoke`.
 
 Invoked skill bodies are kept in memory and re-attached to the prompt each turn.

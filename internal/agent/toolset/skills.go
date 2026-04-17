@@ -24,7 +24,7 @@ func (t SkillInvoke) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "skill.invoke",
 		Summary: "Load and apply a Claude Code–style skill by name.",
-		WhenToUse: "Use this when a skill’s description matches the user’s request, or when the user explicitly invokes /<skill-name>. " +
+		WhenToUse: "Use this when a skill’s description matches the user’s request, or when the user explicitly invokes $<skill-name>. " +
 			"This tool loads the full SKILL.md content (with substitutions and shell injections) into the session so it remains in context.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -71,7 +71,7 @@ func (t SkillInvoke) Execute(ctx context.Context, s *Session, rawArgs json.RawMe
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(strings.TrimPrefix(args.Name, "/"))
+	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(args.Name, "/"), "$"))
 	if name == "" {
 		return nil, errors.New("name required")
 	}

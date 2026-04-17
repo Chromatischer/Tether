@@ -5,7 +5,7 @@
 ### Added
 - **Claude Code–style skills**
   - Skills discovered from per-user `data/users/<userID>/skills/<name>/SKILL.md` plus project `.claude/skills/**/SKILL.md` (compat).
-  - User can invoke skills directly via `/<skill-name> ...` (unknown slash commands fall back to skill invocation).
+  - User can invoke skills directly via `$<skill-name> ...`.
   - Model can invoke skills via the new `skill.invoke` tool (with shell injections executed inside the existing no-network sandbox).
   - Bundled `skill-creator` skill.
 - **Per-user agent personality files** under `config/agents/<agent_key>/PERSONALITY.md` (auto-created with defaults; used by chat + proactive agents).

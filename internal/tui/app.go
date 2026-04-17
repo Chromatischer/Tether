@@ -80,6 +80,14 @@ func NewAppModel(ctx *SessionContext) tea.Model {
 	return m
 }
 
+func (m appModel) activateConversation(conv *store.Conversation) appModel {
+	m.conv = conv
+	m.view = viewChat
+	m.chat = newChatModel().withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
+	m.chat = m.chat.withSize(m.w, m.h-1)
+	return m
+}
+
 func (m appModel) Init() tea.Cmd {
 	return tea.Batch(
 		tea.RequestBackgroundColor,
@@ -145,7 +153,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
 		}
-		conv, err := store.GetOrCreateDefaultConversation(m.ctx.DB, u.ID)
+		conv, err := store.GetOrCreateActiveConversation(m.ctx.DB, u.ID)
 		if err != nil {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
@@ -190,10 +198,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.user = u
-		m.conv = conv
-		m.view = viewChat
-		m.chat = m.chat.withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
-		m.chat = m.chat.withSize(m.w, m.h-1)
+		m = m.activateConversation(conv)
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
 		return m, tea.Batch(
@@ -203,10 +208,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loginSuccessMsg:
 		m.user = msg.User
-		m.conv = msg.Conv
-		m.view = viewChat
-		m.chat = m.chat.withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
-		m.chat = m.chat.withSize(m.w, m.h-1)
+		m = m.activateConversation(msg.Conv)
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
 		return m, tea.Batch(
@@ -217,6 +219,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatSendMsg:
 		if strings.HasPrefix(msg.Text, "/") {
 			m2, handled, cmd := m.handleCommand(msg.Text)
+			if handled {
+				return m2, cmd
+			}
+		}
+		if strings.HasPrefix(msg.Text, "$") {
+			m2, handled, cmd := m.handleSkillCommand(msg.Text)
 			if handled {
 				return m2, cmd
 			}
@@ -417,6 +425,75 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 	}
 
 	switch fields[0] {
+	case "/clear":
+		if m.conv == nil || m.user == nil {
+			return m, true, nil
+		}
+		oldConv := m.conv
+		resumeCode := store.EncodeResumeCode(oldConv.ID)
+		_ = store.AddMessage(m.ctx.DB, oldConv.ID, "user", text)
+		m.chat = m.chat.appendLocal("You", text)
+
+		newConv, err := store.CreateConversation(m.ctx.DB, m.user.ID, "")
+		if err != nil {
+			resp := "failed to clear chat: " + err.Error()
+			_ = store.AddMessage(m.ctx.DB, oldConv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		if err := store.SetActiveConversation(m.ctx.DB, m.user.ID, newConv.ID); err != nil {
+			resp := "failed to switch chat: " + err.Error()
+			_ = store.AddMessage(m.ctx.DB, oldConv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		m.ag.ResetConversationSession(newConv.ID)
+		m = m.activateConversation(newConv)
+		resp := "Started a fresh conversation with a clean agent context. Resume the previous chat with `/resume " + resumeCode + "`."
+		_ = store.AddMessage(m.ctx.DB, newConv.ID, "assistant", resp)
+		return m, true, m.chat.loadCmd()
+
+	case "/resume":
+		if m.conv == nil || m.user == nil {
+			return m, true, nil
+		}
+		if len(fields) != 2 {
+			resp := "usage: /resume <code>"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+		m.chat = m.chat.appendLocal("You", text)
+		convID, err := store.DecodeResumeCode(fields[1])
+		if err != nil {
+			resp := err.Error()
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		conv, ok, err := store.GetConversation(m.ctx.DB, m.user.ID, convID)
+		if err != nil {
+			resp := "failed to resume chat: " + err.Error()
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		if !ok {
+			resp := "conversation not found for that resume code"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		if err := store.SetActiveConversation(m.ctx.DB, m.user.ID, conv.ID); err != nil {
+			resp := "failed to switch chat: " + err.Error()
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		m = m.activateConversation(conv)
+		return m, true, m.chat.loadCmd()
+
 	case "/confirm":
 		if m.conv == nil || m.user == nil {
 			return m, true, nil
@@ -674,6 +751,8 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 			m.chat = m.chat.appendLocal("You", text)
 			resp := "Commands:\n" +
+				"  /clear\n" +
+				"  /resume <code>\n" +
 				"  /help\n" +
 				"  /logout\n" +
 				"  /tools list\n" +
@@ -1448,17 +1527,37 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		return m, true, nil
 	}
 
-	// Fallback: unknown slash command -> treat as a Claude Code–style skill invocation.
-	// Skills live in the per-user skills/ directory (and optionally project .claude/skills/).
-	if m.conv != nil && m.user != nil && strings.HasPrefix(fields[0], "/") {
-		skillName := strings.TrimPrefix(fields[0], "/")
-		args := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+	if m.conv != nil && strings.HasPrefix(fields[0], "/") {
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 		m.chat = m.chat.appendLocal("You", text)
-		return m, true, m.invokeSkillAndAskAgentCmd(skillName, args)
+		resp := "unknown command: " + fields[0] + "\nUse /help for commands or $" + strings.TrimPrefix(fields[0], "/") + " to invoke a skill."
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
 	}
 
 	return m, false, nil
+}
+
+func (m appModel) handleSkillCommand(text string) (appModel, bool, tea.Cmd) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return m, true, nil
+	}
+	if m.conv == nil || m.user == nil {
+		return m, true, nil
+	}
+	skillName := strings.TrimPrefix(fields[0], "$")
+	if strings.TrimSpace(skillName) == "" {
+		resp := "usage: $<skill-name> [args]"
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
+	}
+	args := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+	_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+	m.chat = m.chat.appendLocal("You", text)
+	return m, true, m.invokeSkillAndAskAgentCmd(skillName, args)
 }
 
 func (m appModel) askAgentCmd(text string) tea.Cmd {
