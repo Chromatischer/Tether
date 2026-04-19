@@ -31,3 +31,4 @@ tether.exe
 
 # pi-lens local state
 .pi-lens/
+.superpowers/
