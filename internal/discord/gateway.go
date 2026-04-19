@@ -21,6 +21,7 @@ import (
 	"tether/internal/redact"
 	"tether/internal/secrets"
 	"tether/internal/store"
+	"tether/internal/subagents"
 	"tether/internal/tools"
 )
 
@@ -769,6 +770,17 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 			return true, "usage: /confirm <token>", conv
 		}
 		recordUser(text)
+		reply, _, resumed, err := g.ag.ResumeConfirmedStream(ctx, userID, fields[1], nil)
+		if err != nil {
+			return true, "agent error: " + err.Error(), conv
+		}
+		if resumed {
+			out, findings := redact.ScanAndRedact(reply.Text)
+			if len(findings) > 0 {
+				return true, "(Assistant response was redacted due to secret-like content.)\n" + out, conv
+			}
+			return true, out, conv
+		}
 		if g.ag.ConfirmToken(userID, fields[1]) {
 			return true, "confirmed", conv
 		}
@@ -1078,14 +1090,14 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 				return true, "usage: /subagent spawn <prompt>", conv
 			}
 			recordUser(text)
-			run := g.ag.Subagents().Spawn(userID, prompt)
+			run := g.ag.Subagents().Spawn(userID, subagents.RunRequest{Prompt: prompt})
 			return true, "spawned subagent: " + run.ID + " (status: " + string(run.Status) + ")", conv
 		case "status":
 			if len(fields) < 3 {
 				return true, "usage: /subagent status <id>", conv
 			}
 			recordUser(text)
-			run, ok := g.ag.Subagents().Get(fields[2])
+			run, ok := g.ag.Subagents().GetForUser(userID, fields[2])
 			if !ok {
 				return true, "subagent not found: " + fields[2], conv
 			}

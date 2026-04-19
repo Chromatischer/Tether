@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,7 +27,7 @@ import (
 // - done: final assistant message
 // - error: fatal error
 //
-// Note: For safety, tool results are not streamed by default; only tool names and (truncated) args.
+// Tool events may include truncated result previews for the TUI.
 // The final assistant message is still returned via Reply/ReplyStream.
 type StreamEvent struct {
 	Type string
@@ -101,7 +102,6 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		} else if len(argsUI) > 80 {
 			argsUI = argsUI[:80] + "…"
 		}
-		infos = append(infos, ToolCallInfo{Name: name, Args: argsUI})
 
 		// Meta tools accept LLM-visible names in their {name: ...} arguments.
 		if nm != nil && (name == "tool.enable" || name == "tool.describe") {
@@ -156,6 +156,7 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		}
 
 		b, _ := json.Marshal(result)
+		infos = append(infos, ToolCallInfo{Name: name, Args: argsUI, Result: formatToolResultPreview(b)})
 
 		// Audit tool call (best-effort). Avoid storing raw args/results.
 		if s.DB != nil {
@@ -193,25 +194,53 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 	return outputs, infos, nil
 }
 
+func formatToolResultPreview(raw []byte) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	var pretty bytes.Buffer
+	text := string(raw)
+	if err := json.Indent(&pretty, raw, "", "  "); err == nil {
+		text = pretty.String()
+	}
+	if len(text) > 4000 {
+		text = text[:4000] + "…"
+	}
+	return text
+}
+
 func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, userID, convID int64, baseItems []openrouter.ResponseItem, priorToolCalls []ToolCallInfo, emit func(StreamEvent)) (string, string, []ToolCallInfo, error) {
 	items := append([]openrouter.ResponseItem{}, baseItems...)
-	const maxIterations = 8
 	toolCalls := append([]ToolCallInfo{}, priorToolCalls...)
 	var streamedReasoning strings.Builder
+	totalToolCalls := 0
+	nextJustifyAt := toolCallJustificationInterval
+	justificationPending := false
 
 	nm := newToolNameMap(nil)
 	if s != nil {
 		nm = newToolNameMap(s.Registry)
 	}
 
-	for i := 0; i < maxIterations; i++ {
+	for i := 0; ; i++ {
+		tools := a.activeTools(s, nm)
+		toolChoice := any("auto")
+		maxOutputTokens := 700
+		if justificationPending {
+			tools = nil
+			toolChoice = "none"
+			maxOutputTokens = 220
+		} else if len(tools) == 0 {
+			toolChoice = "none"
+		}
 		req := openrouter.ResponsesRequest{
 			Model:           a.cfg.OpenRouter.Model,
 			Input:           items,
 			Temperature:     0.2,
-			MaxOutputTokens: 700,
-			Tools:           a.activeTools(s, nm),
-			ToolChoice:      "auto",
+			MaxOutputTokens: maxOutputTokens,
+			Tools:           tools,
+			ToolChoice:      toolChoice,
 			Stream:          true,
 			Reasoning:       &openrouter.ResponsesReasoning{Effort: "medium"},
 			Provider:        a.openRouterProviderPrefs(),
@@ -336,25 +365,15 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			if reasoning == "" {
 				reasoning = extractResponsesReasoning(final)
 			}
+			if justificationPending {
+				items = append(items, replayableResponseItems(final.Output)...)
+				justificationPending = false
+				continue
+			}
 			if emit != nil {
 				emit(StreamEvent{Type: "done", Text: text})
 			}
 			return text, reasoning, toolCalls, nil
-		}
-
-		// Append tool call info for display.
-		for _, c := range calls {
-			args := strings.TrimSpace(c.Arguments)
-			if args == "{}" {
-				args = ""
-			} else if len(args) > 80 {
-				args = args[:80] + "…"
-			}
-			name := c.Name
-			if nm != nil {
-				name = nm.ToInternal(name)
-			}
-			toolCalls = append(toolCalls, ToolCallInfo{Name: name, Args: args})
 		}
 
 		// Add only replay-safe model output items to history.
@@ -362,6 +381,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 
 		// Execute tools and add function_call_output items.
 		toolOutputs, infos, pause := a.executeFunctionCalls(ctx, s, calls, nm)
+		toolCalls = append(toolCalls, infos...)
 		if emit != nil {
 			completedInfos := infos
 			if pause != nil && len(completedInfos) > len(toolOutputs) {
@@ -390,9 +410,13 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			return pause.Text, strings.TrimSpace(streamedReasoning.String()), toolCalls, nil
 		}
 		items = append(items, toolOutputs...)
+		totalToolCalls += len(calls)
+		if totalToolCalls >= nextJustifyAt {
+			items = append(items, justificationRequestItem(totalToolCalls))
+			nextJustifyAt = nextJustificationThreshold(totalToolCalls)
+			justificationPending = true
+		}
 	}
-
-	return "", strings.TrimSpace(streamedReasoning.String()), toolCalls, fmt.Errorf("agent loop: max iterations reached")
 }
 
 func confirmationScopeFromError(msg string) string {
@@ -413,6 +437,30 @@ func confirmationReason(name string, args string) string {
 		return "Approve tool use: " + name + "."
 	}
 	return "Approve tool use: " + name + " " + args
+}
+
+const toolCallJustificationInterval = 25
+
+func nextJustificationThreshold(totalToolCalls int) int {
+	if totalToolCalls < 0 {
+		totalToolCalls = 0
+	}
+	return ((totalToolCalls / toolCallJustificationInterval) + 1) * toolCallJustificationInterval
+}
+
+func justificationRequestItem(totalToolCalls int) openrouter.ResponseItem {
+	text := fmt.Sprintf(
+		"You have used %d tools in this run. Before doing more tool work, justify it briefly. "+
+			"Explain what you have learned so far, what remains unresolved, why additional tool use is still necessary, and the concrete stopping condition. "+
+			"If you are looping or not making meaningful progress, stop now and return to the user instead of continuing. "+
+			"Do not call any tools in this response.",
+		totalToolCalls,
+	)
+	return openrouter.ResponseItem{
+		Type:    "message",
+		Role:    "system",
+		Content: []openrouter.ContentPart{{Type: "input_text", Text: text}},
+	}
 }
 
 func emitReasoningSummaryDelta(dst *strings.Builder, summary string, emit func(StreamEvent)) {

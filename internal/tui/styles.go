@@ -59,16 +59,27 @@ var (
 
 	styleChatComposer = lipgloss.NewStyle().
 				Background(colorPanelAlt).
-				Padding(0, 1, 1, 1)
-
-	styleChatInputBox = lipgloss.NewStyle().
-				Background(colorPanel).
-				Border(lipgloss.RoundedBorder()).
+				BorderTop(true).
+				BorderStyle(lipgloss.NormalBorder()).
 				BorderForeground(colorBorder).
 				Padding(0, 1)
 
+	styleChatInputBox = lipgloss.NewStyle().
+				Background(colorPanelAlt).
+				Foreground(lipgloss.Color("255"))
+
 	styleChatHint = lipgloss.NewStyle().
 			Foreground(colorDim)
+
+	styleAutocompleteSuggestion = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("252")).
+					Padding(0, 0, 0, 2)
+
+	styleAutocompleteSuggestionActive = lipgloss.NewStyle().
+						Foreground(lipgloss.Color("255")).
+						Bold(true).
+						Underline(true).
+						Padding(0, 0, 0, 2)
 
 	styleSenderUser   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)

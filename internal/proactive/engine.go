@@ -426,7 +426,7 @@ func (e *Engine) spawnIfNotPending(ctx context.Context, userID int64, kind strin
 	_ = store.AddAuditEvent(e.db, &userID, "proactive_trigger", string(payload))
 
 	if e.subs != nil {
-		run := e.subs.Spawn(userID, prompt)
+		run := e.subs.Spawn(userID, subagents.RunRequest{Prompt: prompt})
 		go func() {
 			defer func() {
 				e.mu.Lock()
@@ -488,7 +488,7 @@ func (e *Engine) dailyBriefPrompt(userID int64) string {
 
 	prompt := "Write a short daily brief. Include:\n- top priorities\n- open tasks\n- suggested next actions\nKeep it under 120 words.\n\n"
 	if sum != "" {
-		prompt += "Conversation summary:\n" + sum + "\n\n"
+		prompt += formatSummaryForPrompt(sum)
 	}
 	if tb.Len() > 0 {
 		prompt += "Tasks:\n" + tb.String() + "\n"
@@ -517,7 +517,7 @@ func (e *Engine) openLoopsPrompt(userID int64) string {
 		"Write a short message (<= 90 words) that helps the user close open loops.\n" +
 		"Ask at most 2 clarifying questions and suggest at most 3 next actions.\n\n"
 	if sum != "" {
-		prompt += "Conversation summary:\n" + sum + "\n\n"
+		prompt += formatSummaryForPrompt(sum)
 	}
 	if tb.Len() > 0 {
 		prompt += "Open tasks:\n" + tb.String() + "\n"

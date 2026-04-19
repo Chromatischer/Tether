@@ -291,7 +291,7 @@ func applyShellInjections(ctx context.Context, d userspace.Dirs, confirmer Confi
 	if needsConfirm {
 		scope := skillShellConfirmScope(cmds)
 		if confirmer == nil || !confirmer.Consume(userID, strings.TrimSpace(confirmToken), scope) {
-			return "", fmt.Errorf("skill shell injection requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
+			return "", fmt.Errorf("skill shell injection requires confirmation; scope=%q", scope)
 		}
 	}
 

@@ -20,8 +20,8 @@ func (t ConfirmRequest) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "confirm.request",
 		Summary: "Request user confirmation for a destructive/irreversible action.",
-		WhenToUse: "Use this when another tool reports that it requires confirmation (it will give you an exact scope string). " +
-			"Ask the user to run /confirm <token>, then retry the original tool call with confirm_token.",
+		WhenToUse: "Use this only for workflows that explicitly need a standalone confirmation token. " +
+			"For built-in tool confirmations, the host usually pauses the action automatically, asks the user to run /confirm <token>, and resumes the original tool call after confirmation. Do not retry the tool manually.",
 		Safety: "This tool does not perform the action; it only creates a single-use confirmation token scoped to one specific action.",
 		InputSchema: map[string]any{
 			"type":                 "object",

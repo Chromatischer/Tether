@@ -57,4 +57,4 @@ Invoked skill bodies are kept in memory and re-attached to the prompt each turn.
 
 Skills may contain shell injection placeholders (inline or fenced forms). Tether executes these in the existing **no-network sandbox** before sending the skill content to the model.
 
-If an injection command looks destructive (rm/mv/chmod/etc.), Tether requires a confirmation token via `confirm.request`.
+If an injection command looks destructive (rm/mv/chmod/etc.), Tether may pause execution and require the user to confirm with `/confirm <token>` before resuming automatically.

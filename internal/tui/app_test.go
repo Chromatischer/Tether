@@ -2,6 +2,7 @@ package tui
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -44,7 +45,7 @@ func TestHandleAgentReplyStoresToOriginConversationAndDoesNotTouchActiveChat(t *
 		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
 		user:         u,
 		conv:         newConv,
-		chat:         newChatModel().withConversation(d, u.ID, newConv.ID),
+		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, newConv.ID),
 		activeRuns:   1,
 		releasedRuns: map[int]bool{41: false},
 	}
@@ -96,7 +97,7 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
 		user:         u,
 		conv:         conv,
-		chat:         newChatModel().withConversation(d, u.ID, conv.ID),
+		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
 		activeRuns:   1,
 		releasedRuns: map[int]bool{9: false},
 	}
@@ -108,7 +109,7 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 		RequestID:      9,
 		Text:           "done",
 		ToolCalls: []toolCallEntry{
-			{Name: "search", Args: "{\"q\":\"tether\"}"},
+			{Name: "search", Args: "{\"q\":\"tether\"}", Result: "{\n  \"results\": []\n}"},
 		},
 	})
 
@@ -117,6 +118,9 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 	}
 	if updated.chat.messages[0].role != "tool_call" {
 		t.Fatalf("expected first row to remain the streamed tool call, got %+v", updated.chat.messages[0])
+	}
+	if !strings.Contains(updated.chat.messages[0].content, "\"results\": []") {
+		t.Fatalf("expected streamed tool row to absorb result, got %+v", updated.chat.messages[0])
 	}
 	if updated.chat.messages[1].role != "assistant" || updated.chat.messages[1].content != "done" {
 		t.Fatalf("unexpected assistant message: %+v", updated.chat.messages[1])
@@ -128,6 +132,9 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("expected persisted tool_call + assistant, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Content, "\"results\": []") {
+		t.Fatalf("expected persisted tool_call content to include result, got %q", msgs[0].Content)
 	}
 }
 
@@ -147,7 +154,7 @@ func TestMaybeDispatchWaitlistStartsStreamingAssistantImmediately(t *testing.T) 
 		ag:            agent.New(&config.Config{}, d),
 		user:          u,
 		conv:          conv,
-		chat:          newChatModel().withConversation(d, u.ID, conv.ID),
+		chat:          newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
 		nextRequestID: 1,
 		releasedRuns:  map[int]bool{},
 		waitlist:      []string{"test prompt"},
@@ -168,5 +175,42 @@ func TestMaybeDispatchWaitlistStartsStreamingAssistantImmediately(t *testing.T) 
 	}
 	if m.chat.messages[0].content != "..." {
 		t.Fatalf("expected placeholder content, got %q", m.chat.messages[0].content)
+	}
+}
+
+func TestHandleCommandClearShowsFreshConversationMessageAsSystemNotice(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "dana", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		ag:   agent.New(&config.Config{}, d),
+		user: u,
+		conv: conv,
+		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
+	}
+
+	updated, handled, _ := m.handleCommand("/clear")
+	if !handled {
+		t.Fatal("expected /clear to be handled")
+	}
+	if updated.conv == nil || updated.conv.ID == conv.ID {
+		t.Fatal("expected /clear to activate a new conversation")
+	}
+	if len(updated.chat.messages) != 1 {
+		t.Fatalf("expected one system notice in fresh chat, got %d messages", len(updated.chat.messages))
+	}
+	if updated.chat.messages[0].role != "system" {
+		t.Fatalf("expected system notice, got %+v", updated.chat.messages[0])
+	}
+	if !strings.Contains(updated.chat.messages[0].content, "Started a fresh conversation with a clean agent context.") {
+		t.Fatalf("unexpected notice content: %q", updated.chat.messages[0].content)
 	}
 }

@@ -127,7 +127,7 @@ Example result:
 }
 ```
 
-Notes: For destructive commands like rm, first call confirm.request using the scope shown in the error message.
+Notes: For destructive commands like rm, the host may pause the action, ask the user to run `/confirm <token>`, and then resume automatically after confirmation.
 
 
 ## `confirm.request`
@@ -136,7 +136,7 @@ Request user confirmation for a destructive/irreversible action.
 
 **When to use**
 
-Use this when another tool reports that it requires confirmation (it will give you an exact scope string). Ask the user to run /confirm <token>, then retry the original tool call with confirm_token.
+Use this only for workflows that explicitly need a standalone confirmation token. For built-in tool confirmations, the host usually pauses the action automatically, asks the user to run `/confirm <token>`, and then resumes the original tool call. Do not retry the tool manually.
 
 **Safety / confirmation**
 
@@ -1627,7 +1627,7 @@ Write a file in the user sandbox (relative path).
 
 **When to use**
 
-Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, you must first obtain a confirmation token via confirm.request (the error message will tell you the exact scope) — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
+Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, the host may pause and require user confirmation before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
 
 **Safety / confirmation**
 

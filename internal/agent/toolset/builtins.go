@@ -69,7 +69,17 @@ func (t ToolSearch) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	}
 	var args toolSearchArgs
 	_ = json.Unmarshal(rawArgs, &args)
-	return s.Registry.Search(args.Query), nil
+	results := s.Registry.Search(args.Query)
+	if s.Allowed == nil {
+		return results, nil
+	}
+	filtered := make([]tools.ToolInfo, 0, len(results))
+	for _, info := range results {
+		if s.IsAllowed(info.Name) {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered, nil
 }
 
 type ToolEnable struct{}
@@ -188,6 +198,9 @@ func (t ToolDescribe) Execute(ctx context.Context, s *Session, rawArgs json.RawM
 	name := strings.TrimSpace(args.Name)
 	if name == "" {
 		return nil, fmt.Errorf("name required")
+	}
+	if !s.IsAllowed(name) {
+		return nil, fmt.Errorf("tool not allowed in this session: %s", name)
 	}
 	spec, ok := s.Registry.Get(name)
 	if !ok {

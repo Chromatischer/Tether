@@ -28,10 +28,21 @@ type Tool interface {
 	Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) (any, error)
 }
 
+type SubagentSkill struct {
+	Name      string
+	Arguments string
+}
+
+type SubagentSpawnRequest struct {
+	Prompt       string
+	AllowedTools []string
+	Skill        *SubagentSkill
+}
+
 // Session represents a per-user agent session (active tools, per-user config, etc.).
 type SubagentStore interface {
-	Spawn(userID int64, prompt string) (id string)
-	Status(id string) (status any, ok bool)
+	Spawn(userID int64, req SubagentSpawnRequest) (id string)
+	Status(userID int64, id string) (status any, ok bool)
 }
 
 type Confirmer interface {
@@ -77,6 +88,9 @@ type Session struct {
 	LLM       LLM
 
 	Active map[string]bool
+	// Allowed constrains the total tool universe for this session.
+	// Nil means any registered tool may be enabled/used.
+	Allowed map[string]bool
 
 	// SkillSessionID is used for ${CLAUDE_SESSION_ID} substitutions.
 	SkillSessionID string
@@ -124,6 +138,16 @@ func NewSession(reg *tools.Registry) *Session {
 
 func (s *Session) IsActive(name string) bool { return s.Active[name] }
 
+func (s *Session) IsAllowed(name string) bool {
+	if s == nil {
+		return false
+	}
+	if s.Allowed == nil {
+		return true
+	}
+	return s.Allowed[name]
+}
+
 func (s *Session) Enable(name string) error {
 	// Only allow enabling known tools.
 	found := false
@@ -135,6 +159,9 @@ func (s *Session) Enable(name string) error {
 	}
 	if !found {
 		return fmt.Errorf("unknown tool: %s", name)
+	}
+	if !s.IsAllowed(name) {
+		return fmt.Errorf("tool not allowed in this session: %s", name)
 	}
 	s.Active[name] = true
 	return nil

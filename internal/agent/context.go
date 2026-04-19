@@ -55,9 +55,8 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.S
 
 	// Conversation summary (if available)
 	if sum, _, ok, err := store.GetConversationSummary(a.db, convID); err == nil && ok {
-		sum = strings.TrimSpace(sum)
-		if sum != "" {
-			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: "Conversation summary:\n" + sum}}})
+		if summaryRef := formatConversationSummaryReference(sum); summaryRef != "" {
+			items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: summaryRef}}})
 		}
 	}
 
@@ -103,14 +102,16 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.S
 
 	// Skills: show the model what skills exist, and re-attach any invoked skill bodies.
 	if sess != nil {
-		mgr := skills.NewManager()
-		if list, err := mgr.List(sess.Dirs); err == nil {
-			idx := strings.TrimSpace(mgr.BuildIndexMessage(list))
-			if idx != "" {
-				if nm != nil {
-					idx = nm.RewriteTextToLLM(idx)
+		if !sess.IsSubagent {
+			mgr := skills.NewManager()
+			if list, err := mgr.List(sess.Dirs); err == nil {
+				idx := strings.TrimSpace(mgr.BuildIndexMessage(list))
+				if idx != "" {
+					if nm != nil {
+						idx = nm.RewriteTextToLLM(idx)
+					}
+					items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: idx}}})
 				}
-				items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: idx}}})
 			}
 		}
 

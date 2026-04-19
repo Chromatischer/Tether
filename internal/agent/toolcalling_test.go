@@ -156,6 +156,47 @@ func TestEmitReasoningSummaryDelta_AppendsOnlyNewSuffix(t *testing.T) {
 	}
 }
 
+func TestNextJustificationThreshold(t *testing.T) {
+	cases := []struct {
+		total int
+		want  int
+	}{
+		{total: -1, want: 25},
+		{total: 0, want: 25},
+		{total: 1, want: 25},
+		{total: 24, want: 25},
+		{total: 25, want: 50},
+		{total: 26, want: 50},
+		{total: 50, want: 75},
+	}
+
+	for _, tc := range cases {
+		if got := nextJustificationThreshold(tc.total); got != tc.want {
+			t.Fatalf("nextJustificationThreshold(%d) = %d, want %d", tc.total, got, tc.want)
+		}
+	}
+}
+
+func TestJustificationRequestItem(t *testing.T) {
+	item := justificationRequestItem(25)
+	if item.Type != "message" || item.Role != "system" {
+		t.Fatalf("unexpected item envelope: %+v", item)
+	}
+	if len(item.Content) != 1 {
+		t.Fatalf("expected single content part, got %+v", item.Content)
+	}
+	text := item.Content[0].Text
+	if !strings.Contains(text, "25 tools") {
+		t.Fatalf("expected tool count in prompt, got %q", text)
+	}
+	if !strings.Contains(text, "stop now and return to the user") {
+		t.Fatalf("expected anti-loop instruction, got %q", text)
+	}
+	if !strings.Contains(text, "Do not call any tools in this response.") {
+		t.Fatalf("expected no-tools instruction, got %q", text)
+	}
+}
+
 type testErr struct{ s string }
 
 func (e *testErr) Error() string { return e.s }

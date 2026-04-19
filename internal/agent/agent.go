@@ -31,8 +31,9 @@ type ReplyParams struct {
 
 // ToolCallInfo records one tool invocation for display in the chat UI.
 type ToolCallInfo struct {
-	Name string
-	Args string // truncated JSON args, may be empty
+	Name   string
+	Args   string // truncated JSON args, may be empty
+	Result string // truncated result preview, may be empty
 }
 
 type Reply struct {
@@ -110,6 +111,8 @@ Tool availability (important):
 - More tools exist. If you need a capability you don’t see, use tool.search with keywords.
 - To use a tool you discovered, call tool.enable with its exact name. Then call the tool.
 - tool.describe works even if the tool is not enabled.
+- If you find yourself looping, repeating the same checks, or not making meaningful progress, stop and report that instead of continuing.
+- After every 25 tool calls, the system will require a justification turn before any more tool use. In that response, explain what you learned, why continued tool use is necessary, and what concrete condition will make you stop. If you cannot justify it clearly, stop.
 
 Filesystem layout (important):
 - The sandbox root contains: workspace/ (project), config/ (agent settings), skills/ (playbooks), cache/.
@@ -133,6 +136,8 @@ Before responding to any request, use your tools to retrieve what you need. Neve
 - Do not guess tool argument names or shapes.
 - If you’re unsure, call tool.describe for the tool and follow its input schema exactly.
 - Do not invent extra fields not present in the schema (they will be ignored or cause errors).
+- If you notice you are looping, retrying without learning anything new, or making no meaningful progress, stop immediately and return to the user with a concise explanation of what is blocking you.
+- After every 25 tool calls, the system will pause tool use for one turn and require you to justify continuing. Use that response to explain what you have learned, what remains unresolved, why more tool use is still necessary, and what concrete condition will make you stop.
 
 ## Tool availability (important)
 - The tool list you see is only the currently enabled subset (kept small to save context).
@@ -140,6 +145,7 @@ Before responding to any request, use your tools to retrieve what you need. Neve
 - To use a tool you discovered, call tool.enable with its exact name. Then call the tool.
 - tool.describe works even if the tool is not enabled.
 - Before saying “I can’t” due to missing tools, try tool.search 1–2 times.
+- Do not keep using tools just to keep going. Use tools only when they are advancing the task.
 
 ## Filesystem layout (important)
 - The sandbox root contains: workspace/ (project), config/ (agent settings), skills/ (playbooks), cache/.

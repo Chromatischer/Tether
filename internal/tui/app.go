@@ -124,7 +124,9 @@ func NewAppModel(ctx *SessionContext) tea.Model {
 func (m appModel) activateConversation(conv *store.Conversation) appModel {
 	m.conv = conv
 	m.view = viewChat
-	m.chat = newChatModel().withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
+	m.chat = newChatModel().
+		withComposerContext(m.ctx.Config.Paths.DataDir, m.user != nil && m.user.Role == "admin").
+		withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
 	m.chat = m.chat.withSize(m.w, m.h-1)
 	return m
 }
@@ -317,7 +319,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case agentStreamToolMsg:
 			if m.conv != nil && inner.ConversationID == m.conv.ID {
-				m.chat = m.chat.appendStreamingToolCall(inner.RequestID, inner.Tool.Name, inner.Tool.Args)
+				m.chat = m.chat.upsertStreamingToolCall(inner.RequestID, inner.Tool)
 			}
 		case agentReleaseMsg:
 			cmd = m.releaseWaitlistFor(inner.RequestID)
@@ -513,6 +515,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		m = m.activateConversation(newConv)
 		resp := "Started a fresh conversation with a clean agent context. Resume the previous chat with `/resume " + resumeCode + "`."
 		_ = store.AddMessage(m.ctx.DB, newConv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, m.chat.loadCmd()
 
 	case "/resume":
@@ -828,10 +831,6 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				"  /discord status\n" +
 				"  /discord link <code>\n" +
 				"  /discord unlink\n" +
-				"  /admin users list (admin)\n" +
-				"  /admin audit tail [n] (admin)\n" +
-				"  /admin signal status (admin)\n" +
-				"  /admin jobs status (admin)\n" +
 				"  /confirm <token>\n" +
 				"  /memory list [kind]\n" +
 				"  /memory add <kind> <content>\n" +
@@ -845,6 +844,13 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				"  /secret list\n" +
 				"  /secret delete <label>\n" +
 				"  /secret clear\n"
+			if m.user != nil && m.user.Role == "admin" {
+				resp +=
+					"  /admin users list (admin)\n" +
+						"  /admin audit tail [n] (admin)\n" +
+						"  /admin signal status (admin)\n" +
+						"  /admin jobs status (admin)\n"
+			}
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 		}
@@ -1504,7 +1510,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				m.chat = m.chat.appendLocal("System", resp)
 				return m, true, nil
 			}
-			run := m.subMgr.Spawn(m.user.ID, prompt)
+			run := m.subMgr.Spawn(m.user.ID, subagents.RunRequest{Prompt: prompt})
 			resp := "spawned subagent: " + run.ID + " (status: " + string(run.Status) + ")"
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
@@ -1518,7 +1524,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				return m, true, nil
 			}
 			id := fields[2]
-			run, ok := m.subMgr.Get(id)
+			run, ok := m.subMgr.GetForUser(m.user.ID, id)
 			if !ok {
 				resp := "subagent not found: " + id
 				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
@@ -1646,6 +1652,7 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 			case "tool_call":
 				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args}}
 			case "tool_result":
+				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args, Result: ev.Tool.Result}}
 				if !released {
 					released = true
 					ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
@@ -1664,7 +1671,7 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 		}
 		entries := make([]toolCallEntry, len(reply.ToolCalls))
 		for i, tc := range reply.ToolCalls {
-			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
 		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
 	}()
@@ -1693,6 +1700,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 			case "tool_call":
 				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args}}
 			case "tool_result":
+				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args, Result: ev.Tool.Result}}
 				if !released {
 					released = true
 					ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
@@ -1718,7 +1726,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 		}
 		entries := make([]toolCallEntry, len(reply.ToolCalls))
 		for i, tc := range reply.ToolCalls {
-			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
 		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
 	}()
@@ -1741,7 +1749,7 @@ func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.C
 		}
 		entries := make([]toolCallEntry, len(reply.ToolCalls))
 		for i, tc := range reply.ToolCalls {
-			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
 		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
 	}
@@ -1779,15 +1787,16 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 			continue
 		}
 		seen[key] = true
-		content := tc.Name
-		if strings.TrimSpace(tc.Args) != "" {
-			content += "  " + tc.Args
-		}
+		content := formatToolCallContent(tc)
 		if targetConvID != 0 {
 			_ = store.AddMessage(m.ctx.DB, targetConvID, "tool_call", content)
 		}
-		if renderInActiveChat && !m.chat.hasStreamingToolCall(msg.RequestID, tc.Name, tc.Args) {
-			m.chat = m.chat.appendLocal("tool_call", content)
+		if renderInActiveChat {
+			if m.chat.hasStreamingToolCall(msg.RequestID, tc.Name, tc.Args) {
+				m.chat = m.chat.upsertStreamingToolCall(msg.RequestID, tc)
+			} else {
+				m.chat = m.chat.appendLocal("tool_call", content)
+			}
 		}
 	}
 

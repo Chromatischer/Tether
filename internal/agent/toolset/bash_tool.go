@@ -59,7 +59,7 @@ func (t Bash) Spec() tools.ToolSpec {
 					"stdout":    "...",
 					"stderr":    "",
 				},
-				Notes: "For destructive commands like rm, first call confirm.request using the scope shown in the error message.",
+				Notes: "For destructive commands like rm, the host may pause and ask the user to run /confirm <token> before execution resumes.",
 			},
 		},
 		Tags: []string{"shell", "sandbox"},
@@ -84,7 +84,7 @@ func (t Bash) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) 
 	if looksDestructive(cmd) {
 		scope := bashConfirmScope(cmd)
 		if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
-			return nil, fmt.Errorf("destructive command requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
+			return nil, fmt.Errorf("destructive command requires confirmation; scope=%q", scope)
 		}
 	}
 

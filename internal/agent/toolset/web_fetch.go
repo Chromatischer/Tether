@@ -170,7 +170,7 @@ func (t WebFetch) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 	if needsConfirm {
 		scope := webFetchConfirmScope(cacheKey, u, len(args.SecretHeaders) > 0, args.ReturnBody)
 		if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
-			return nil, fmt.Errorf("web-fetch requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
+			return nil, fmt.Errorf("web-fetch requires confirmation; scope=%q", scope)
 		}
 	}
 

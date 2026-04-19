@@ -46,7 +46,7 @@ func TestBashExecute_DestructiveRequiresConfirmation(t *testing.T) {
 	if !strings.Contains(err.Error(), "requires confirmation") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "confirm.request") {
-		t.Fatalf("expected guidance to use confirm.request")
+	if !strings.Contains(err.Error(), "scope=") {
+		t.Fatalf("expected error to include confirmation scope")
 	}
 }

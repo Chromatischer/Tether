@@ -32,7 +32,7 @@ func RunOnce(ctx context.Context, db *sql.DB, llm LLM, userID int64, convID int6
 
 	prompt := "Write a short daily brief. Include:\n- top priorities\n- open tasks\n- suggested next actions\nKeep it under 120 words.\n\n"
 	if sum != "" {
-		prompt += "Conversation summary:\n" + sum + "\n\n"
+		prompt += formatSummaryForPrompt(sum)
 	}
 	if tb.Len() > 0 {
 		prompt += "Tasks:\n" + tb.String() + "\n"

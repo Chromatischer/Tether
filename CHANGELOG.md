@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3 (2026-04-19)
+
+### Added
+- **Constrained subagents**
+  - `subagent.spawn` now accepts a caller-selected `allowed_tools` list and optional one-time skill preload.
+  - Subagents run in dedicated sessions, stream progress history, and expose richer `subagent.status` output.
+  - Added tests for subagent manager behavior and tool validation.
+- **Bundled `proactive-agents-guide` skill** for creating, editing, and explaining recurring proactive agents vs. one-off `self.schedule` runs.
+- **TUI rich-text rendering** for assistant/system output, including headings, lists, code fences, links, rules, and Markdown tables.
+- **Chat composer autocomplete** for slash commands and user-invocable skills.
+
+### Changed
+- **Conversation summaries hardened**
+  - Stored summaries are now re-injected as untrusted reference context instead of system instructions.
+  - Summary generation explicitly excludes assistant instructions, prompt injection attempts, and credential/token requests.
+  - Proactive prompts now treat conversation summaries as untrusted reference text too.
+- **Subagent safety tightened**
+  - Subagents cannot spawn additional subagents or invoke more skills after launch.
+  - Subagent status lookup is now scoped per user.
+  - Regular subagent runs no longer inherit the full skill index in context.
+- **Tool call streaming and chat UX improved**
+  - Tool events now include truncated result previews so the TUI can merge call + result into one widget.
+  - System notices render without the old `notice` label, and assistant output uses rich-text formatting.
+  - The composer now uses explicit input/suggestion/send focus states with Tab navigation and Enter-to-apply/send behavior.
+- **Confirmation flow docs updated** to describe host-paused confirmation and automatic resume behavior for destructive tool actions.
+
 ## v0.2 (2026-04-16)
 
 ### Added

@@ -118,7 +118,7 @@ func (t WriteFile) Spec() tools.ToolSpec {
 		Name:    "write",
 		Summary: "Write a file in the user sandbox (relative path).",
 		WhenToUse: "Use this to create new files or update files. Prefer small, targeted writes. " +
-			"If the file already exists, you must first obtain a confirmation token via confirm.request (the error message will tell you the exact scope) — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.",
+			"If the file already exists, the host may pause and require the user to confirm before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.",
 		Safety: "Overwriting an existing file is treated as destructive and requires confirm_token, except for config/agents/**/PERSONALITY.md (self-editable; old versions are backed up). Symlinks are rejected.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -185,7 +185,7 @@ func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMess
 		} else {
 			scope := writeConfirmScope(args.Path)
 			if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
-				return nil, fmt.Errorf("overwriting existing file requires confirmation; call confirm.request with scope=%q and ask user to /confirm <token>", scope)
+				return nil, fmt.Errorf("overwriting existing file requires confirmation; scope=%q", scope)
 			}
 		}
 	}

@@ -126,8 +126,8 @@ rg -n "TODO" .
 - Output is captured and substituted back into the skill body.
 
 ### Safety / confirmation
-If any injected command looks destructive (e.g. contains `rm`, `mv`, `chmod`, `sed -i`, etc.), Tether requires confirmation:
-- The user must run `/confirm <token>` after the assistant calls `confirm.request`.
+If any injected command looks destructive (e.g. contains `rm`, `mv`, `chmod`, `sed -i`, etc.), Tether may pause execution and require confirmation:
+- Ask the user to run `/confirm <token>`. The host resumes the suspended action automatically after confirmation.
 
 Design guidance:
 - Prefer **read-only** injections (ls/rg/cat) whenever possible.

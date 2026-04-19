@@ -64,12 +64,17 @@ func (c auditedConfirmer) Consume(userID int64, token string, scope string) bool
 	return ok
 }
 
-func (s subagentStore) Spawn(userID int64, prompt string) (id string) {
-	return s.mgr.Spawn(userID, prompt).ID
+func (s subagentStore) Spawn(userID int64, req toolset.SubagentSpawnRequest) (id string) {
+	return s.mgr.Spawn(userID, subagents.RunRequest{
+		Prompt:       req.Prompt,
+		AllowedTools: append([]string(nil), req.AllowedTools...),
+		SkillName:    skillName(req.Skill),
+		SkillArgs:    skillArgs(req.Skill),
+	}).ID
 }
 
-func (s subagentStore) Status(id string) (status any, ok bool) {
-	r, ok := s.mgr.Get(id)
+func (s subagentStore) Status(userID int64, id string) (status any, ok bool) {
+	r, ok := s.mgr.GetForUser(userID, id)
 	if !ok {
 		return nil, false
 	}
@@ -85,6 +90,20 @@ func truncateAuditString(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+func skillName(skill *toolset.SubagentSkill) string {
+	if skill == nil {
+		return ""
+	}
+	return skill.Name
+}
+
+func skillArgs(skill *toolset.SubagentSkill) string {
+	if skill == nil {
+		return ""
+	}
+	return skill.Arguments
 }
 
 // newAgent initializes the agent runtime fields.
