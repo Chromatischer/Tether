@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"tether/internal/tools"
 	"tether/internal/userspace"
 )
@@ -58,6 +60,10 @@ type SecretGetter interface {
 	Get(ctx context.Context, userID int64, label string) (string, bool, error)
 }
 
+type MCPCaller interface {
+	CallTool(ctx context.Context, userID int64, serverName string, toolName string, arguments map[string]any) (*mcpsdk.CallToolResult, error)
+}
+
 type LLM interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
@@ -85,6 +91,7 @@ type Session struct {
 	Subagents SubagentStore
 	Confirm   Confirmer
 	Secrets   SecretGetter
+	MCP       MCPCaller
 	LLM       LLM
 
 	Active map[string]bool
@@ -125,6 +132,7 @@ func NewSession(reg *tools.Registry) *Session {
 	active["tool.enable"] = true
 	active["tool.describe"] = true
 	active["confirm.request"] = true
+	active["confirm.scope"] = true
 	active["read"] = true
 	active["write"] = true
 	active["web-search"] = true

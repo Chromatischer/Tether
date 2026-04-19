@@ -7,9 +7,18 @@
   - `subagent.spawn` now accepts a caller-selected `allowed_tools` list and optional one-time skill preload.
   - Subagents run in dedicated sessions, stream progress history, and expose richer `subagent.status` output.
   - Added tests for subagent manager behavior and tool validation.
+- **MCP tool integration**
+  - Added config-driven MCP server definitions with per-user enabled server lists.
+  - Discovered MCP tools are now registered dynamically as `mcp.<server>.<tool>`.
+  - Added MCP tool execution plumbing with confirmation-aware safety behavior.
 - **Bundled `proactive-agents-guide` skill** for creating, editing, and explaining recurring proactive agents vs. one-off `self.schedule` runs.
+- **Bundled `onboarding` skill** for capturing stable user preferences, writing `config/agents/chat/PERSONALITY.md`, and storing a small set of high-value memory items.
 - **TUI rich-text rendering** for assistant/system output, including headings, lists, code fences, links, rules, and Markdown tables.
 - **Chat composer autocomplete** for slash commands and user-invocable skills.
+- **Autonomy and product vision docs**
+  - Added `docs/VISION.md` for the long-horizon product direction.
+  - Added `docs/AUTONOMY.md` defining Tether’s autonomy ladder and confirmation policy.
+- **`confirm.scope` tool** to compute the exact confirmation scope string needed before destructive tool calls.
 
 ### Changed
 - **Conversation summaries hardened**
@@ -24,7 +33,16 @@
   - Tool events now include truncated result previews so the TUI can merge call + result into one widget.
   - System notices render without the old `notice` label, and assistant output uses rich-text formatting.
   - The composer now uses explicit input/suggestion/send focus states with Tab navigation and Enter-to-apply/send behavior.
+- **Prompt and trust model tightened**
+  - Main and proactive prompts now explicitly frame Tether as operating on real users, real data, and real consequences.
+  - Added a stronger autonomy ladder, trust framing, and stricter guidance around confirmation for high-blast-radius actions.
 - **Confirmation flow docs updated** to describe host-paused confirmation and automatic resume behavior for destructive tool actions.
+- **Confirmation flow behavior clarified**
+  - `/confirm` now distinguishes paused tool execution from standalone confirmation tokens in both the TUI and Discord gateway.
+  - `confirm.request` now resumes cleanly with a confirmed token and preserves user-facing reason text.
+- **TUI layout and visual polish**
+  - Proactive notifications are stored as system messages.
+  - Header, auth, chat composer, settings, and admin views now use more consistent full-width layout and background handling.
 
 ## v0.2 (2026-04-16)
 

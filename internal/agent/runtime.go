@@ -239,6 +239,7 @@ func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {
 	s.DB = a.db
 	s.Subagents = a.subStore
 	s.Confirm = auditedConfirmer{mgr: a.confirm, db: a.db}
+	s.MCP = a.mcp
 	s.LLM = a
 	if a.secrets != nil {
 		s.Secrets = auditedSecrets{store: a.secrets, db: a.db}

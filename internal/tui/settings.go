@@ -647,6 +647,11 @@ func (m settingsModel) View() tea.View {
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	if m.w > 0 {
+		if gap := m.w - lipgloss.Width(tabBar); gap > 0 {
+			tabBar += styleHeaderSpacer.Render(strings.Repeat(" ", gap))
+		}
+	}
 
 	var body string
 	switch m.sec {
@@ -663,6 +668,9 @@ func (m settingsModel) View() tea.View {
 		body = m.signalVP.View()
 	case settingsSectionRetention:
 		body = m.retentionVP.View()
+	}
+	if m.w > 0 {
+		body = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(body)
 	}
 
 	return tea.NewView(tabBar + "\n" + body)

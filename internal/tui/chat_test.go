@@ -71,16 +71,17 @@ func TestAppendStreamingToolCallRejectsInvalidToolName(t *testing.T) {
 	}
 }
 
-func TestFormatMessage_AssistantWithoutSeparateReasoningShowsExplicitNotice(t *testing.T) {
+func TestFormatMessage_AssistantWithoutSeparateReasoningHasNoReasoningNotice(t *testing.T) {
 	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80, 0)
-	if !strings.Contains(out, "no separate model reasoning") {
-		t.Fatalf("expected no-reasoning notice, got %q", out)
+	// No reasoning notice is shown when there is no reasoning — keeps the message clean.
+	if strings.Contains(out, "reasoning") {
+		t.Fatalf("expected no reasoning notice for plain assistant message, got %q", out)
 	}
 }
 
-func TestFormatMessage_AssistantWithReasoningShowsModelReasoningLabel(t *testing.T) {
+func TestFormatMessage_AssistantWithReasoningShowsReasoningLabel(t *testing.T) {
 	out := formatMessage(chatMessage{role: "assistant", content: "Hi", reasoning: "step 1"}, 80, 0)
-	if !strings.Contains(out, "model reasoning available") {
+	if !strings.Contains(out, "◈ reasoning") {
 		t.Fatalf("expected reasoning affordance, got %q", out)
 	}
 }
@@ -157,7 +158,7 @@ func TestStreamingReasoningStaysExpandedUntilAnswerTextStarts(t *testing.T) {
 
 func TestFormatMessage_StreamingReasoningRendersAtTopOfBubble(t *testing.T) {
 	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80, 0)
-	if !strings.Contains(out, "◈ model reasoning") {
+	if !strings.Contains(out, "◈ reasoning") {
 		t.Fatalf("expected streaming reasoning label, got %q", out)
 	}
 	if !strings.Contains(out, "step 1") {
@@ -296,6 +297,30 @@ func TestFormatMessage_SystemSuccessPrefixGetsInfoStyle(t *testing.T) {
 	out := formatMessage(chatMessage{role: "system", content: "memory added (id 7)"}, 80, 0)
 	if !strings.Contains(out, "✓ info") {
 		t.Fatalf("expected info sender label, got %q", out)
+	}
+}
+
+func TestFormatMessage_ProactiveNoticeUsesSystemStyle(t *testing.T) {
+	out := formatMessage(chatMessage{role: "system", content: "[Proactive/self_schedule] Follow up tomorrow."}, 80, 0)
+	if !strings.Contains(out, "● system") {
+		t.Fatalf("expected system sender label, got %q", out)
+	}
+	if strings.Contains(out, "◆ Tether") {
+		t.Fatalf("expected proactive notice to avoid assistant styling, got %q", out)
+	}
+}
+
+func TestNewChatModelComposerDefaultsToThreeRows(t *testing.T) {
+	m := newChatModel().withSize(80, 24)
+	if got := m.composerHeight(80); got != 4 {
+		t.Fatalf("expected 4-row composer, got %d", got)
+	}
+}
+
+func TestNewChatModelTextareaDoesNotRenderInternalPrompt(t *testing.T) {
+	m := newChatModel()
+	if m.textarea.Prompt != "" {
+		t.Fatalf("expected textarea prompt to be empty, got %q", m.textarea.Prompt)
 	}
 }
 

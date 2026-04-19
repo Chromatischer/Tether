@@ -14,7 +14,8 @@ Notes:
 ## Index
 
 - [`bash`](#bash) — Run a shell command inside the user sandbox (no network; /work is the sandbox root).
-- [`confirm.request`](#confirmrequest) — Request user confirmation for a destructive/irreversible action.
+- [`confirm.request`](#confirmrequest) — Request user confirmation and pause until the user confirms.
+- [`confirm.scope`](#confirmscope) — Compute the exact confirmation scope string used by a tool action.
 - [`fetch.summarize`](#fetchsummarize) — Summarize previously fetched web content into safe markdown.
 - [`memory.add`](#memoryadd) — Add a memory item.
 - [`memory.delete`](#memorydelete) — Delete a memory item by id.
@@ -24,8 +25,8 @@ Notes:
 - [`read`](#read) — Read a file from the user sandbox (relative path).
 - [`self.schedule`](#selfschedule) — Schedule the agent to run later (one-off) and deliver the result as a proactive notification.
 - [`skill.invoke`](#skillinvoke) — Load and apply a Claude Code–style skill by name.
-- [`subagent.spawn`](#subagentspawn) — Spawn a sub-agent run asynchronously.
-- [`subagent.status`](#subagentstatus) — Get status/result for a spawned sub-agent run.
+- [`subagent.spawn`](#subagentspawn) — Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.
+- [`subagent.status`](#subagentstatus) — Get live status for a spawned sub-agent run, including current state and recent progress history.
 - [`tool.describe`](#tooldescribe) — Get full documentation for a tool (schemas, examples, safety notes).
 - [`tool.enable`](#toolenable) — Enable a tool for the current agent session.
 - [`tool.search`](#toolsearch) — Search for available tools by name, purpose, tags, and usage hints.
@@ -127,20 +128,20 @@ Example result:
 }
 ```
 
-Notes: For destructive commands like rm, the host may pause the action, ask the user to run `/confirm <token>`, and then resume automatically after confirmation.
+Notes: For destructive commands like rm, the host may pause and ask the user to run /confirm <token> before execution resumes.
 
 
 ## `confirm.request`
 
-Request user confirmation for a destructive/irreversible action.
+Request user confirmation and pause until the user confirms.
 
 **When to use**
 
-Use this only for workflows that explicitly need a standalone confirmation token. For built-in tool confirmations, the host usually pauses the action automatically, asks the user to run `/confirm <token>`, and then resumes the original tool call. Do not retry the tool manually.
+Use this when you need explicit user approval before continuing, especially when you need a confirmation token to pass into another tool call (e.g. write overwrite, destructive bash). For built-in tool confirmations, the host usually pauses automatically; you only need this tool when you want to ask for approval BEFORE attempting the destructive call.
 
 **Safety / confirmation**
 
-This tool does not perform the action; it only creates a single-use confirmation token scoped to one specific action.
+This tool does not perform the destructive action itself. It pauses the run until the user confirms via /confirm <token>, then returns the token so you can pass it as confirm_token to the actual destructive tool call.
 
 ### Input schema
 
@@ -148,12 +149,16 @@ This tool does not perform the action; it only creates a single-use confirmation
 {
   "additionalProperties": false,
   "properties": {
+    "confirm_token": {
+      "description": "(host-injected on resume) the confirmed token",
+      "type": "string"
+    },
     "reason": {
-      "description": "short user-facing reason",
+      "description": "short user-facing reason shown in the confirmation prompt",
       "type": "string"
     },
     "scope": {
-      "description": "required action scope, provided by the tool that needs confirmation",
+      "description": "required action scope (must match the tool you plan to run after confirmation)",
       "minLength": 1,
       "type": "string"
     }
@@ -171,8 +176,8 @@ This tool does not perform the action; it only creates a single-use confirmation
 {
   "additionalProperties": false,
   "properties": {
-    "instruction": {
-      "type": "string"
+    "confirmed": {
+      "type": "boolean"
     },
     "scope": {
       "type": "string"
@@ -184,7 +189,7 @@ This tool does not perform the action; it only creates a single-use confirmation
   "required": [
     "token",
     "scope",
-    "instruction"
+    "confirmed"
   ],
   "type": "object"
 }
@@ -192,14 +197,14 @@ This tool does not perform the action; it only creates a single-use confirmation
 
 ### Example
 
-**Request confirmation**
+**Pause for confirmation, then use the token**
 
 Tool arguments:
 
 ```json
 {
-  "reason": "You asked me to delete files.",
-  "scope": "bash:destructive:..."
+  "reason": "Overwriting config/proactive.yaml",
+  "scope": "write:overwrite:..."
 }
 ```
 
@@ -207,11 +212,93 @@ Example result:
 
 ```json
 {
-  "instruction": "Please confirm by typing: /confirm ...",
-  "scope": "bash:destructive:...",
-  "token": "..."
+  "confirmed": true,
+  "scope": "write:overwrite:...",
+  "token": "<token after resume>"
 }
 ```
+
+Notes: On first call (no confirm_token), the host pauses and asks the user to /confirm <token>. After the user confirms, the host resumes the run and replays the tool call with confirm_token injected.
+
+
+## `confirm.scope`
+
+Compute the exact confirmation scope string used by a tool action.
+
+**When to use**
+
+Use this when you want to ask for approval (via confirm.request) BEFORE attempting a destructive tool call. It lets you compute the precise scope string that the target tool will later require for confirm_token consumption.
+
+**Safety / confirmation**
+
+Read-only helper. Does not create or confirm tokens.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "description": "shell command (for tool=bash destructive scope)",
+      "type": "string"
+    },
+    "path": {
+      "description": "file path (for tool=write overwrite scope)",
+      "type": "string"
+    },
+    "tool": {
+      "description": "target tool name (currently: write, bash)",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "tool"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "scope": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "scope"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**Write overwrite scope**
+
+Tool arguments:
+
+```json
+{
+  "path": "config/proactive.yaml",
+  "tool": "write"
+}
+```
+
+Example result:
+
+```json
+{
+  "scope": "write:overwrite:..."
+}
+```
+
+Notes: Use the returned scope as the scope in confirm.request, then pass the confirmed token as confirm_token to write.
 
 
 ## `fetch.summarize`
@@ -1010,15 +1097,15 @@ Notes: The returned content is injected into the session so it remains in contex
 
 ## `subagent.spawn`
 
-Spawn a sub-agent run asynchronously.
+Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.
 
 **When to use**
 
-Use this for long-running, multi-step work that you don't want to block the main conversation loop (e.g., deep repo analysis).
+Use this for long-running, multi-step work that should continue in the background without blocking the main conversation loop (e.g., deep repo analysis). After spawning it, you can either keep working and interacting with the user while it runs, or poll subagent.status until it finishes if its result is on your critical path. You must decide the subagent's toolset up front and should keep it as narrow as possible for the task.
 
 **Safety / confirmation**
 
-Subagents run with the same tool constraints as the main agent.
+Subagents are intentionally constrained: the spawning agent chooses the exact tools they may use, they cannot spawn further subagents, and they cannot invoke new skills after launch. This keeps delegation bounded, prevents recursive agent trees, and avoids uncontrolled skill/tool expansion inside background runs.
 
 ### Input schema
 
@@ -1026,8 +1113,25 @@ Subagents run with the same tool constraints as the main agent.
 {
   "additionalProperties": false,
   "properties": {
+    "allowed_tools": {
+      "description": "Exact tool names the subagent may use for this run. Decide this at spawn time. Keep it minimal. Tools outside this list cannot be enabled later.",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "preload_skill": {
+      "description": "Optional single skill name to inject before the subagent starts. Subagents cannot invoke additional skills later.",
+      "type": "string"
+    },
     "prompt": {
+      "description": "The task for the subagent.",
       "minLength": 1,
+      "type": "string"
+    },
+    "skill_arguments": {
+      "description": "Optional arguments passed when preloading the single allowed skill.",
       "type": "string"
     }
   },
@@ -1063,6 +1167,10 @@ Tool arguments:
 
 ```json
 {
+  "allowed_tools": [
+    "read",
+    "bash"
+  ],
   "prompt": "Review the repo for tool documentation gaps."
 }
 ```
@@ -1075,18 +1183,20 @@ Example result:
 }
 ```
 
+Notes: The subagent may use only read and bash for this run. It cannot spawn other subagents or load more skills.
+
 
 ## `subagent.status`
 
-Get status/result for a spawned sub-agent run.
+Get live status for a spawned sub-agent run, including current state and recent progress history.
 
 **When to use**
 
-Use this after subagent.spawn to poll for completion and retrieve the result.
+Use this after subagent.spawn when the subagent is running in the background and you want to inspect its current status, latest text, or recent tool/activity history without blocking the main conversation. Poll it when you need to wait for completion; otherwise continue working and check back later.
 
 **Safety / confirmation**
 
-Read-only (status retrieval).
+Read-only. This lets the main agent either monitor background work while continuing to interact with the user or explicitly poll until the subagent finishes.
 
 ### Input schema
 
@@ -1116,7 +1226,41 @@ Read-only (status retrieval).
       "type": "boolean"
     },
     "status": {
-      "description": "implementation-defined status/result object"
+      "properties": {
+        "current_text": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "history": {
+          "items": {
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "required": [
@@ -1128,7 +1272,7 @@ Read-only (status retrieval).
 
 ### Example
 
-**Check a run**
+**Check a running subagent**
 
 Tool arguments:
 
@@ -1144,7 +1288,14 @@ Example result:
 {
   "found": true,
   "status": {
-    "state": "done"
+    "current_text": "Reviewing the repo layout",
+    "history": [
+      {
+        "text": "Tool calling: read",
+        "type": "tool_call"
+      }
+    ],
+    "status": "running"
   }
 }
 ```
@@ -1627,7 +1778,7 @@ Write a file in the user sandbox (relative path).
 
 **When to use**
 
-Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, the host may pause and require user confirmation before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
+Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, the host may pause and require the user to confirm before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
 
 **Safety / confirmation**
 

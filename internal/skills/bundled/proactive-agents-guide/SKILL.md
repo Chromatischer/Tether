@@ -2,7 +2,7 @@
 name: proactive-agents-guide
 description: Create, modify, remove, and explain proactive agents, recurring proactive behavior, and self.schedule correctly.
 when_to_use: Use when the user asks you to add, edit, remove, inspect, or explain proactive agents, recurring proactive behavior, proactive schedules, proactive actions, or self.schedule.
-allowed-tools: Read Write confirm.request tool.search tool.describe tool.enable
+allowed-tools: Read Write confirm.scope confirm.request tool.search tool.describe tool.enable
 ---
 
 # Goal
@@ -68,9 +68,13 @@ Typical requests include creating a new proactive agent, changing when one runs,
 
 7. When you need to overwrite `config/proactive.yaml`, handle it as a destructive write.
 
-   Use `confirm.request` first so the user can approve the overwrite.
+   First compute the exact write-overwrite confirmation scope with `confirm.scope` using tool=write and path=config/proactive.yaml.
 
-   Then write the full updated file content with `write`, including the `confirm_token`.
+   Then call `confirm.request` with that scope so the host pauses and the user can approve.
+
+   After the user confirms and the run resumes, use the returned `token` as the `confirm_token` in the `write` call.
+
+   Then write the full updated file content with `write` (full file content; no patching).
 
    Do not pretend you can patch the file in place. The write tool writes complete file content.
 

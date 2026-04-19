@@ -214,3 +214,78 @@ func TestHandleCommandClearShowsFreshConversationMessageAsSystemNotice(t *testin
 		t.Fatalf("unexpected notice content: %q", updated.chat.messages[0].content)
 	}
 }
+
+func TestRenderHeaderStaysSingleLineWithActiveChatTab(t *testing.T) {
+	m := appModel{
+		w:    80,
+		view: viewChat,
+		user: &store.User{Username: "alice"},
+	}
+
+	header := m.renderHeader()
+	if strings.Contains(header, "\n") {
+		t.Fatalf("expected single-line header, got %q", header)
+	}
+}
+
+func TestHitHeaderMatchesRenderedTabPositions(t *testing.T) {
+	m := appModel{
+		w:    80,
+		view: viewChat,
+		user: &store.User{Username: "alice"},
+	}
+
+	_, buttons, _, _ := m.headerLayout()
+	if len(buttons) == 0 {
+		t.Fatal("expected header buttons")
+	}
+	for _, button := range buttons {
+		mid := button.X0 + (button.X1-button.X0)/2
+		got, ok := m.hitHeader(mid)
+		if !ok {
+			t.Fatalf("expected hit for %q at x=%d", button.ID, mid)
+		}
+		if got.ID != button.ID {
+			t.Fatalf("expected hit %q at x=%d, got %q", button.ID, mid, got.ID)
+		}
+	}
+}
+
+func TestChatPollNotificationsStoresSystemMessages(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "erin", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateActiveConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddNotificationForConversation(d, u.ID, conv.ID, "self_schedule", "Follow up tomorrow."); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newChatModel().withConversation(d, u.ID, conv.ID)
+	cmd := m.pollNotificationsCmd()
+	if cmd == nil {
+		t.Fatal("expected pollNotificationsCmd")
+	}
+	msg, ok := cmd().(chatNotificationsDeliveredMsg)
+	if !ok {
+		t.Fatalf("expected chatNotificationsDeliveredMsg, got %T", cmd())
+	}
+	if len(msg.Lines) != 1 || msg.Lines[0].role != "system" {
+		t.Fatalf("expected one system line, got %+v", msg.Lines)
+	}
+
+	msgs, err := store.ListRecentMessages(d, conv.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected proactive notification to be delivered")
+	}
+	if msgs[0].Role != "system" {
+		t.Fatalf("expected delivered proactive notification to be system role, got %+v", msgs[0])
+	}
+}

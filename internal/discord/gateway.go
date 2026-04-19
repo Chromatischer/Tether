@@ -770,17 +770,24 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 			return true, "usage: /confirm <token>", conv
 		}
 		recordUser(text)
-		reply, _, resumed, err := g.ag.ResumeConfirmedStream(ctx, userID, fields[1], nil)
-		if err != nil {
-			return true, "agent error: " + err.Error(), conv
-		}
-		if resumed {
-			out, findings := redact.ScanAndRedact(reply.Text)
-			if len(findings) > 0 {
-				return true, "(Assistant response was redacted due to secret-like content.)\n" + out, conv
+
+		// Default behavior: if the token is tied to a suspended tool execution, resume it.
+		// Otherwise treat /confirm as a standalone confirmation (e.g. tokens created via confirm.request).
+		if g.ag.HasPendingConfirmationToken(userID, fields[1]) {
+			reply, _, resumed, err := g.ag.ResumeConfirmedStream(ctx, userID, fields[1], nil)
+			if err != nil {
+				return true, "agent error: " + err.Error(), conv
 			}
-			return true, out, conv
+			if resumed {
+				out, findings := redact.ScanAndRedact(reply.Text)
+				if len(findings) > 0 {
+					return true, "(Assistant response was redacted due to secret-like content.)\n" + out, conv
+				}
+				return true, out, conv
+			}
+			return true, "confirmation failed", conv
 		}
+
 		if g.ag.ConfirmToken(userID, fields[1]) {
 			return true, "confirmed", conv
 		}

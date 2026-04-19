@@ -45,19 +45,22 @@ var (
 
 	styleTabActive = lipgloss.NewStyle().
 			Background(lipgloss.Color("234")). // slightly lighter than header
-			Foreground(lipgloss.Color("255")).
+			Foreground(colorAmber).
 			Bold(true).
-			Padding(0, 2).
-			BorderTop(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(colorAmber)
+			Padding(0, 2)
 
 	styleHeaderSpacer = lipgloss.NewStyle().Background(colorHeaderBg)
+	styleHeaderBar    = lipgloss.NewStyle().Background(colorHeaderBg)
 
-	styleHeaderUser = lipgloss.NewStyle().
+	styleHeaderUserDot = lipgloss.NewStyle().
 			Background(colorHeaderBg).
-			Foreground(colorDim).
-			Padding(0, 1)
+			Foreground(colorGreen).
+			Padding(0, 1, 0, 1)
+
+	styleHeaderUserText = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorDim).
+				Padding(0, 1, 0, 0)
 
 	// ── Auth screen ───────────────────────────────────────────────────────
 	styleLogo = lipgloss.NewStyle().Foreground(colorAmber)
@@ -68,22 +71,24 @@ var (
 			Padding(0, 0)
 
 	styleAuthModeHeader = lipgloss.NewStyle().
-				Background(colorHeaderBg).
 				Foreground(colorDim).
 				Padding(0, 2)
 
 	styleAuthModeHeaderActive = lipgloss.NewStyle().
-					Background(colorHeaderBg).
 					Foreground(colorAmber).
 					Bold(true).
 					Padding(0, 2)
 
 	styleAuthFieldLabel = lipgloss.NewStyle().
+				Background(colorHeaderBg).
 				Foreground(colorDim).
 				Width(10)
 
 	styleAuthFieldValue = lipgloss.NewStyle().
 				Foreground(colorMuted)
+
+	styleAuthRow = lipgloss.NewStyle().
+			Background(colorHeaderBg)
 
 	styleAuthSubmit = lipgloss.NewStyle().
 			Background(colorAmber).
@@ -104,7 +109,7 @@ var (
 				Padding(0, 1)
 
 	// ── Chat transcript ───────────────────────────────────────────────────
-	styleChatTranscript = lipgloss.NewStyle()
+	styleChatTranscript = lipgloss.NewStyle().Background(colorBg)
 
 	// Full-width strip styles — left border codes the sender.
 	styleUserMsg = lipgloss.NewStyle().
@@ -179,31 +184,39 @@ var (
 	// ── Composer ─────────────────────────────────────────────────────────
 	styleChatComposer = lipgloss.NewStyle().
 				Background(colorHeaderBg).
-				BorderTop(true).
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderForeground(colorBorder).
 				Padding(0, 1)
 
 	styleChatInputBox = lipgloss.NewStyle().
 				Background(colorHeaderBg).
-				Foreground(lipgloss.Color("255"))
+				Foreground(lipgloss.Color("255")).
+				Padding(0, 1)
+
+	styleChatPromptGap = lipgloss.NewStyle().
+				Background(colorHeaderBg)
 
 	styleChatPrompt = lipgloss.NewStyle().
+			Background(colorHeaderBg).
 			Foreground(colorAmber).
 			Bold(true)
 
-	styleChatEnterKey = lipgloss.NewStyle().
-				Foreground(colorAmber).
-				Border(lipgloss.NormalBorder()).
-				BorderForeground(colorToolBorder).
-				Padding(0, 1)
-
-	styleChatHint = lipgloss.NewStyle().Foreground(colorDim)
+	styleChatHint = lipgloss.NewStyle().
+			Background(colorHeaderBg).
+			Foreground(colorDim)
 
 	styleChatHintKey = lipgloss.NewStyle().
 				Background(colorBotMsgBg).
 				Foreground(colorMuted).
-				Padding(0, 0)
+				Padding(0, 1)
+
+	styleChatHintText = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorDim)
+
+	styleChatHintGap = lipgloss.NewStyle().
+			Background(colorHeaderBg)
+
+	styleChatRow = lipgloss.NewStyle().
+			Background(colorHeaderBg)
 
 	// ── Autocomplete ─────────────────────────────────────────────────────
 	styleAutocompleteSuggestion = lipgloss.NewStyle().

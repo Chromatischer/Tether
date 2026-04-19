@@ -112,15 +112,15 @@ func newChatModel() chatModel {
 	ta.Placeholder = "Message Tether…"
 	ta.SetVirtualCursor(false)
 	ta.Focus()
-	ta.Prompt = "› "
+	ta.Prompt = ""
 	ta.CharLimit = 4000
-	ta.SetHeight(1)
+	ta.SetHeight(2)
 	// Remove cursor line styling
 	s := ta.Styles()
 	s.Focused.CursorLine = lipgloss.NewStyle()
-	s.Focused.Base = s.Focused.Base.Foreground(lipgloss.Color("255")).Background(colorPanelAlt)
+	s.Focused.Base = s.Focused.Base.Foreground(lipgloss.Color("255")).Background(colorHeaderBg)
 	s.Focused.Placeholder = s.Focused.Placeholder.Foreground(colorDim)
-	s.Blurred.Base = s.Blurred.Base.Foreground(lipgloss.Color("255")).Background(colorPanelAlt)
+	s.Blurred.Base = s.Blurred.Base.Foreground(lipgloss.Color("255")).Background(colorHeaderBg)
 	s.Blurred.Placeholder = s.Blurred.Placeholder.Foreground(colorDim)
 	ta.SetStyles(s)
 	ta.ShowLineNumbers = false
@@ -183,14 +183,12 @@ func (m chatModel) withSize(w, h int) chatModel {
 	innerW := max(20, w)
 	transcriptW := max(18, innerW-styleChatTranscript.GetHorizontalFrameSize())
 	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
-	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
 
-	bannerH := 1 + styleChatBanner.GetVerticalFrameSize()
-	promptAndEnterW := lipgloss.Width(styleChatPrompt.Render("❯")+" ") +
-		lipgloss.Width(" "+styleChatEnterKey.Render("[enter]"))
-	m.textarea.SetWidth(max(10, inputW-promptAndEnterW))
+	promptW := lipgloss.Width(styleChatPrompt.Render("❯") + " ")
+	inputInnerW := max(10, composerW-promptW-styleChatInputBox.GetHorizontalFrameSize())
+	m.textarea.SetWidth(inputInnerW)
 	composerH := m.composerHeight(innerW)
-	viewportH := max(3, h-bannerH-composerH-styleChatTranscript.GetVerticalFrameSize())
+	viewportH := max(3, h-composerH-styleChatTranscript.GetVerticalFrameSize())
 
 	m.viewport.SetWidth(transcriptW)
 	m.viewport.SetHeight(viewportH)
@@ -248,10 +246,10 @@ func (m chatModel) pollNotificationsCmd() tea.Cmd {
 				targetConvID = n.ConversationID
 			}
 			text := "[Proactive/" + n.Kind + "] " + n.Content
-			_ = store.AddMessage(db, targetConvID, "assistant", text)
+			_ = store.AddMessage(db, targetConvID, "system", text)
 			_ = store.MarkNotificationDelivered(db, n.ID)
 			if targetConvID == convID {
-				lines = append(lines, chatMessage{role: "assistant", content: text})
+				lines = append(lines, chatMessage{role: "system", content: text})
 			}
 		}
 		return chatNotificationsDeliveredMsg{Lines: lines}
@@ -371,40 +369,39 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 func (m chatModel) View() tea.View {
 	innerW := max(20, m.width)
 
-	// Banner: dim keyboard hints
-	bannerHints := []string{
-		styleChatBannerKey.Render("tab") + styleChatHint.Render(" autocomplete"),
-		styleChatBannerKey.Render("/") + styleChatHint.Render(" commands"),
-		styleChatBannerKey.Render("$") + styleChatHint.Render(" skills"),
-		styleChatBannerKey.Render("^O") + styleChatHint.Render(" reasoning"),
-	}
-	banner := styleChatBanner.Width(innerW).Render(strings.Join(bannerHints, "  "))
-
 	transcript := styleChatTranscript.Width(innerW).Render(m.viewport.View())
 
 	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
-	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
 
 	prompt := styleChatPrompt.Render("❯")
-	inputBox := styleChatInputBox.Width(inputW).Render(m.textarea.View())
-	enterKey := styleChatEnterKey.Render("[enter]")
-	inputRow := prompt + " " + inputBox + " " + enterKey
+	promptW := lipgloss.Width(prompt + " ")
+	inputInnerW := max(10, composerW-promptW-styleChatInputBox.GetHorizontalFrameSize())
+	inputBox := styleChatInputBox.Width(inputInnerW).Render(m.textarea.View())
+	inputRow := styleChatRow.Width(composerW).Render(prompt + styleChatPromptGap.Render(" ") + inputBox)
 
-	hintsRow := strings.Join([]string{
-		styleChatHintKey.Render("tab") + " cycle",
-		styleChatHintKey.Render("↵") + " apply",
-		styleChatHintKey.Render("esc") + " dismiss",
-		styleChatHintKey.Render("^O") + " reasoning",
-	}, "  ")
-	hintsLine := styleChatHint.Render(hintsRow)
+	hintParts := []string{
+		styleChatHintKey.Render("tab"),
+		styleChatHintText.Render(" cycle"),
+		styleChatHintGap.Render("  "),
+		styleChatHintKey.Render("↵"),
+		styleChatHintText.Render(" apply"),
+		styleChatHintGap.Render("  "),
+		styleChatHintKey.Render("esc"),
+		styleChatHintText.Render(" dismiss"),
+		styleChatHintGap.Render("  "),
+		styleChatHintKey.Render("^O"),
+		styleChatHintText.Render(" reasoning"),
+	}
+	hintsLine := styleChatRow.Width(composerW).Render(lipgloss.JoinHorizontal(lipgloss.Top, hintParts...))
 
-	composerBody := inputRow + "\n" + hintsLine
+	emptyLine := styleChatRow.Width(composerW).Render("")
+	composerBody := emptyLine + "\n" + inputRow + "\n" + hintsLine
 	if rendered := m.renderSuggestions(composerW); rendered != "" {
 		composerBody = rendered + "\n" + composerBody
 	}
 	composer := styleChatComposer.Width(innerW).Render(composerBody)
 
-	content := lipgloss.JoinVertical(lipgloss.Left, banner, transcript, composer)
+	content := lipgloss.JoinVertical(lipgloss.Left, transcript, composer)
 	return tea.NewView(content)
 }
 
@@ -415,8 +412,10 @@ func (m chatModel) cursor() *tea.Cursor {
 	viewportHeight := lipgloss.Height(m.viewport.View())
 	c := m.textarea.Cursor()
 	if c != nil {
-		c.X += lipgloss.Width(styleChatPrompt.Render("❯") + " ")
-		c.Y += 1 + styleChatBanner.GetVerticalFrameSize() + viewportHeight + styleChatTranscript.GetVerticalFrameSize() + 1 + m.suggestionsRenderHeight(m.composerContentWidth())
+		composerLeftPad := styleChatComposer.GetHorizontalFrameSize() / 2 // Padding(0,1) → 1 left
+		inputBoxLeftPad := styleChatInputBox.GetHorizontalFrameSize() / 2
+		c.X += composerLeftPad + lipgloss.Width(styleChatPrompt.Render("❯")+" ") + inputBoxLeftPad
+		c.Y += viewportHeight + styleChatTranscript.GetVerticalFrameSize() + 1 + m.suggestionsRenderHeight(m.composerContentWidth())
 	}
 	return c
 }
@@ -574,7 +573,7 @@ func (m chatModel) clickInTranscript(y int) bool {
 		return false
 	}
 	bodyY := y - 1 // header row
-	top := 1 + styleChatBanner.GetVerticalFrameSize()
+	top := 0
 	bottom := top + lipgloss.Height(m.viewport.View())
 	return bodyY >= top && bodyY < bottom
 }
@@ -594,30 +593,27 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 		return styleUserMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant":
-		label := styleSenderBot.Render("◆ tether")
+		label := styleSenderBot.Render("◆ Tether")
 		bodyW := max(16, width-styleAgentMsg.GetHorizontalFrameSize())
 		var parts []string
 
 		// Reasoning block
 		if strings.TrimSpace(msg.reasoning) != "" {
-			header := "◈ model reasoning"
 			if msg.streaming && (strings.TrimSpace(msg.content) == "" || msg.content == "...") {
 				parts = append(parts,
-					styleReasoningHeader.Render(header),
+					styleReasoningHeader.Render("◈ reasoning"),
 					lipgloss.Wrap(msg.reasoning, bodyW, " "),
 				)
 			} else if msg.reasoningExpanded {
 				parts = append(parts,
-					styleReasoningHeader.Render(header+"  ")+styleReasoningHint.Render("^O to collapse"),
+					styleReasoningHeader.Render("◈ reasoning  ")+styleReasoningHint.Render("^O to collapse"),
 					lipgloss.Wrap(msg.reasoning, bodyW, " "),
 				)
 			} else {
 				parts = append(parts,
-					styleDim.Render("◈ model reasoning available  ")+styleReasoningHint.Render("^O to expand"),
+					styleDim.Render("◈ reasoning  ")+styleReasoningHint.Render("^O to expand"),
 				)
 			}
-		} else if !msg.streaming {
-			parts = append(parts, styleDim.Render("◈ no separate model reasoning"))
 		}
 
 		// Body / streaming dots
@@ -902,18 +898,19 @@ func (m chatModel) suggestionsRenderHeight(width int) int {
 
 func (m chatModel) composerHeight(innerW int) int {
 	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
-	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
 	prompt := styleChatPrompt.Render("❯")
-	inputBox := styleChatInputBox.Width(inputW).Render(m.textarea.View())
-	enterKey := styleChatEnterKey.Render("[enter]")
-	inputRow := prompt + " " + inputBox + " " + enterKey
+	promptW := lipgloss.Width(prompt + " ")
+	inputInnerW := max(10, composerW-promptW-styleChatInputBox.GetHorizontalFrameSize())
+	inputBox := styleChatInputBox.Width(inputInnerW).Render(m.textarea.View())
+	inputRow := prompt + " " + inputBox
 	hintsLine := styleChatHint.Render(strings.Join([]string{
 		styleChatHintKey.Render("tab") + " cycle",
 		styleChatHintKey.Render("↵") + " apply",
 		styleChatHintKey.Render("esc") + " dismiss",
 		styleChatHintKey.Render("^O") + " reasoning",
 	}, "  "))
-	body := inputRow + "\n" + hintsLine
+	emptyLine := styleChatRow.Width(composerW).Render("")
+	body := emptyLine + "\n" + inputRow + "\n" + hintsLine
 	if rendered := m.renderSuggestions(composerW); rendered != "" {
 		body = rendered + "\n" + body
 	}

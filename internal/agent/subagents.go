@@ -58,6 +58,7 @@ func (a *Agent) newSubagentSession(userID int64, req subagents.RunRequest) (*too
 	s.DB = a.db
 	s.Subagents = a.subStore
 	s.Confirm = auditedConfirmer{mgr: a.confirm, db: a.db}
+	s.MCP = a.mcp
 	s.LLM = a
 	if a.secrets != nil {
 		s.Secrets = auditedSecrets{store: a.secrets, db: a.db}

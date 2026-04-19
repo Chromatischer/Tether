@@ -54,6 +54,27 @@ func (a *Agent) PendingConfirmationToken(userID, convID int64) (string, bool) {
 	return "", false
 }
 
+// HasPendingConfirmationToken reports whether the given confirmation token is currently
+// associated with a suspended tool execution (i.e. a /confirm should RESUME work).
+//
+// If this returns false, the token may still be a valid standalone token created via
+// confirm.request (if used outside a paused run), or any other mechanism that creates standalone tokens.
+func (a *Agent) HasPendingConfirmationToken(userID int64, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	if a == nil {
+		return false
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.prunePendingLocked(time.Now())
+	p := a.pendingRuns[token]
+	return p != nil && p.UserID == userID
+}
+
 func (a *Agent) RejectPendingConfirmation(userID, convID int64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

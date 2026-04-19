@@ -213,7 +213,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					targetConvID = n.ConversationID
 				}
 				msg := "[Proactive/" + n.Kind + "] " + n.Content
-				_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", msg)
+				_ = store.AddMessage(m.ctx.DB, targetConvID, "system", msg)
 				_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
 			}
 		}
@@ -401,11 +401,17 @@ func (m appModel) renderHeader() string {
 		return ""
 	}
 
-	brand := styleHeaderBrand.Render("TETHER")
+	brand, _, tabs, userBadge := m.headerLayout()
+	return styleHeaderBar.Width(m.w).Render(brand + tabs + userBadge)
+}
 
-	buttons := m.headerButtons()
+func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs string, userBadge string) {
+	brand = styleHeaderBrand.Render("TETHER")
+
+	buttons = m.headerButtons()
 	tabParts := make([]string, 0, len(buttons))
-	for _, b := range buttons {
+	renderedWidths := make([]int, len(buttons))
+	for i, b := range buttons {
 		active := false
 		switch b.ID {
 		case "login":
@@ -421,38 +427,57 @@ func (m appModel) renderHeader() string {
 		case "admin":
 			active = m.view == viewAdmin
 		}
+		var rendered string
 		if active {
-			tabParts = append(tabParts, styleTabActive.Render("▸ "+b.Label))
+			rendered = styleTabActive.Render("▸ " + b.Label)
 		} else {
-			tabParts = append(tabParts, styleTab.Render(b.Label))
+			rendered = styleTab.Render(b.Label)
 		}
+		renderedWidths[i] = lipgloss.Width(rendered)
+		tabParts = append(tabParts, rendered)
 	}
-	tabs := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
+	tabs = lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
 
 	// Right side: online dot + username (only when logged in).
-	var userBadge string
 	if m.user != nil {
-		dot := lipgloss.NewStyle().Foreground(lipgloss.Color("71")).Render("●")
-		userBadge = styleHeaderUser.Render(dot + " " + m.user.Username)
+		userBadge = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			styleHeaderUserDot.Render("●"),
+			styleHeaderUserText.Render(m.user.Username),
+		)
+	}
+
+	if lipgloss.Width(brand)+lipgloss.Width(userBadge) > m.w {
+		userBadge = ""
+	}
+
+	maxTabsW := max(0, m.w-lipgloss.Width(brand)-lipgloss.Width(userBadge))
+	if lipgloss.Width(tabs) > maxTabsW {
+		tabs = lipgloss.NewStyle().
+			Background(colorHeaderBg).
+			Width(maxTabsW).
+			MaxWidth(maxTabsW).
+			Render(tabs)
 	}
 
 	usedW := lipgloss.Width(brand) + lipgloss.Width(tabs) + lipgloss.Width(userBadge)
-	gap := m.w - usedW
-	if gap < 0 {
-		gap = 0
+	gap := max(0, m.w-usedW)
+	spacer := styleHeaderSpacer.Width(gap).Render(" ")
+	curX := lipgloss.Width(brand) + gap
+	for i := range buttons {
+		buttons[i].X0 = curX
+		buttons[i].X1 = curX + renderedWidths[i]
+		curX = buttons[i].X1
 	}
-	spacer := styleHeaderSpacer.Render(strings.Repeat(" ", gap))
 
-	return brand + spacer + tabs + userBadge
+	tabs = spacer + tabs
+	return brand, buttons, tabs, userBadge
 }
 
 func (m appModel) headerButtons() []headerButton {
 	// Keep this in sync with renderHeader.
 	if m.user == nil {
-		return []headerButton{
-			{ID: "login", Label: "Login"},
-			{ID: "signup", Label: "Sign up"},
-		}
+		return nil // Auth screen has its own mode-switcher; no need to duplicate in header.
 	}
 	btns := []headerButton{
 		{ID: "chat", Label: "Chat"},
@@ -466,22 +491,7 @@ func (m appModel) headerButtons() []headerButton {
 }
 
 func (m appModel) hitHeader(x int) (headerButton, bool) {
-	// Tabs are right-aligned; compute their starting x offset.
-	btns := m.headerButtons()
-	widths := make([]int, len(btns))
-	totalW := 0
-	for i, b := range btns {
-		w := lipgloss.Width(styleTab.Render(b.Label))
-		widths[i] = w
-		totalW += w
-	}
-	startX := m.w - totalW
-	curX := startX
-	for i := range btns {
-		btns[i].X0 = curX
-		btns[i].X1 = curX + widths[i]
-		curX += widths[i]
-	}
+	_, btns, _, _ := m.headerLayout()
 	for _, b := range btns {
 		if x >= b.X0 && x < b.X1 {
 			return b, true

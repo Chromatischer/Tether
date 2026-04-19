@@ -19,6 +19,7 @@ func DefaultTools() map[string]Tool {
 		"memory.delete":   MemoryDelete{},
 		"memory.update":   MemoryUpdate{},
 		"confirm.request": ConfirmRequest{},
+		"confirm.scope":   ConfirmScope{},
 		"proactive.run":   ProactiveRun{},
 		"self.schedule":   SelfSchedule{},
 		"subagent.spawn":  SubagentSpawn{},

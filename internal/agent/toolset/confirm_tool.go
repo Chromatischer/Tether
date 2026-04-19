@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"tether/internal/tools"
@@ -12,23 +13,27 @@ import (
 type ConfirmRequest struct{}
 
 type confirmRequestArgs struct {
-	Scope  string `json:"scope"`
-	Reason string `json:"reason"`
+	Scope        string `json:"scope"`
+	Reason       string `json:"reason"`
+	ConfirmToken string `json:"confirm_token"`
 }
 
 func (t ConfirmRequest) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "confirm.request",
-		Summary: "Request user confirmation for a destructive/irreversible action.",
-		WhenToUse: "Use this only for workflows that explicitly need a standalone confirmation token. " +
-			"For built-in tool confirmations, the host usually pauses the action automatically, asks the user to run /confirm <token>, and resumes the original tool call after confirmation. Do not retry the tool manually.",
-		Safety: "This tool does not perform the action; it only creates a single-use confirmation token scoped to one specific action.",
+		Summary: "Request user confirmation and pause until the user confirms.",
+		WhenToUse: "Use this when you need explicit user approval before continuing, especially when you need a confirmation token " +
+			"to pass into another tool call (e.g. write overwrite, destructive bash). " +
+			"For built-in tool confirmations, the host usually pauses automatically; you only need this tool when you want to ask for approval BEFORE attempting the destructive call.",
+		Safety: "This tool does not perform the destructive action itself. It pauses the run until the user confirms via /confirm <token>, " +
+			"then returns the token so you can pass it as confirm_token to the actual destructive tool call.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"scope":  map[string]any{"type": "string", "minLength": 1, "description": "required action scope, provided by the tool that needs confirmation"},
-				"reason": map[string]any{"type": "string", "description": "short user-facing reason"},
+				"scope":         map[string]any{"type": "string", "minLength": 1, "description": "required action scope (must match the tool you plan to run after confirmation)"},
+				"reason":        map[string]any{"type": "string", "description": "short user-facing reason shown in the confirmation prompt"},
+				"confirm_token": map[string]any{"type": "string", "description": "(host-injected on resume) the confirmed token"},
 			},
 			"required": []string{"scope"},
 		},
@@ -36,14 +41,23 @@ func (t ConfirmRequest) Spec() tools.ToolSpec {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"token":       map[string]any{"type": "string"},
-				"scope":       map[string]any{"type": "string"},
-				"instruction": map[string]any{"type": "string"},
+				"token":     map[string]any{"type": "string"},
+				"scope":     map[string]any{"type": "string"},
+				"confirmed": map[string]any{"type": "boolean"},
 			},
-			"required": []string{"token", "scope", "instruction"},
+			"required": []string{"token", "scope", "confirmed"},
 		},
 		Examples: []tools.ToolExample{
-			{Title: "Request confirmation", Args: map[string]any{"scope": "bash:destructive:...", "reason": "You asked me to delete files."}, Result: map[string]any{"token": "...", "scope": "bash:destructive:...", "instruction": "Please confirm by typing: /confirm ..."}},
+			{
+				Title: "Pause for confirmation, then use the token",
+				Args:  map[string]any{"scope": "write:overwrite:...", "reason": "Overwriting config/proactive.yaml"},
+				Result: map[string]any{
+					"token":     "<token after resume>",
+					"scope":     "write:overwrite:...",
+					"confirmed": true,
+				},
+				Notes: "On first call (no confirm_token), the host pauses and asks the user to /confirm <token>. After the user confirms, the host resumes the run and replays the tool call with confirm_token injected.",
+			},
 		},
 		Tags: []string{"safety"},
 	}
@@ -65,10 +79,19 @@ func (t ConfirmRequest) Execute(ctx context.Context, s *Session, rawArgs json.Ra
 	if scope == "" {
 		return nil, errors.New("scope required")
 	}
-	tok := s.Confirm.Request(s.UserID, scope, args.Reason)
+
+	// First call: ask host to pause and request a token.
+	// The host will create a token, show an instruction to the user, and resume by
+	// replaying this same tool call with confirm_token injected.
+	if strings.TrimSpace(args.ConfirmToken) == "" {
+		return nil, fmt.Errorf("confirmation required; scope=%q", scope)
+	}
+
+	// Resumed call: return the (now user-confirmed) token so the model can pass it
+	// as confirm_token to the actual destructive tool call.
 	return map[string]any{
-		"token":       tok,
-		"scope":       scope,
-		"instruction": "Please confirm by typing: /confirm " + tok,
+		"token":     strings.TrimSpace(args.ConfirmToken),
+		"scope":     scope,
+		"confirmed": true,
 	}, nil
 }

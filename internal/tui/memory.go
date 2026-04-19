@@ -344,5 +344,9 @@ func (m *memoryModel) rebuild() {
 }
 
 func (m memoryModel) View() tea.View {
-	return tea.NewView(m.viewport.View())
+	content := m.viewport.View()
+	if m.w > 0 {
+		content = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(content)
+	}
+	return tea.NewView(content)
 }

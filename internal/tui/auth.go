@@ -57,12 +57,24 @@ func newAuthModel(mode authMode) authModel {
 	u.Prompt = ""
 	u.Focus()
 	u.CharLimit = 64
+	us := u.Styles()
+	us.Focused.Text = us.Focused.Text.Background(colorHeaderBg).Foreground(lipgloss.Color("255"))
+	us.Focused.Placeholder = us.Focused.Placeholder.Background(colorHeaderBg).Foreground(colorDim)
+	us.Blurred.Text = us.Blurred.Text.Background(colorHeaderBg).Foreground(colorMuted)
+	us.Blurred.Placeholder = us.Blurred.Placeholder.Background(colorHeaderBg).Foreground(colorDim)
+	u.SetStyles(us)
 
 	p := textinput.New()
 	p.Placeholder = "password"
 	p.Prompt = ""
 	p.EchoMode = textinput.EchoPassword
 	p.CharLimit = 256
+	ps := p.Styles()
+	ps.Focused.Text = ps.Focused.Text.Background(colorHeaderBg).Foreground(lipgloss.Color("255"))
+	ps.Focused.Placeholder = ps.Focused.Placeholder.Background(colorHeaderBg).Foreground(colorDim)
+	ps.Blurred.Text = ps.Blurred.Text.Background(colorHeaderBg).Foreground(colorMuted)
+	ps.Blurred.Placeholder = ps.Blurred.Placeholder.Background(colorHeaderBg).Foreground(colorDim)
+	p.SetStyles(ps)
 
 	return authModel{
 		mode:     mode,
@@ -176,7 +188,10 @@ func (m authModel) View() tea.View {
 	// Compute form width from the wider of the two field rows, then size
 	// divider and submit button to match.
 	formWidth := max(lipgloss.Width(usernameRow), lipgloss.Width(passwordRow))
-	divider := styleDim.Render(strings.Repeat("─", formWidth))
+	modeRow = styleAuthRow.Width(formWidth).Render(modeRow)
+	usernameRow = styleAuthRow.Width(formWidth).Render(usernameRow)
+	passwordRow = styleAuthRow.Width(formWidth).Render(passwordRow)
+	divider := styleAuthRow.Width(formWidth).Render(styleDim.Render(strings.Repeat("─", formWidth)))
 	submitBtn := styleAuthSubmit.Width(formWidth).Render(submitLabel)
 
 	formInner := lipgloss.JoinVertical(lipgloss.Left,
@@ -214,11 +229,14 @@ func (m authModel) View() tea.View {
 		hint,
 	)
 
+	bgFill := lipgloss.NewStyle().Background(colorBg)
 	if m.width > 0 && m.height > 0 {
-		return tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block))
+		placed := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block)
+		return tea.NewView(bgFill.Render(placed))
 	}
 	if m.width > 0 {
-		return tea.NewView(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, block))
+		placed := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, block)
+		return tea.NewView(bgFill.Render(placed))
 	}
 	return tea.NewView(block)
 }

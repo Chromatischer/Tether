@@ -307,17 +307,17 @@ func richMutedStyle(variant richTextVariant) lipgloss.Style {
 func richCodeStyle(variant richTextVariant) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(richColor("222", "252", variant)). // warm yellow / white
-		Background(colorBotMsgBg).
+		Background(colorToolBorder).                  // "236" — lifts above all message bg tones
 		Padding(0, 1)
 }
 
 func richCodeBlockStyle(variant richTextVariant) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(richBodyColor(variant)).
-		Background(colorBotMsgBg).
+		Background(colorToolBorder). // "236"
 		BorderLeft(true).
 		BorderStyle(lipgloss.ThickBorder()).
-		BorderForeground(colorToolBorder).
+		BorderForeground(colorAmber).
 		Padding(0, 1)
 }
 

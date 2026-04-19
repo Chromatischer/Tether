@@ -526,6 +526,11 @@ func (m adminModel) View() tea.View {
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	if m.w > 0 {
+		if gap := m.w - lipgloss.Width(tabBar); gap > 0 {
+			tabBar += styleHeaderSpacer.Render(strings.Repeat(" ", gap))
+		}
+	}
 
 	var body string
 	switch m.tab {
@@ -539,6 +544,9 @@ func (m adminModel) View() tea.View {
 		body = m.signal.View()
 	case adminTabSetup:
 		body = m.renderSetup()
+	}
+	if m.w > 0 {
+		body = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(body)
 	}
 	return tea.NewView(tabBar + "\n" + body)
 }

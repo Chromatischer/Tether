@@ -3,15 +3,19 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"tether/internal/agent/toolset"
+	"tether/internal/config"
 	"tether/internal/llm/openrouter"
+	"tether/internal/subagents"
 	"tether/internal/testutil"
 	"tether/internal/tools"
+	"tether/internal/userspace"
 )
 
 type dummyTool struct {
@@ -71,6 +75,65 @@ func TestExecuteFunctionCalls_UnknownAndInactive(t *testing.T) {
 	}
 	if !strings.Contains(outs[1].Output, "tool not enabled") {
 		t.Fatalf("expected not enabled error, got %q", outs[1].Output)
+	}
+}
+
+type stubConfirmer struct {
+	token  string
+	scope  string
+	reason string
+}
+
+func (c *stubConfirmer) Request(userID int64, scope string, reason string) string {
+	c.scope = scope
+	c.reason = reason
+	return c.token
+}
+
+func (c *stubConfirmer) Consume(userID int64, token string, scope string) bool {
+	return true
+}
+
+func TestExecuteFunctionCalls_ConfirmRequestPausesAndUsesReason(t *testing.T) {
+	ag := &Agent{toolImpl: map[string]toolset.Tool{"confirm.request": toolset.ConfirmRequest{}}}
+	s := toolset.NewSession(tools.NewRegistry())
+	s.Active = map[string]bool{"confirm.request": true}
+	s.UserID = 1
+	s.Confirm = &stubConfirmer{token: "tok123"}
+
+	nm := newToolNameMap(s.Registry)
+	outs, _, pause := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{{
+		Type:      "function_call",
+		CallID:    "c1",
+		Name:      "confirm.request",
+		Arguments: `{"scope":"write:overwrite:abc:file","reason":"Overwriting config/proactive.yaml"}`,
+	}}, nm)
+
+	if pause == nil {
+		t.Fatalf("expected pause")
+	}
+	if len(outs) != 0 {
+		t.Fatalf("expected no outputs before pause, got %d", len(outs))
+	}
+	if pause.Token != "tok123" {
+		t.Fatalf("unexpected token %q", pause.Token)
+	}
+	if pause.Scope != "write:overwrite:abc:file" {
+		t.Fatalf("unexpected scope %q", pause.Scope)
+	}
+	if !strings.Contains(pause.Text, "Overwriting config/proactive.yaml") {
+		t.Fatalf("expected pause text to include reason, got %q", pause.Text)
+	}
+	if !strings.Contains(pause.Text, "/confirm tok123") {
+		t.Fatalf("expected pause text to include token, got %q", pause.Text)
+	}
+
+	c := s.Confirm.(*stubConfirmer)
+	if c.reason != "Overwriting config/proactive.yaml" {
+		t.Fatalf("expected confirm reason to be passed to confirmer, got %q", c.reason)
+	}
+	if c.scope != "write:overwrite:abc:file" {
+		t.Fatalf("expected confirm scope to be passed to confirmer, got %q", c.scope)
 	}
 }
 
@@ -174,6 +237,34 @@ func TestNextJustificationThreshold(t *testing.T) {
 		if got := nextJustificationThreshold(tc.total); got != tc.want {
 			t.Fatalf("nextJustificationThreshold(%d) = %d, want %d", tc.total, got, tc.want)
 		}
+	}
+}
+
+func TestSessionFor_WiresMCP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Paths.DataDir = t.TempDir()
+	ag := newAgent(cfg, (*sql.DB)(nil))
+
+	sess := ag.sessionFor(7, 11)
+	if sess.MCP == nil {
+		t.Fatal("expected MCP caller on main agent session")
+	}
+}
+
+func TestNewSubagentSession_WiresMCP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Paths.DataDir = t.TempDir()
+	ag := newAgent(cfg, (*sql.DB)(nil))
+
+	sess, err := ag.newSubagentSession(7, subagents.RunRequest{AllowedTools: []string{"read"}})
+	if err != nil {
+		t.Fatalf("newSubagentSession returned error: %v", err)
+	}
+	if sess.MCP == nil {
+		t.Fatal("expected MCP caller on subagent session")
+	}
+	if sess.Dirs != userspace.ForUser(cfg.Paths.DataDir, 7) {
+		t.Fatalf("unexpected user dirs: %+v", sess.Dirs)
 	}
 }
 

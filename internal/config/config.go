@@ -56,9 +56,37 @@ type Config struct {
 		BotToken string `yaml:"bot_token"`
 	} `yaml:"discord"`
 
+	// MCP configures external Model Context Protocol servers.
+	//
+	// Server definitions are global, but per-user enablement is stored separately
+	// (see user_settings key: mcp.enabled_servers).
+	MCP struct {
+		// If nil, defaults to true when servers are configured, otherwise false.
+		Enabled *bool       `yaml:"enabled,omitempty"`
+		Servers []MCPServer `yaml:"servers"`
+	} `yaml:"mcp"`
+
 	Paths struct {
 		DataDir string `yaml:"data_dir"`
 	} `yaml:"paths"`
+}
+
+type MCPServer struct {
+	Name string `yaml:"name"`
+	// Transport currently supports only: "stdio".
+	Transport string `yaml:"transport"`
+	// Command is the executable to run for stdio transport.
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+
+	// Trusted controls how much we rely on MCP tool annotations for safety.
+	// Untrusted servers default to requiring confirmation for all tool calls.
+	Trusted bool `yaml:"trusted"`
+
+	// DefaultEnabledForAllUsers enables this server for users that have not
+	// explicitly configured their enabled server list yet.
+	DefaultEnabledForAllUsers bool `yaml:"default_enabled_for_all_users"`
 }
 
 func Load(path string) (*Config, error) {
@@ -162,6 +190,26 @@ func Load(path string) (*Config, error) {
 			cfg.Discord.BotToken = adminEnv.DiscordBotToken
 		} else {
 			cfg.Discord.BotToken = os.Getenv("TETHER_DISCORD_BOT_TOKEN")
+		}
+	}
+
+	// MCP
+	if cfg.MCP.Enabled == nil {
+		en := false
+		if len(cfg.MCP.Servers) > 0 {
+			en = true
+		}
+		cfg.MCP.Enabled = &en
+	}
+	for i := range cfg.MCP.Servers {
+		cfg.MCP.Servers[i].Name = strings.TrimSpace(cfg.MCP.Servers[i].Name)
+		cfg.MCP.Servers[i].Transport = strings.TrimSpace(cfg.MCP.Servers[i].Transport)
+		cfg.MCP.Servers[i].Command = strings.TrimSpace(cfg.MCP.Servers[i].Command)
+		if cfg.MCP.Servers[i].Transport == "" {
+			cfg.MCP.Servers[i].Transport = "stdio"
+		}
+		if cfg.MCP.Servers[i].Env == nil {
+			cfg.MCP.Servers[i].Env = map[string]string{}
 		}
 	}
 

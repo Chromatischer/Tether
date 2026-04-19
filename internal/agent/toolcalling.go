@@ -134,11 +134,28 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		if execErr != nil {
 			msg := execErr.Error()
 			if scope := confirmationScopeFromError(msg); scope != "" && s != nil && s.Confirm != nil {
-				token := s.Confirm.Request(s.UserID, scope, confirmationReason(name, argsUI))
+				reason := confirmationReason(name, argsUI)
+				reasonArg := ""
+				if name == "confirm.request" {
+					var req struct {
+						Reason string `json:"reason"`
+					}
+					_ = json.Unmarshal(rawArgsOrig, &req)
+					reasonArg = strings.TrimSpace(req.Reason)
+					if reasonArg != "" {
+						reason = reasonArg
+					}
+				}
+
+				token := s.Confirm.Request(s.UserID, scope, reason)
+				text := "Confirmation required. Copy this into the chat to continue: `/confirm " + token + "`. Send any other reply to reject it."
+				if name == "confirm.request" && reasonArg != "" {
+					text = "Confirmation required: " + truncateString(reasonArg, 200) + "\nType `/confirm " + token + "` to approve. Send any other reply to reject it."
+				}
 				pause = &toolExecutionPause{
 					Token: token,
 					Scope: scope,
-					Text:  "Confirmation required. Copy this into the chat to continue: `/confirm " + token + "`. Send any other reply to reject it.",
+					Text:  text,
 					Call:  c,
 				}
 			}
