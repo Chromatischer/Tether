@@ -11,6 +11,7 @@ import (
 	"tether/internal/cache"
 	"tether/internal/config"
 	"tether/internal/llm/openrouter"
+	"tether/internal/mcp"
 	"tether/internal/secrets"
 	"tether/internal/store"
 	"tether/internal/subagents"
@@ -137,7 +138,90 @@ func newAgent(cfg *config.Config, db *sql.DB) *Agent {
 		a.registry.Register(impl.Spec())
 	}
 
+	// MCP tool discovery + dynamic tool registration (best-effort).
+	a.mcp = mcp.NewManager(cfg)
+	if cfg.MCP.Enabled != nil && *cfg.MCP.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		a.mcp.Refresh(ctx)
+		// Register discovered tools.
+		for _, sc := range cfg.MCP.Servers {
+			serverName := strings.TrimSpace(sc.Name)
+			if serverName == "" {
+				continue
+			}
+			toolsList, ok := a.mcp.ToolsForServer(serverName)
+			if !ok {
+				continue
+			}
+			for _, mt := range toolsList {
+				if mt == nil {
+					continue
+				}
+				toolName := toolset.MCPToolName(serverName, mt.Name)
+				if toolName == "" {
+					continue
+				}
+				impl := toolset.MCPTool{Server: serverName, Tool: mt, Trusted: sc.Trusted}
+				a.toolImpl[toolName] = impl
+				a.registry.Register(impl.Spec())
+			}
+		}
+	}
+
 	return a
+}
+
+func (a *Agent) allowedToolsForUser(userID int64) map[string]bool {
+	// Defaults: all non-MCP tools are always allowed. MCP tools require server enablement.
+	enabledServers := map[string]bool{}
+	if a.mcp != nil {
+		for name, v := range a.mcp.DefaultEnabledServers() {
+			if v {
+				enabledServers[name] = true
+			}
+		}
+	}
+	if a.db != nil && userID != 0 {
+		if list, ok, err := store.GetMCPEnabledServers(a.db, userID); err == nil && ok {
+			enabledServers = map[string]bool{}
+			for _, s := range list {
+				if s = strings.TrimSpace(s); s != "" {
+					enabledServers[s] = true
+				}
+			}
+		}
+	}
+
+	allowed := map[string]bool{}
+	for _, info := range a.registry.List() {
+		name := strings.TrimSpace(info.Name)
+		if name == "" {
+			continue
+		}
+		if srv, ok := mcpServerFromToolName(name); ok {
+			if enabledServers[srv] {
+				allowed[name] = true
+			}
+			continue
+		}
+		allowed[name] = true
+	}
+	return allowed
+}
+
+func mcpServerFromToolName(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if !strings.HasPrefix(name, "mcp.") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(name, "mcp.")
+	server, _, ok := strings.Cut(rest, ".")
+	server = strings.TrimSpace(server)
+	if !ok || server == "" {
+		return "", false
+	}
+	return server, true
 }
 
 func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {

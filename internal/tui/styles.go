@@ -167,8 +167,6 @@ var (
 			Padding(0, 0, 0, 3).                    // extra left padding (indent)
 			Italic(true)
 
-	styleToolMsg = styleToolStrip // backwards-compat alias
-
 	// Sender labels
 	styleSenderUser   = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAmber)
