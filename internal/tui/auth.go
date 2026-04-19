@@ -142,43 +142,69 @@ func (m authModel) Update(msg tea.Msg) (authModel, tea.Cmd) {
 }
 
 func (m authModel) View() tea.View {
-	// ── Logo + tagline ────────────────────────────────────────────────────
+	// ── Logo ─────────────────────────────────────────────────────────────
 	logo := styleLogo.Render(tetherLogo)
-	tagline := styleMuted.Render("your personal AI assistant")
+	tagline := styleDim.Render("personal AI over SSH")
 
-	// ── Form ──────────────────────────────────────────────────────────────
-	label := styleMuted.Render
+	// ── Mode header (tab switcher inside the box) ─────────────────────────
+	var loginLabel, signupLabel string
+	if m.mode == authModeLogin {
+		loginLabel = styleAuthModeHeaderActive.Render("▸ Login")
+		signupLabel = styleAuthModeHeader.Render("Sign up")
+	} else {
+		loginLabel = styleAuthModeHeader.Render("Login")
+		signupLabel = styleAuthModeHeaderActive.Render("▸ Sign up")
+	}
+	modeRow := lipgloss.JoinHorizontal(lipgloss.Top, loginLabel, signupLabel)
+
+	// ── Fields ────────────────────────────────────────────────────────────
+	usernameRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		styleAuthFieldLabel.Render("username"),
+		styleAuthFieldValue.Render(m.username.View()),
+	)
+	passwordRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		styleAuthFieldLabel.Render("password"),
+		styleAuthFieldValue.Render(m.password.View()),
+	)
+	// ── Submit button ─────────────────────────────────────────────────────
 	var submitLabel string
 	if m.mode == authModeLogin {
-		submitLabel = "  log in  "
+		submitLabel = "LOGIN  →"
 	} else {
-		submitLabel = "  create  "
+		submitLabel = "SIGN UP  →"
 	}
+	// Compute form width from the wider of the two field rows, then size
+	// divider and submit button to match.
+	formWidth := max(lipgloss.Width(usernameRow), lipgloss.Width(passwordRow))
+	divider := styleDim.Render(strings.Repeat("─", formWidth))
+	submitBtn := styleAuthSubmit.Width(formWidth).Render(submitLabel)
 
 	formInner := lipgloss.JoinVertical(lipgloss.Left,
-		label("user")+"  "+m.username.View(),
-		"",
-		label("pass")+"  "+m.password.View(),
-		"",
-		styleTabActive.Render(submitLabel),
+		modeRow,
+		divider,
+		usernameRow,
+		passwordRow,
+		divider,
+		submitBtn,
 	)
 
-	status := ""
+	// ── Status ────────────────────────────────────────────────────────────
 	if m.statusText != "" {
+		var statusLine string
 		if m.statusErr {
-			status = styleError.Render(m.statusText)
+			statusLine = styleError.Render("✗ " + m.statusText)
 		} else {
-			status = styleInfo.Render(m.statusText)
+			statusLine = styleInfo.Render("✓ " + m.statusText)
 		}
-		formInner = lipgloss.JoinVertical(lipgloss.Left, formInner, "", status)
+		formInner = lipgloss.JoinVertical(lipgloss.Left, formInner, "", statusLine)
 	}
 
 	box := styleAuthBox.Render(formInner)
 
 	// ── Hint ──────────────────────────────────────────────────────────────
-	hint := styleDim.Render("tab · switch   enter · submit   ctrl+c · quit")
+	hint := styleDim.Render("tab · switch field   enter · submit   ctrl+c · quit")
 
-	// ── Stack all pieces, centered horizontally ───────────────────────────
+	// ── Stack centered ────────────────────────────────────────────────────
 	block := lipgloss.JoinVertical(lipgloss.Center,
 		logo,
 		tagline,
