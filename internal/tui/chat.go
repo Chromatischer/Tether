@@ -55,6 +55,7 @@ type chatModel struct {
 	viewport              viewport.Model
 	textarea              textarea.Model
 	messages              []chatMessage
+	streamFrame           int // drives streaming dot animation
 	streamingAssistantIdx map[int]int
 	streamingToolCalls    map[int]map[string]int
 	dataDir               string
@@ -375,7 +376,7 @@ func (m *chatModel) reflow() {
 	w := m.viewport.Width()
 	lines := make([]string, 0, len(m.messages))
 	for _, msg := range m.messages {
-		lines = append(lines, formatMessage(msg, w))
+		lines = append(lines, formatMessage(msg, w, m.streamFrame))
 	}
 	m.viewport.SetContent(strings.Join(lines, "\n\n"))
 }
@@ -526,75 +527,116 @@ func (m chatModel) clickInTranscript(y int) bool {
 	return bodyY >= top && bodyY < bottom
 }
 
-// formatMessage renders a single chat message with role-appropriate alignment,
-// background, and sender label. width is the current viewport width.
-func formatMessage(msg chatMessage, width int) string {
+// formatMessage renders a single chat message as a full-width left-border strip.
+// frame drives the streaming dot animation; pass 0 when not animating.
+func formatMessage(msg chatMessage, width int, frame int) string {
 	if width <= 0 {
 		width = 80
 	}
-	bubbleWidth := max(20, min(width-6, 72))
 
 	switch msg.role {
 	case "user":
-		label := styleSenderUser.Render("You")
-		bubble := styleUserMsg.Width(bubbleWidth).Render(label + "\n" + msg.content)
-		return lipgloss.PlaceHorizontal(width, lipgloss.Right, bubble)
+		label := styleSenderUser.Render("you ›")
+		bodyW := max(16, width-styleUserMsg.GetHorizontalFrameSize())
+		body := lipgloss.Wrap(msg.content, bodyW, " ")
+		return styleUserMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant":
-		label := styleSenderBot.Render("Tether")
-		body := msg.content
-		bodyWidth := max(16, bubbleWidth-2)
-		placeholderBody := strings.TrimSpace(body) == "" || body == "..."
-		if placeholderBody {
-			body = "..."
-		}
-		bodyParts := make([]string, 0, 3)
+		label := styleSenderBot.Render("◆ tether")
+		bodyW := max(16, width-styleAgentMsg.GetHorizontalFrameSize())
+		var parts []string
+
+		// Reasoning block
 		if strings.TrimSpace(msg.reasoning) != "" {
-			if msg.streaming && placeholderBody {
-				bodyParts = append(bodyParts, styleDim.Render("Model reasoning"), msg.reasoning)
-				body = ""
-			} else if msg.streaming {
-				bodyParts = append(bodyParts, styleDim.Render("<Model reasoning available. Click or ctrl+o to expand>"))
+			header := "◈ model reasoning"
+			if msg.streaming && (strings.TrimSpace(msg.content) == "" || msg.content == "...") {
+				parts = append(parts,
+					styleReasoningHeader.Render(header),
+					lipgloss.Wrap(msg.reasoning, bodyW, " "),
+				)
 			} else if msg.reasoningExpanded {
-				bodyParts = append(bodyParts, styleDim.Render("Model reasoning  <click or ctrl+o to collapse>"), msg.reasoning)
+				parts = append(parts,
+					styleReasoningHeader.Render(header+"  ")+styleReasoningHint.Render("^O to collapse"),
+					lipgloss.Wrap(msg.reasoning, bodyW, " "),
+				)
 			} else {
-				bodyParts = append(bodyParts, styleDim.Render("<Model reasoning available. Click or ctrl+o to expand>"))
+				parts = append(parts,
+					styleDim.Render("◈ model reasoning available  ")+styleReasoningHint.Render("^O to expand"),
+				)
 			}
 		} else if !msg.streaming {
-			bodyParts = append(bodyParts, styleDim.Render("<No separate model reasoning returned>"))
+			parts = append(parts, styleDim.Render("◈ no separate model reasoning"))
 		}
-		if strings.TrimSpace(body) != "" {
-			if placeholderBody {
-				bodyParts = append(bodyParts, body)
-			} else {
-				bodyParts = append(bodyParts, renderRichText(body, bodyWidth, richTextAssistant))
+
+		// Body / streaming dots
+		body := strings.TrimSpace(msg.content)
+		if msg.streaming && (body == "" || body == "...") {
+			// Animated dot pulse: four brightness levels, each dot offset by 1 frame.
+			dotLevels := []lipgloss.Style{
+				lipgloss.NewStyle().Foreground(colorDim),
+				lipgloss.NewStyle().Foreground(colorMuted),
+				lipgloss.NewStyle().Foreground(colorAmber),
+				lipgloss.NewStyle().Foreground(colorMuted),
 			}
+			d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
+			parts = append(parts, d(0)+" "+d(1)+" "+d(2))
+		} else if body != "" {
+			parts = append(parts, renderRichText(body, bodyW, richTextAssistant))
 		}
-		body = strings.Join(bodyParts, "\n\n")
-		bubble := styleAgentMsg.Width(bubbleWidth).Render(label + "\n" + body)
-		return lipgloss.PlaceHorizontal(width, lipgloss.Left, bubble)
+
+		return styleAgentMsg.Width(width).Render(label + "\n" + strings.Join(parts, "\n"))
 
 	case "tool_call":
 		if !isValidToolCallContent(msg.content) {
-			styled := styleSystemMsg.Render(msg.content)
-			return lipgloss.PlaceHorizontal(width, lipgloss.Center, styled)
+			senderLabel, s := systemMessageVariant(msg.content)
+			bodyW := max(16, width-s.GetHorizontalFrameSize())
+			rendered := renderRichText(msg.content, bodyW, richTextSystem)
+			return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
 		}
 		entry, _ := parseToolCallContent(msg.content)
-		body := "tool  " + entry.Name
-		if strings.TrimSpace(entry.Args) != "" {
-			body += "  " + entry.Args
+		invLine := "▷  " + entry.Name
+		if args := strings.TrimSpace(entry.Args); args != "" {
+			invLine += "  ·  " + args
 		}
-		if strings.TrimSpace(entry.Result) != "" {
-			body += "\n\n" + entry.Result
+		invRow := styleToolStrip.Width(width).Render(invLine)
+		if result := strings.TrimSpace(entry.Result); result != "" {
+			return invRow + "\n" + styleToolResult.Width(width).Render("✓  "+result)
 		}
-		styled := styleToolMsg.Width(max(18, min(width-10, 64))).Render(body)
-		return lipgloss.PlaceHorizontal(width, lipgloss.Center, styled)
+		return invRow + "\n" + styleToolResult.Width(width).Render("·  running…")
 
 	default: // system
-		rendered := renderRichText(msg.content, max(16, min(width-10, 64)-2), richTextSystem)
-		styled := styleSystemMsg.Width(max(18, min(width-10, 64))).Render(rendered)
-		return lipgloss.PlaceHorizontal(width, lipgloss.Center, styled)
+		senderLabel, s := systemMessageVariant(msg.content)
+		bodyW := max(16, width-s.GetHorizontalFrameSize())
+		rendered := renderRichText(msg.content, bodyW, richTextSystem)
+		return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
 	}
+}
+
+// systemMessageVariant picks a sender label and style based on the content prefix.
+func systemMessageVariant(content string) (string, lipgloss.Style) {
+	c := strings.ToLower(strings.TrimSpace(content))
+	errorPrefixes := []string{
+		"(agent error)", "failed", "invalid", "unknown command",
+		"secrets unavailable", "error:", "✗",
+	}
+	for _, p := range errorPrefixes {
+		if strings.HasPrefix(c, p) {
+			return "✗ error", styleErrorMsg
+		}
+	}
+	successPrefixes := []string{
+		"signal linked", "discord linked", "discord unlinked", "signal unlinked",
+		"memory added", "memory updated", "memory deleted",
+		"task added", "task updated", "task marked done",
+		"secret stored", "deleted secret", "cleared all secrets",
+		"updated role", "started a fresh", "spawned subagent",
+	}
+	for _, p := range successPrefixes {
+		if strings.HasPrefix(c, p) {
+			return "✓ info", styleInfoMsg
+		}
+	}
+	return "● system", styleSystemMsg
 }
 
 func isValidToolName(name string) bool {

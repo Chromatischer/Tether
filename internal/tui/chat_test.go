@@ -72,21 +72,21 @@ func TestAppendStreamingToolCallRejectsInvalidToolName(t *testing.T) {
 }
 
 func TestFormatMessage_AssistantWithoutSeparateReasoningShowsExplicitNotice(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80)
-	if !strings.Contains(out, "No separate model reasoning returned") {
-		t.Fatalf("expected explicit no-reasoning notice, got %q", out)
+	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80, 0)
+	if !strings.Contains(out, "no separate model reasoning") {
+		t.Fatalf("expected no-reasoning notice, got %q", out)
 	}
 }
 
 func TestFormatMessage_AssistantWithReasoningShowsModelReasoningLabel(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "Hi", reasoning: "step 1"}, 80)
-	if !strings.Contains(out, "Model reasoning available") {
+	out := formatMessage(chatMessage{role: "assistant", content: "Hi", reasoning: "step 1"}, 80, 0)
+	if !strings.Contains(out, "model reasoning available") {
 		t.Fatalf("expected reasoning affordance, got %q", out)
 	}
 }
 
 func TestFormatMessage_SystemNoticeDoesNotRenderNoticeLabel(t *testing.T) {
-	out := formatMessage(chatMessage{role: "system", content: "Started a fresh conversation."}, 80)
+	out := formatMessage(chatMessage{role: "system", content: "Started a fresh conversation."}, 80, 0)
 	if !strings.Contains(out, "Started a fresh conversation.") {
 		t.Fatalf("expected notice content, got %q", out)
 	}
@@ -96,12 +96,15 @@ func TestFormatMessage_SystemNoticeDoesNotRenderNoticeLabel(t *testing.T) {
 }
 
 func TestFormatMessage_ToolCallShowsResultInSameWidget(t *testing.T) {
-	out := formatMessage(chatMessage{role: "tool_call", content: "bash  {\"command\":\"pwd\"}\n\n{\n  \"exit_code\": 0,\n  \"stdout\": \"/work\\n\"\n}"}, 80)
-	if !strings.Contains(out, "tool  bash") {
-		t.Fatalf("expected tool label, got %q", out)
+	out := formatMessage(chatMessage{role: "tool_call", content: "bash  {\"command\":\"pwd\"}\n\n{\n  \"exit_code\": 0,\n  \"stdout\": \"/work\\n\"\n}"}, 80, 0)
+	if !strings.Contains(out, "▷") {
+		t.Fatalf("expected tool icon ▷, got %q", out)
+	}
+	if !strings.Contains(out, "bash") {
+		t.Fatalf("expected tool name bash, got %q", out)
 	}
 	if !strings.Contains(out, "\"stdout\": \"/work") {
-		t.Fatalf("expected result in same widget, got %q", out)
+		t.Fatalf("expected result content, got %q", out)
 	}
 }
 
@@ -153,8 +156,8 @@ func TestStreamingReasoningStaysExpandedUntilAnswerTextStarts(t *testing.T) {
 }
 
 func TestFormatMessage_StreamingReasoningRendersAtTopOfBubble(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80)
-	if !strings.Contains(out, "Model reasoning") {
+	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80, 0)
+	if !strings.Contains(out, "◈ model reasoning") {
 		t.Fatalf("expected streaming reasoning label, got %q", out)
 	}
 	if !strings.Contains(out, "step 1") {
@@ -163,7 +166,7 @@ func TestFormatMessage_StreamingReasoningRendersAtTopOfBubble(t *testing.T) {
 }
 
 func TestFormatMessage_StreamingReasoningHidesPlaceholderBody(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80)
+	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80, 0)
 	if strings.Contains(out, "\n\n...") {
 		t.Fatalf("expected placeholder body to be hidden while only reasoning is streaming, got %q", out)
 	}
@@ -269,5 +272,39 @@ func TestChatModelEnterOnSendDispatchesMessage(t *testing.T) {
 	}
 	if updated.textarea.Value() != "" {
 		t.Fatalf("expected textarea reset after send, got %q", updated.textarea.Value())
+	}
+}
+
+func TestFormatMessage_UserMessageHasSenderGlyph(t *testing.T) {
+	out := formatMessage(chatMessage{role: "user", content: "hello"}, 80, 0)
+	if !strings.Contains(out, "you ›") {
+		t.Fatalf("expected sender glyph 'you ›', got %q", out)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("expected message content, got %q", out)
+	}
+}
+
+func TestFormatMessage_SystemErrorPrefixGetsErrorStyle(t *testing.T) {
+	out := formatMessage(chatMessage{role: "system", content: "failed to load messages: db error"}, 80, 0)
+	if !strings.Contains(out, "✗ error") {
+		t.Fatalf("expected error sender label, got %q", out)
+	}
+}
+
+func TestFormatMessage_SystemSuccessPrefixGetsInfoStyle(t *testing.T) {
+	out := formatMessage(chatMessage{role: "system", content: "memory added (id 7)"}, 80, 0)
+	if !strings.Contains(out, "✓ info") {
+		t.Fatalf("expected info sender label, got %q", out)
+	}
+}
+
+func TestFormatMessage_ToolCallInProgressShowsRunning(t *testing.T) {
+	out := formatMessage(chatMessage{role: "tool_call", content: "bash  pwd"}, 80, 0)
+	if !strings.Contains(out, "▷") {
+		t.Fatalf("expected tool icon, got %q", out)
+	}
+	if !strings.Contains(out, "running") {
+		t.Fatalf("expected in-progress indicator, got %q", out)
 	}
 }
