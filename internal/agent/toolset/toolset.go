@@ -59,8 +59,13 @@ type InvokedSkill struct {
 }
 
 type Session struct {
-	UserID int64
-	Dirs   userspace.Dirs
+	UserID         int64
+	ConversationID int64
+	Dirs           userspace.Dirs
+
+	// IsSubagent is set by the runtime when tools are being executed from a sub-agent context.
+	// Some tools (e.g. self.schedule) are explicitly disallowed for sub-agents.
+	IsSubagent bool
 
 	DB *sql.DB
 

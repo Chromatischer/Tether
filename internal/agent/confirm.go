@@ -2,7 +2,7 @@ package agent
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base32"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -19,6 +19,7 @@ type confirmEntry struct {
 	CreatedAt time.Time
 	Confirmed bool
 	Used      bool
+	Rejected  bool
 }
 
 type confirmManager struct {
@@ -57,10 +58,34 @@ func (m *confirmManager) Confirm(userID int64, token string) bool {
 		delete(m.items, token)
 		return false
 	}
-	if it.Used {
+	if it.Used || it.Rejected {
 		return false
 	}
 	it.Confirmed = true
+	return true
+}
+
+func (m *confirmManager) Reject(userID int64, token string) bool {
+	now := time.Now()
+	m.mu.Lock()
+	m.pruneLocked(now)
+	defer m.mu.Unlock()
+	it := m.items[token]
+	if it == nil {
+		return false
+	}
+	if it.UserID != userID {
+		return false
+	}
+	if time.Since(it.CreatedAt) > m.ttl {
+		delete(m.items, token)
+		return false
+	}
+	if it.Used {
+		return false
+	}
+	it.Rejected = true
+	it.Used = true
 	return true
 }
 
@@ -83,7 +108,7 @@ func (m *confirmManager) Consume(userID int64, token string, scope string) bool 
 	if it.Scope != scope {
 		return false
 	}
-	if !it.Confirmed || it.Used {
+	if !it.Confirmed || it.Used || it.Rejected {
 		return false
 	}
 	it.Used = true
@@ -116,7 +141,7 @@ func (m *confirmManager) pruneLocked(now time.Time) {
 func randomToken(nbytes int) string {
 	b := make([]byte, nbytes)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))
 }
 
 // ConfirmToken confirms a pending destructive-action token.
@@ -134,12 +159,34 @@ func (a *Agent) ConfirmToken(userID int64, token string) bool {
 			payload["reason"] = truncateString(it.Reason, 300)
 			payload["confirmed"] = it.Confirmed
 			payload["used"] = it.Used
+			payload["rejected"] = it.Rejected
 			payload["age_seconds"] = int(time.Since(it.CreatedAt).Seconds())
 		}
 		b, _ := json.Marshal(payload)
 		_ = store.AddAuditEvent(a.db, &userID, "confirm_confirm", string(b))
 	}
 
+	return ok
+}
+
+func (a *Agent) rejectConfirmToken(userID int64, token string) bool {
+	if a.confirm == nil {
+		return false
+	}
+	ok := a.confirm.Reject(userID, token)
+	if a.db != nil {
+		payload := map[string]any{"token": strings.TrimSpace(token), "ok": ok}
+		if it, ok2 := a.confirm.Peek(strings.TrimSpace(token)); ok2 {
+			payload["scope"] = it.Scope
+			payload["reason"] = truncateString(it.Reason, 300)
+			payload["confirmed"] = it.Confirmed
+			payload["used"] = it.Used
+			payload["rejected"] = it.Rejected
+			payload["age_seconds"] = int(time.Since(it.CreatedAt).Seconds())
+		}
+		b, _ := json.Marshal(payload)
+		_ = store.AddAuditEvent(a.db, &userID, "confirm_reject", string(b))
+	}
 	return ok
 }
 

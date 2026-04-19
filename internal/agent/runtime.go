@@ -91,13 +91,14 @@ func truncateAuditString(s string, max int) string {
 func newAgent(cfg *config.Config, db *sql.DB) *Agent {
 	llm := openrouter.New(cfg.OpenRouter.BaseURL, cfg.OpenRouter.APIKey, "Tether")
 	a := &Agent{
-		cfg:      cfg,
-		db:       db,
-		llm:      llm,
-		cache:    cache.NewLLMCache(db, 14*24*time.Hour),
-		registry: tools.NewRegistry(),
-		sessions: map[int64]*toolset.Session{},
-		confirm:  newConfirmManager(),
+		cfg:         cfg,
+		db:          db,
+		llm:         llm,
+		cache:       cache.NewLLMCache(db, 14*24*time.Hour),
+		registry:    tools.NewRegistry(),
+		sessions:    map[int64]*toolset.Session{},
+		confirm:     newConfirmManager(),
+		pendingRuns: map[string]*pendingConfirmation{},
 	}
 
 	// Optional secrets store (used by tools via secret references)
@@ -129,6 +130,8 @@ func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {
 		a.sessions[convID] = s
 	}
 	s.UserID = userID
+	s.ConversationID = convID
+	s.IsSubagent = false
 	s.Dirs = userspace.ForUser(a.cfg.Paths.DataDir, userID)
 	s.DB = a.db
 	s.Subagents = a.subStore

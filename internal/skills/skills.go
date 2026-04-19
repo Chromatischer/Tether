@@ -300,7 +300,8 @@ func applyShellInjections(ctx context.Context, d userspace.Dirs, confirmer Confi
 		if cmd == "" {
 			return "", nil
 		}
-		res, err := sandbox.RunNoNet(ctx, d.Root, []string{"bash", "-lc", "cd workspace 2>/dev/null || true; " + cmd})
+		// Commands start in /work (sandbox root). For repo commands inside workspace/: cd workspace && ...
+		res, err := sandbox.RunNoNet(ctx, d.Root, []string{"bash", "-lc", cmd})
 		if err != nil {
 			return "", err
 		}

@@ -43,7 +43,8 @@ func TestActiveTools_SortedByName(t *testing.T) {
 	ag := &Agent{toolImpl: map[string]toolset.Tool{"b": dummyTool{name: "b"}, "a": dummyTool{name: "a"}}}
 	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"b": true, "a": true}
-	ts := ag.activeTools(s)
+	nm := newToolNameMap(s.Registry)
+	ts := ag.activeTools(s, nm)
 	if len(ts) != 2 {
 		t.Fatalf("expected 2 tools")
 	}
@@ -57,10 +58,11 @@ func TestExecuteFunctionCalls_UnknownAndInactive(t *testing.T) {
 	s := toolset.NewSession(tools.NewRegistry())
 	s.Active = map[string]bool{"known": false}
 
-	outs, _ := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{
+	nm := newToolNameMap(s.Registry)
+	outs, _, _ := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{
 		{Type: "function_call", CallID: "c1", Name: "unknown", Arguments: `{}`},
 		{Type: "function_call", CallID: "c2", Name: "known", Arguments: `{}`},
-	})
+	}, nm)
 	if len(outs) != 2 {
 		t.Fatalf("expected 2 outputs, got %d", len(outs))
 	}
@@ -84,12 +86,13 @@ func TestExecuteFunctionCalls_AuditsArgsHashOnly(t *testing.T) {
 	s.DB = db
 	s.UserID = 7
 
-	_, _ = ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{{
+	nm := newToolNameMap(s.Registry)
+	_, _, _ = ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{{
 		Type:      "function_call",
 		CallID:    "call_123",
 		Name:      "t",
 		Arguments: secretArgs,
-	}})
+	}}, nm)
 
 	var payload string
 	if err := db.QueryRow(`SELECT payload_json FROM audit_events WHERE type='tool_call' ORDER BY id DESC LIMIT 1`).Scan(&payload); err != nil {

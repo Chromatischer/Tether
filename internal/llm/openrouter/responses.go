@@ -21,6 +21,10 @@ import (
 type ResponsesRequest struct {
 	Model string `json:"model"`
 
+	// Models enables OpenRouter model fallbacks (try these in order if the primary fails).
+	// Docs: https://openrouter.ai/docs/guides/routing/model-fallbacks
+	Models []string `json:"models,omitempty"`
+
 	// Input can be a string or an array of items (messages, function_call, ...)
 	Input any `json:"input"`
 
@@ -32,6 +36,9 @@ type ResponsesRequest struct {
 	Tools      []ResponsesTool     `json:"tools,omitempty"`
 	ToolChoice any                 `json:"tool_choice,omitempty"`
 	Reasoning  *ResponsesReasoning `json:"reasoning,omitempty"`
+
+	// Provider routing preferences (OpenRouter-specific).
+	Provider *ProviderPreferences `json:"provider,omitempty"`
 }
 
 type ResponsesReasoning struct {
@@ -177,7 +184,7 @@ func (c *Client) Responses(ctx context.Context, req ResponsesRequest) (Responses
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ResponsesResponse{}, fmt.Errorf("openrouter status %d: %s", resp.StatusCode, string(body))
+		return ResponsesResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: body, Parsed: parseErrorResponse(body)}
 	}
 
 	var out ResponsesResponse
@@ -213,7 +220,7 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		return ResponsesResponse{}, fmt.Errorf("openrouter status %d: %s", resp.StatusCode, string(body))
+		return ResponsesResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: body, Parsed: parseErrorResponse(body)}
 	}
 
 	final := ResponsesResponse{}

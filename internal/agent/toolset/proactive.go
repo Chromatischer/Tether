@@ -101,7 +101,7 @@ func (t ProactiveRun) Execute(ctx context.Context, s *Session, rawArgs json.RawM
 	if strings.TrimSpace(s.Dirs.Root) != "" {
 		dataDir = filepath.Clean(filepath.Join(s.Dirs.Root, "..", ".."))
 	}
-	eng := proactive.NewEngine(s.DB, s.LLM, nil, dataDir)
+	eng := proactive.NewEngine(s.DB, s.LLM, nil, nil, dataDir)
 	if strings.TrimSpace(args.AgentID) != "" {
 		res, err := eng.RunAgentNow(ctx, s.UserID, args.AgentID, nil)
 		if err != nil {

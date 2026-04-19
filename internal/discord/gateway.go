@@ -36,6 +36,15 @@ type Gateway struct {
 	ag  *agent.Agent
 
 	s *discordgo.Session
+
+	mu               sync.Mutex
+	pendingByMessage map[string]discordPendingReaction
+}
+
+type discordPendingReaction struct {
+	UserID         int64
+	ConversationID int64
+	ChannelID      string
 }
 
 const (
@@ -47,7 +56,12 @@ const (
 )
 
 func NewGateway(cfg *config.Config, db *sql.DB, ag *agent.Agent) *Gateway {
-	return &Gateway{cfg: cfg, db: db, ag: ag}
+	return &Gateway{
+		cfg:              cfg,
+		db:               db,
+		ag:               ag,
+		pendingByMessage: map[string]discordPendingReaction{},
+	}
 }
 
 func (g *Gateway) Start(ctx context.Context) {
@@ -72,7 +86,7 @@ func (g *Gateway) Start(ctx context.Context) {
 	// - MessageContent: required to receive message content (privileged; enable in Discord developer portal)
 	// - Guilds: not strictly required for DM handling, but helps Discord associate the session with the bot's guilds
 	//   so presence/activity reliably shows as online in servers.
-	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
+	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsDirectMessages | discordgo.IntentsDirectMessageReactions | discordgo.IntentsMessageContent
 	// Set a baseline presence in the Identify payload.
 	s.Identify.Presence = discordgo.GatewayStatusUpdate{Status: "online"}
 
@@ -105,6 +119,9 @@ func (g *Gateway) Start(ctx context.Context) {
 	s.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Don't block the discordgo event loop.
 		go g.onMessage(ctx, s, m)
+	})
+	s.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+		go g.onReaction(ctx, s, r)
 	})
 
 	if err := s.Open(); err != nil {
@@ -209,6 +226,11 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 	_ = store.AddAuditEvent(g.db, &uid, "discord_inbound", string(payload))
 
 	clean, findings := redact.ScanAndRedact(content)
+	if g.ag.HasPendingConfirmation(uid, conv.ID) {
+		note := "Pending tool confirmation rejected by the user."
+		_ = g.ag.RejectPendingConfirmation(uid, conv.ID)
+		_ = store.AddMessage(g.db, conv.ID, "system", note)
+	}
 	_ = store.AddMessage(g.db, conv.ID, "user", clean)
 	if len(findings) > 0 {
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Your message looked like it contained secrets/tokens and was redacted. Please use /secret add via SSH for secrets.")
@@ -222,6 +244,7 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 		stream.OnEvent(ev)
 	})
 	if err != nil {
+		log.Warn("agent reply failed", "error", err, "user_id", uid, "conversation_id", conv.ID, "discord_channel", m.ChannelID)
 		stream.Finish("Agent error: " + err.Error())
 		return
 	}
@@ -239,10 +262,114 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 		return
 	}
 	stream.Finish(out)
+	g.attachPendingConfirmationReaction(uid, conv.ID, m.ChannelID, stream.MessageID())
 }
 
 func (g *Gateway) sendChunks(s *discordgo.Session, channelID string, msg string) {
 	sendDiscordChunks(s, channelID, msg)
+}
+
+func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+	if r == nil || r.MessageReaction == nil {
+		return
+	}
+	if g.s != nil && g.s.State != nil && g.s.State.User != nil && r.UserID == g.s.State.User.ID {
+		return
+	}
+	emoji := strings.TrimSpace(r.Emoji.Name)
+	if emoji != "✅" && emoji != "❌" {
+		return
+	}
+
+	g.mu.Lock()
+	pending, ok := g.pendingByMessage[r.MessageID]
+	g.mu.Unlock()
+	if !ok || pending.ChannelID != r.ChannelID {
+		return
+	}
+
+	uid, linked, err := store.FindUserIDByDiscordUserID(g.db, strings.TrimSpace(r.UserID))
+	if err != nil || !linked || uid != pending.UserID {
+		return
+	}
+
+	g.clearPendingReaction(r.ChannelID, r.MessageID)
+	if emoji == "✅" {
+		token, ok := g.ag.PendingConfirmationToken(pending.UserID, pending.ConversationID)
+		if !ok {
+			return
+		}
+		stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+		defer stream.Close()
+		stream.Start()
+		reply, convID, resumed, err := g.ag.ResumeConfirmedStream(ctx, pending.UserID, token, func(ev agent.StreamEvent) {
+			stream.OnEvent(ev)
+		})
+		if err != nil {
+			stream.Finish("Agent error: " + err.Error())
+			return
+		}
+		if !resumed {
+			stream.Finish("confirmation failed")
+			return
+		}
+		out, of := redact.ScanAndRedact(reply.Text)
+		_ = store.AddMessage(g.db, convID, "assistant", out)
+		if len(of) > 0 {
+			stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
+			return
+		}
+		stream.Finish(out)
+		g.attachPendingConfirmationReaction(pending.UserID, convID, r.ChannelID, stream.MessageID())
+		return
+	}
+
+	if !g.ag.RejectPendingConfirmation(pending.UserID, pending.ConversationID) {
+		return
+	}
+	note := "Pending tool confirmation rejected by the user."
+	_ = store.AddMessage(g.db, pending.ConversationID, "system", note)
+	stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+	defer stream.Close()
+	stream.Start()
+	reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: pending.UserID, ConversationID: pending.ConversationID, Text: ""}, func(ev agent.StreamEvent) {
+		stream.OnEvent(ev)
+	})
+	if err != nil {
+		stream.Finish("Agent error: " + err.Error())
+		return
+	}
+	out, of := redact.ScanAndRedact(reply.Text)
+	_ = store.AddMessage(g.db, pending.ConversationID, "assistant", out)
+	if len(of) > 0 {
+		stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
+		return
+	}
+	stream.Finish(out)
+	g.attachPendingConfirmationReaction(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID())
+}
+
+func (g *Gateway) attachPendingConfirmationReaction(userID, convID int64, channelID string, messageID string) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return
+	}
+	if !g.ag.HasPendingConfirmation(userID, convID) {
+		return
+	}
+	_ = g.s.MessageReactionAdd(channelID, messageID, "✅")
+	_ = g.s.MessageReactionAdd(channelID, messageID, "❌")
+	g.mu.Lock()
+	g.pendingByMessage[messageID] = discordPendingReaction{UserID: userID, ConversationID: convID, ChannelID: channelID}
+	g.mu.Unlock()
+}
+
+func (g *Gateway) clearPendingReaction(channelID string, messageID string) {
+	_ = g.s.MessageReactionRemove(channelID, messageID, "✅", "@me")
+	_ = g.s.MessageReactionRemove(channelID, messageID, "❌", "@me")
+	g.mu.Lock()
+	delete(g.pendingByMessage, messageID)
+	g.mu.Unlock()
 }
 
 type discordReplyStream struct {
@@ -451,6 +578,12 @@ func (r *discordReplyStream) ensureMessage(content string) {
 	r.mu.Unlock()
 }
 
+func (r *discordReplyStream) MessageID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.TrimSpace(r.messageID)
+}
+
 func renderDiscordPreview(tools []string, reasoning string, answer string) string {
 	parts := make([]string, 0, len(tools)+2)
 	for _, name := range tools {
@@ -541,7 +674,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		}
 	}
 	triggerProactiveEvent := func(event string, meta map[string]string) {
-		eng := proactive.NewEngine(g.db, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
+		eng := proactive.NewEngine(g.db, g.ag, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
 		go func() {
 			ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -549,7 +682,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		}()
 	}
 	triggerProactiveAction := func(action string, meta map[string]string) {
-		eng := proactive.NewEngine(g.db, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
+		eng := proactive.NewEngine(g.db, g.ag, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
 		go func() {
 			ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -557,7 +690,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		}()
 	}
 	triggerProactiveAgent := func(agentID string, meta map[string]string) {
-		eng := proactive.NewEngine(g.db, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
+		eng := proactive.NewEngine(g.db, g.ag, g.ag, g.ag.Subagents(), g.cfg.Paths.DataDir)
 		go func() {
 			ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()

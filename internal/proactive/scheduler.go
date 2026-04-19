@@ -18,11 +18,11 @@ type Scheduler struct {
 	interval time.Duration
 }
 
-func NewScheduler(db *sql.DB, llm LLM, subs *subagents.Manager, dataDir string, interval time.Duration) *Scheduler {
+func NewScheduler(db *sql.DB, llm LLM, selfRunner SelfScheduleRunner, subs *subagents.Manager, dataDir string, interval time.Duration) *Scheduler {
 	if interval <= 0 {
 		interval = 1 * time.Minute
 	}
-	return &Scheduler{eng: NewEngine(db, llm, subs, dataDir), interval: interval}
+	return &Scheduler{eng: NewEngine(db, llm, selfRunner, subs, dataDir), interval: interval}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {

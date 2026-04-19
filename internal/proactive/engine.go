@@ -38,12 +38,14 @@ type Engine struct {
 	subs    *subagents.Manager
 	dataDir string
 
+	selfRunner SelfScheduleRunner
+
 	mu      sync.Mutex
 	pending map[string]bool // key=userID:agentID:trigger:day
 }
 
-func NewEngine(db *sql.DB, llm LLM, subs *subagents.Manager, dataDir string) *Engine {
-	return &Engine{db: db, llm: llm, subs: subs, dataDir: dataDir, pending: map[string]bool{}}
+func NewEngine(db *sql.DB, llm LLM, selfRunner SelfScheduleRunner, subs *subagents.Manager, dataDir string) *Engine {
+	return &Engine{db: db, llm: llm, subs: subs, dataDir: dataDir, selfRunner: selfRunner, pending: map[string]bool{}}
 }
 
 func (e *Engine) Tick(ctx context.Context, now time.Time) error {
@@ -134,6 +136,9 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 				e.runCustomAgent(ctx, uid, ar, agID, "agent/"+agID, trigger, dayKey, "scheduled_due", prompt, startOfDay)
 			}
 		}
+
+		// One-off self-scheduled runs (created via the self.schedule tool).
+		e.tickSelfSchedules(ctx, uid, now)
 	}
 
 	return nil

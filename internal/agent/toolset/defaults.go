@@ -20,6 +20,7 @@ func DefaultTools() map[string]Tool {
 		"memory.update":   MemoryUpdate{},
 		"confirm.request": ConfirmRequest{},
 		"proactive.run":   ProactiveRun{},
+		"self.schedule":   SelfSchedule{},
 		"subagent.spawn":  SubagentSpawn{},
 		"subagent.status": SubagentStatus{},
 		"skill.invoke":    SkillInvoke{},

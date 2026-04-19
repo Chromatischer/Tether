@@ -111,7 +111,7 @@ func NewAppModel(ctx *SessionContext) tea.Model {
 		nextRequestID: 1,
 		releasedRuns:  map[int]bool{},
 	}
-	m.proEng = proactive.NewEngine(ctx.DB, ag, ag.Subagents(), ctx.Config.Paths.DataDir)
+	m.proEng = proactive.NewEngine(ctx.DB, ag, ag, ag.Subagents(), ctx.Config.Paths.DataDir)
 	m.view = viewLogin
 	m.auth = newAuthModel(authModeLogin)
 	m.chat = newChatModel()
@@ -200,12 +200,18 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Deliver any pending proactive notifications into the conversation.
+		// Deliver any pending proactive notifications.
+		// If a notification has a conversation_id, inject it into that conversation.
+		// Otherwise, inject into the user's active conversation (backwards-compatible behavior).
 		nots, err := store.ListUndeliveredNotifications(m.ctx.DB, u.ID, 50)
 		if err == nil {
 			for _, n := range nots {
+				targetConvID := conv.ID
+				if n.ConversationID != 0 {
+					targetConvID = n.ConversationID
+				}
 				msg := "[Proactive/" + n.Kind + "] " + n.Content
-				_ = store.AddMessage(m.ctx.DB, conv.ID, "assistant", msg)
+				_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", msg)
 				_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
 			}
 		}
@@ -269,6 +275,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled {
 				return m2, cmd
 			}
+		}
+		if m.user != nil && m.conv != nil && m.ag.HasPendingConfirmation(m.user.ID, m.conv.ID) {
+			note := "Pending tool confirmation rejected by the user."
+			_ = m.ag.RejectPendingConfirmation(m.user.ID, m.conv.ID)
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "system", note)
+			m.chat = m.chat.appendLocal("System", note)
 		}
 
 		// Redaction monitor (regex/heuristics) for user messages.
@@ -556,14 +568,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		}
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 		m.chat = m.chat.appendLocal("You", text)
-		ok := m.ag.ConfirmToken(m.user.ID, fields[1])
-		resp := "confirmation failed"
-		if ok {
-			resp = "confirmed"
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
+		requestID := m.nextRequestID
+		m.nextRequestID++
+		m.activeRuns++
+		m.releasedRuns[requestID] = false
+		m.chat = m.chat.startStreamingAssistant(requestID)
+		return m, true, m.resumeConfirmationCmd(requestID, fields[1])
 
 	case "/admin":
 		if m.conv == nil || m.user == nil {
@@ -1661,6 +1671,60 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 	return waitAgentAsyncCmd(ch)
 }
 
+func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
+	userID := m.user.ID
+	ag := m.ag
+	ch := make(chan tea.Msg, 64)
+	go func() {
+		defer close(ch)
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		released := false
+		convID := m.conv.ID
+		var reasoning strings.Builder
+		reply, convID, ok, err := ag.ResumeConfirmedStream(ctx, userID, token, func(ev agent.StreamEvent) {
+			switch ev.Type {
+			case "assistant_delta":
+				ch <- agentStreamDeltaMsg{ConversationID: convID, RequestID: requestID, Text: ev.Text}
+			case "reasoning_delta":
+				reasoning.WriteString(ev.Delta)
+				ch <- agentStreamReasoningMsg{ConversationID: convID, RequestID: requestID, Text: reasoning.String()}
+			case "tool_call":
+				ch <- agentStreamToolMsg{ConversationID: convID, RequestID: requestID, Tool: toolCallEntry{Name: ev.Tool.Name, Args: ev.Tool.Args}}
+			case "tool_result":
+				if !released {
+					released = true
+					ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+				}
+			}
+		})
+		if err != nil {
+			if !released {
+				ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+			}
+			ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: "(agent error) " + err.Error()}
+			return
+		}
+		if !ok {
+			if !released {
+				ch <- agentReleaseMsg{ConversationID: m.conv.ID, RequestID: requestID}
+			}
+			ch <- agentReplyMsg{ConversationID: m.conv.ID, RequestID: requestID, Text: "confirmation failed"}
+			return
+		}
+		if !released {
+			ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+		}
+		entries := make([]toolCallEntry, len(reply.ToolCalls))
+		for i, tc := range reply.ToolCalls {
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+		}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+	}()
+	return waitAgentAsyncCmd(ch)
+}
+
 func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.Cmd {
 	userID := m.user.ID
 	convID := m.conv.ID
@@ -1675,7 +1739,11 @@ func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.C
 		if err != nil {
 			return agentReplyMsg{ConversationID: convID, Text: "(agent error) " + err.Error()}
 		}
-		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning}
+		entries := make([]toolCallEntry, len(reply.ToolCalls))
+		for i, tc := range reply.ToolCalls {
+			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args}
+		}
+		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
 	}
 }
 
@@ -1750,6 +1818,9 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 
 func (m *appModel) maybeDispatchWaitlist() tea.Cmd {
 	if len(m.waitlist) == 0 {
+		return nil
+	}
+	if m.user != nil && m.conv != nil && m.ag.HasPendingConfirmation(m.user.ID, m.conv.ID) {
 		return nil
 	}
 	if m.activeRuns > 0 {

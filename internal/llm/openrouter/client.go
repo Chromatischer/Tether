@@ -118,7 +118,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("openrouter status %d: %s", resp.StatusCode, string(body))
+		return ChatResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: body, Parsed: parseErrorResponse(body)}
 	}
 
 	var out ChatResponse

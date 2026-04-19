@@ -13,7 +13,7 @@ Notes:
 
 ## Index
 
-- [`bash`](#bash) — Run a shell command inside the user sandbox (no network).
+- [`bash`](#bash) — Run a shell command inside the user sandbox (no network; /work is the sandbox root).
 - [`confirm.request`](#confirmrequest) — Request user confirmation for a destructive/irreversible action.
 - [`fetch.summarize`](#fetchsummarize) — Summarize previously fetched web content into safe markdown.
 - [`memory.add`](#memoryadd) — Add a memory item.
@@ -22,6 +22,7 @@ Notes:
 - [`memory.update`](#memoryupdate) — Update a memory item by id.
 - [`proactive.run`](#proactiverun) — Run proactive agents for the current user.
 - [`read`](#read) — Read a file from the user sandbox (relative path).
+- [`self.schedule`](#selfschedule) — Schedule the agent to run later (one-off) and deliver the result as a proactive notification.
 - [`skill.invoke`](#skillinvoke) — Load and apply a Claude Code–style skill by name.
 - [`subagent.spawn`](#subagentspawn) — Spawn a sub-agent run asynchronously.
 - [`subagent.status`](#subagentstatus) — Get status/result for a spawned sub-agent run.
@@ -34,11 +35,11 @@ Notes:
 
 ## `bash`
 
-Run a shell command inside the user sandbox (no network).
+Run a shell command inside the user sandbox (no network; /work is the sandbox root).
 
 **When to use**
 
-Use this for project introspection (ls/rg/go test), formatting, and other local automation. The sandbox has no network access. The working directory is usually workspace/.
+Use this for project introspection (ls/rg/go test), formatting, and other local automation. The sandbox has no network access. Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...).
 
 **Safety / confirmation**
 
@@ -793,6 +794,133 @@ Example result:
 ```
 
 Notes: If the file is large, the tool will truncate content.
+
+
+## `self.schedule`
+
+Schedule the agent to run later (one-off) and deliver the result as a proactive notification.
+
+**When to use**
+
+Use this to follow up later without user input (reminders, check-ins, delayed work). Important: the scheduled run snapshots (1) the conversation state at the moment you schedule it (messages up to an anchor message id), and (2) the set of enabled tools at the moment you schedule it. It will NOT see messages added after scheduling, and it will NOT gain tools that were enabled later. Timing note: schedules are polled on a ~1 minute tick, so execution/delivery can have up to ~1 minute of jitter. This tool is disabled by default and must be enabled explicitly via tool.enable.
+
+**Safety / confirmation**
+
+Creates an autonomous background run that will execute later and generate a proactive notification in the same conversation (shown as [Proactive/self_schedule] in the transcript). Not allowed from sub-agents.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "description": "create (default), list, cancel",
+      "type": "string"
+    },
+    "delay": {
+      "description": "Run after this duration from now (Go duration like 10m, 2h, 30s).",
+      "type": "string"
+    },
+    "delay_seconds": {
+      "description": "Run after this many seconds from now.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "id": {
+      "description": "Schedule id (for cancel).",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "limit": {
+      "description": "List limit (for list).",
+      "maximum": 50,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "prompt": {
+      "description": "What the agent should do/say when the schedule fires.",
+      "type": "string"
+    },
+    "run_at": {
+      "description": "When to run (RFC3339 timestamp, e.g. 2026-04-17T20:15:00Z).",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "run_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "run_at"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schedules": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "schedules"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "canceled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "canceled"
+      ],
+      "type": "object"
+    }
+  ]
+}
+```
+
+### Example
+
+**Schedule a follow-up in 10 minutes**
+
+Tool arguments:
+
+```json
+{
+  "delay": "10m",
+  "prompt": "Check back and ask if the task is complete."
+}
+```
+
+Example result:
+
+```json
+{
+  "id": 123,
+  "run_at": "2026-04-17T20:15:00Z"
+}
+```
 
 
 ## `skill.invoke`

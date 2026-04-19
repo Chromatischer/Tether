@@ -18,9 +18,24 @@ func (a *Agent) buildContextInputItems(userID, convID int64, history []store.Mes
 }
 
 func (a *Agent) buildContextInputItemsWithSession(sess *toolset.Session, userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
+	return a.buildContextInputItemsWithSessionAndSystemPrompt(sess, userID, convID, history, systemPrompt)
+}
+
+func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.Session, userID, convID int64, history []store.Message, sysPrompt string) ([]openrouter.ResponseItem, error) {
 	items := make([]openrouter.ResponseItem, 0, len(history)+10)
 
-	items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: systemPrompt}}})
+	nm := newToolNameMap(nil)
+	if sess != nil {
+		nm = newToolNameMap(sess.Registry)
+	}
+
+	// Some providers reject tool/function names containing '.'; rewrite any
+	// internal tool names mentioned in prompts to their LLM-visible equivalents.
+	sysText := sysPrompt
+	if nm != nil {
+		sysText = nm.RewriteTextToLLM(sysText)
+	}
+	items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: sysText}}})
 
 	// Per-user personality (self-editable in the sandbox).
 	if sess != nil {
@@ -92,6 +107,9 @@ func (a *Agent) buildContextInputItemsWithSession(sess *toolset.Session, userID,
 		if list, err := mgr.List(sess.Dirs); err == nil {
 			idx := strings.TrimSpace(mgr.BuildIndexMessage(list))
 			if idx != "" {
+				if nm != nil {
+					idx = nm.RewriteTextToLLM(idx)
+				}
 				items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: idx}}})
 			}
 		}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/log/v2"
+
 	"tether/internal/agent/toolset"
 	"tether/internal/cache"
 	"tether/internal/config"
@@ -39,6 +41,18 @@ type Reply struct {
 	ToolCalls []ToolCallInfo
 }
 
+type pendingConfirmation struct {
+	UserID         int64
+	ConversationID int64
+	Token          string
+	Scope          string
+	Session        *toolset.Session
+	Items          []openrouter.ResponseItem
+	Call           openrouter.ResponseItem
+	ToolCalls      []ToolCallInfo
+	CreatedAt      time.Time
+}
+
 type Agent struct {
 	cfg   *config.Config
 	db    *sql.DB
@@ -54,8 +68,9 @@ type Agent struct {
 	confirm *confirmManager
 	secrets *secrets.Store
 
-	mu       sync.Mutex
-	sessions map[int64]*toolset.Session // conversation_id -> session
+	mu          sync.Mutex
+	sessions    map[int64]*toolset.Session      // conversation_id -> session
+	pendingRuns map[string]*pendingConfirmation // confirm token -> suspended tool execution
 }
 
 func New(cfg *config.Config, db *sql.DB) *Agent {
@@ -90,6 +105,17 @@ You are acting on behalf of the user. Your words will be read as if the user wro
 
 Your mandate in this mode is narrow: observe, summarize, and surface. You may read, fetch, and analyze freely. You may not send messages to other people, modify shared data, delete anything, or take any action that cannot be undone in under thirty seconds — unless the specific task you were given explicitly authorizes it.
 
+Tool availability (important):
+- The tool list you see is only the currently enabled subset (kept small to save context).
+- More tools exist. If you need a capability you don’t see, use tool.search with keywords.
+- To use a tool you discovered, call tool.enable with its exact name. Then call the tool.
+- tool.describe works even if the tool is not enabled.
+
+Filesystem layout (important):
+- The sandbox root contains: workspace/ (project), config/ (agent settings), skills/ (playbooks), cache/.
+- read/write paths are relative to the sandbox root (e.g. workspace/README.md).
+- In bash, the sandbox root is mounted at /work and commands start in /work (cd workspace for repo commands).
+
 When you are uncertain whether your mandate covers an action, it does not. Default to the lesser action: draft instead of send, flag instead of delete, note instead of modify.
 
 If you encounter data that looks anomalous, a resource that returns something unexpected, or a situation where proceeding would require guessing at intent — stop. Write what you found and what you were about to do. The user can decide.
@@ -107,6 +133,18 @@ Before responding to any request, use your tools to retrieve what you need. Neve
 - Do not guess tool argument names or shapes.
 - If you’re unsure, call tool.describe for the tool and follow its input schema exactly.
 - Do not invent extra fields not present in the schema (they will be ignored or cause errors).
+
+## Tool availability (important)
+- The tool list you see is only the currently enabled subset (kept small to save context).
+- More tools exist. If you need a capability you don’t see, use tool.search with keywords.
+- To use a tool you discovered, call tool.enable with its exact name. Then call the tool.
+- tool.describe works even if the tool is not enabled.
+- Before saying “I can’t” due to missing tools, try tool.search 1–2 times.
+
+## Filesystem layout (important)
+- The sandbox root contains: workspace/ (project), config/ (agent settings), skills/ (playbooks), cache/.
+- read/write paths are relative to the sandbox root (e.g. workspace/README.md).
+- In bash, the sandbox root is mounted at /work and commands start in /work (cd workspace for repo commands).
 
 ## Act, then surface
 Complete the task. Then briefly surface what you noticed that the user didn’t ask about but probably should know: a deadline conflict, a related thread, a pattern worth flagging, a next step they haven’t thought of. Keep it to one or two observations — actionable, not encyclopedic.
@@ -168,6 +206,8 @@ func (a *Agent) responsesCached(ctx context.Context, req openrouter.ResponsesReq
 
 	resp, err := a.llm.Responses(ctx, req)
 	if err != nil {
+		// Always log LLM request failures; otherwise they can be easy to miss if only surfaced to UI.
+		a.logLLMError("openrouter.responses", req.Model, 0, 0, err)
 		return openrouter.ResponsesResponse{}, err
 	}
 	b, _ := json.Marshal(resp)
@@ -180,6 +220,59 @@ func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, 
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, d)
+}
+
+func (a *Agent) openRouterProviderPrefs() *openrouter.ProviderPreferences {
+	p := openrouter.ProviderPreferences{}
+	p.AllowFallbacks = a.cfg.OpenRouter.Provider.AllowFallbacks
+
+	if len(a.cfg.OpenRouter.Provider.Ignore) > 0 {
+		p.Ignore = append([]string{}, a.cfg.OpenRouter.Provider.Ignore...)
+	}
+	if len(a.cfg.OpenRouter.Provider.Only) > 0 {
+		p.Only = append([]string{}, a.cfg.OpenRouter.Provider.Only...)
+	}
+	if len(a.cfg.OpenRouter.Provider.Order) > 0 {
+		p.Order = append([]string{}, a.cfg.OpenRouter.Provider.Order...)
+	}
+
+	if p.AllowFallbacks == nil && len(p.Ignore) == 0 && len(p.Only) == 0 && len(p.Order) == 0 {
+		return nil
+	}
+	return &p
+}
+
+func (a *Agent) logLLMError(op string, model string, userID, convID int64, err error) {
+	if err == nil {
+		return
+	}
+	fields := []any{"op", op, "model", model}
+	if userID != 0 {
+		fields = append(fields, "user_id", userID)
+	}
+	if convID != 0 {
+		fields = append(fields, "conversation_id", convID)
+	}
+
+	var herr *openrouter.HTTPError
+	if errors.As(err, &herr) {
+		fields = append(fields,
+			"status", herr.StatusCode,
+			"message", herr.Message(),
+			"provider", herr.ProviderName(),
+		)
+		raw := herr.RawUpstreamError()
+		if raw != "" {
+			if len(raw) > 800 {
+				raw = raw[:800] + "…"
+			}
+			fields = append(fields, "upstream", raw)
+		}
+		log.Warn("llm request failed", append(fields, "error", err)...)
+		return
+	}
+
+	log.Warn("llm request failed", append(fields, "error", err)...)
 }
 
 func extractResponsesText(resp openrouter.ResponsesResponse) string {
@@ -234,6 +327,7 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 		Temperature:     0.2,
 		MaxOutputTokens: 700,
 		ToolChoice:      "none",
+		Provider:        a.openRouterProviderPrefs(),
 	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
@@ -267,6 +361,7 @@ func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt strin
 		Temperature:     0.2,
 		MaxOutputTokens: 700,
 		ToolChoice:      "none",
+		Provider:        a.openRouterProviderPrefs(),
 	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
@@ -292,6 +387,7 @@ func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, 
 		Temperature:     0.2,
 		MaxOutputTokens: 700,
 		ToolChoice:      "none",
+		Provider:        a.openRouterProviderPrefs(),
 	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
@@ -326,7 +422,7 @@ func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(Stream
 		return Reply{}, err
 	}
 
-	text, reasoning, toolCalls, err := a.replyWithToolsStream(ctx2, sess, p.UserID, p.ConversationID, items, emit)
+	text, reasoning, toolCalls, err := a.replyWithToolsStream(ctx2, sess, p.UserID, p.ConversationID, items, nil, emit)
 	if err != nil {
 		return Reply{}, err
 	}

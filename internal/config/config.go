@@ -28,6 +28,15 @@ type Config struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
 		Model   string `yaml:"model"`
+
+		// Provider routing preferences passed through to OpenRouter.
+		// See: https://openrouter.ai/docs/guides/routing/provider-selection
+		Provider struct {
+			AllowFallbacks *bool    `yaml:"allow_fallbacks,omitempty"`
+			Ignore         []string `yaml:"ignore,omitempty"`
+			Only           []string `yaml:"only,omitempty"`
+			Order          []string `yaml:"order,omitempty"`
+		} `yaml:"provider"`
 	} `yaml:"openrouter"`
 
 	Secrets struct {
@@ -109,6 +118,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.OpenRouter.Model == "" {
 		cfg.OpenRouter.Model = "z-ai/glm-5.1"
+	}
+
+	// OpenRouter provider routing defaults.
+	//
+	// We default to ignoring Morph because it has been observed to be unreliable
+	// for agent workloads (e.g. 503 no_available_workers). Users can override by
+	// explicitly setting openrouter.provider.ignore: [] in their config.
+	if cfg.OpenRouter.Provider.Ignore == nil {
+		cfg.OpenRouter.Provider.Ignore = []string{"morph"}
 	}
 
 	// Secrets

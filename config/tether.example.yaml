@@ -12,6 +12,12 @@ openrouter:
   base_url: "https://openrouter.ai/api/v1"
   model: "z-ai/glm-5.1"
 
+  # Provider routing preferences passed through to OpenRouter.
+  # See: https://openrouter.ai/docs/guides/routing/provider-selection
+  provider:
+    # Morph has been observed to be unreliable for agent workloads.
+    ignore: ["morph"]
+
 secrets:
   # Prefer env var TETHER_MASTER_KEY (base64 32 bytes). Generate with:
   #   go run ./cmd/tether-keygen

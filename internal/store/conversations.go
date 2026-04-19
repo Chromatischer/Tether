@@ -122,6 +122,44 @@ func ListRecentMessages(db *sql.DB, conversationID int64, limit int) ([]Message,
 	return out, nil
 }
 
+func LatestMessageID(db *sql.DB, conversationID int64) (id int64, ok bool, err error) {
+	err = db.QueryRow(`SELECT COALESCE(MAX(id),0) FROM messages WHERE conversation_id = ?`, conversationID).Scan(&id)
+	if err != nil {
+		return 0, false, err
+	}
+	if id <= 0 {
+		return 0, false, nil
+	}
+	return id, true, nil
+}
+
+func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualID int64, limit int) ([]Message, error) {
+	if beforeOrEqualID <= 0 {
+		return ListRecentMessages(db, conversationID, limit)
+	}
+	rows, err := db.Query(`SELECT id, conversation_id, role, content, created_at FROM messages WHERE conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`, conversationID, beforeOrEqualID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// reverse to chronological
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
 func AddMessage(db *sql.DB, conversationID int64, role, content string) error {
 	_, err := db.Exec(`INSERT INTO messages(conversation_id, role, content) VALUES (?, ?, ?)`, conversationID, role, content)
 	return err

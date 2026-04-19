@@ -6,16 +6,24 @@ import (
 )
 
 type Notification struct {
-	ID        int64
-	UserID    int64
-	Kind      string
-	Content   string
-	CreatedAt time.Time
+	ID             int64
+	UserID         int64
+	ConversationID int64 // optional; 0 means unspecified/"active conversation"
+	Kind           string
+	Content        string
+	CreatedAt      time.Time
 }
 
 func AddNotification(db *sql.DB, userID int64, kind, content string) error {
 	now := time.Now().Unix()
+	// conversation_id is optional and defaults to NULL when omitted.
 	_, err := db.Exec(`INSERT INTO notifications(user_id, kind, content, created_at) VALUES (?,?,?,?)`, userID, kind, content, now)
+	return err
+}
+
+func AddNotificationForConversation(db *sql.DB, userID, conversationID int64, kind, content string) error {
+	now := time.Now().Unix()
+	_, err := db.Exec(`INSERT INTO notifications(user_id, conversation_id, kind, content, created_at) VALUES (?,?,?,?,?)`, userID, conversationID, kind, content, now)
 	return err
 }
 
@@ -27,11 +35,17 @@ func AddNotificationDelivered(db *sql.DB, userID int64, kind, content string) er
 	return err
 }
 
+func AddNotificationDeliveredForConversation(db *sql.DB, userID, conversationID int64, kind, content string) error {
+	now := time.Now().Unix()
+	_, err := db.Exec(`INSERT INTO notifications(user_id, conversation_id, kind, content, created_at, delivered_at) VALUES (?,?,?,?,?,?)`, userID, conversationID, kind, content, now, now)
+	return err
+}
+
 func ListUndeliveredNotifications(db *sql.DB, userID int64, limit int) ([]Notification, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.Query(`SELECT id, user_id, kind, content, created_at FROM notifications WHERE user_id=? AND delivered_at IS NULL ORDER BY id ASC LIMIT ?`, userID, limit)
+	rows, err := db.Query(`SELECT id, user_id, COALESCE(conversation_id, 0), kind, content, created_at FROM notifications WHERE user_id=? AND delivered_at IS NULL ORDER BY id ASC LIMIT ?`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +54,7 @@ func ListUndeliveredNotifications(db *sql.DB, userID int64, limit int) ([]Notifi
 	for rows.Next() {
 		var n Notification
 		var created int64
-		if err := rows.Scan(&n.ID, &n.UserID, &n.Kind, &n.Content, &created); err != nil {
+		if err := rows.Scan(&n.ID, &n.UserID, &n.ConversationID, &n.Kind, &n.Content, &created); err != nil {
 			return nil, err
 		}
 		n.CreatedAt = time.Unix(created, 0)

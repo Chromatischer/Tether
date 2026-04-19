@@ -55,6 +55,7 @@ func (a *Agent) maybeUpdateSummary(conversationID int64) {
 		Temperature:     0.2,
 		MaxOutputTokens: 350,
 		ToolChoice:      "none",
+		Provider:        a.openRouterProviderPrefs(),
 	}
 
 	resp, err := a.responsesCached(ctx, req)

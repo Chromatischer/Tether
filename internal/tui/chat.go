@@ -186,10 +186,16 @@ func (m chatModel) pollNotificationsCmd() tea.Cmd {
 		}
 		lines := make([]chatMessage, 0, len(nots))
 		for _, n := range nots {
+			targetConvID := convID
+			if n.ConversationID != 0 {
+				targetConvID = n.ConversationID
+			}
 			text := "[Proactive/" + n.Kind + "] " + n.Content
-			_ = store.AddMessage(db, convID, "assistant", text)
+			_ = store.AddMessage(db, targetConvID, "assistant", text)
 			_ = store.MarkNotificationDelivered(db, n.ID)
-			lines = append(lines, chatMessage{role: "assistant", content: text})
+			if targetConvID == convID {
+				lines = append(lines, chatMessage{role: "assistant", content: text})
+			}
 		}
 		return chatNotificationsDeliveredMsg{Lines: lines}
 	}

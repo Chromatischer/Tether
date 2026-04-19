@@ -10,8 +10,10 @@ import (
 )
 
 func TestBuildContextInputItems_SkipsToolCallMessages(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Paths.DataDir = t.TempDir()
 	ag := &Agent{
-		cfg:      &config.Config{},
+		cfg:      cfg,
 		db:       testutil.OpenTestDB(t),
 		sessions: map[int64]*toolset.Session{},
 	}

@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"tether/internal/agent/toolset"
 	"tether/internal/llm/openrouter"
@@ -36,7 +38,16 @@ type StreamEvent struct {
 	Err  string
 }
 
-func (a *Agent) activeTools(s *toolset.Session) []openrouter.ResponsesTool {
+type toolExecutionPause struct {
+	Token string
+	Scope string
+	Text  string
+	Call  openrouter.ResponseItem
+}
+
+var confirmScopePattern = regexp.MustCompile(`scope="([^"]+)"`)
+
+func (a *Agent) activeTools(s *toolset.Session, nm *toolNameMap) []openrouter.ResponsesTool {
 	defs := make([]toolset.ToolDef, 0, len(s.Active))
 	for name := range s.Active {
 		impl := a.toolImpl[name]
@@ -48,10 +59,16 @@ func (a *Agent) activeTools(s *toolset.Session) []openrouter.ResponsesTool {
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	out := make([]openrouter.ResponsesTool, 0, len(defs))
 	for _, d := range defs {
+		name := d.Name
+		desc := d.Description
+		if nm != nil {
+			name = nm.ToLLM(name)
+			desc = nm.RewriteTextToLLM(desc)
+		}
 		out = append(out, openrouter.ResponsesTool{
 			Type:        "function",
-			Name:        d.Name,
-			Description: d.Description,
+			Name:        name,
+			Description: desc,
 			Parameters:  d.Parameters,
 			Strict:      nil,
 		})
@@ -59,18 +76,23 @@ func (a *Agent) activeTools(s *toolset.Session) []openrouter.ResponsesTool {
 	return out
 }
 
-func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, calls []openrouter.ResponseItem) (outputs []openrouter.ResponseItem, infos []ToolCallInfo) {
+func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, calls []openrouter.ResponseItem, nm *toolNameMap) (outputs []openrouter.ResponseItem, infos []ToolCallInfo, pause *toolExecutionPause) {
 	outputs = make([]openrouter.ResponseItem, 0, len(calls))
 	infos = make([]ToolCallInfo, 0, len(calls))
 
 	for _, c := range calls {
-		name := strings.TrimSpace(c.Name)
+		nameLLM := strings.TrimSpace(c.Name)
+		name := nameLLM
+		if nm != nil {
+			name = nm.ToInternal(nameLLM)
+		}
 		callID := strings.TrimSpace(c.CallID)
 		argsStr := strings.TrimSpace(c.Arguments)
 		if argsStr == "" {
 			argsStr = "{}"
 		}
-		rawArgs := json.RawMessage(argsStr)
+		rawArgsOrig := json.RawMessage(argsStr)
+		rawArgsExec := rawArgsOrig
 
 		// Collect tool call info for UI.
 		argsUI := strings.TrimSpace(argsStr)
@@ -81,22 +103,55 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		}
 		infos = append(infos, ToolCallInfo{Name: name, Args: argsUI})
 
+		// Meta tools accept LLM-visible names in their {name: ...} arguments.
+		if nm != nil && (name == "tool.enable" || name == "tool.describe") {
+			var obj map[string]any
+			if err := json.Unmarshal(rawArgsOrig, &obj); err == nil {
+				if v, ok := obj["name"].(string); ok {
+					obj["name"] = nm.ToInternal(v)
+					if b, err := json.Marshal(obj); err == nil {
+						rawArgsExec = json.RawMessage(b)
+					}
+				}
+			}
+		}
+
 		impl := a.toolImpl[name]
 		var execErr error
 		var result any
 		if impl == nil {
 			execErr = fmt.Errorf("unknown tool: %s", name)
-			result = map[string]any{"error": execErr.Error()}
 		} else if !s.IsActive(name) {
 			execErr = fmt.Errorf("tool not enabled: %s", name)
-			result = map[string]any{"error": execErr.Error()}
 		} else {
-			v, err := impl.Execute(ctx, s, rawArgs)
+			v, err := impl.Execute(ctx, s, rawArgsExec)
 			execErr = err
-			if err != nil {
-				result = map[string]any{"error": err.Error()}
-			} else {
+			if err == nil {
 				result = v
+			}
+		}
+
+		if execErr != nil {
+			msg := execErr.Error()
+			if scope := confirmationScopeFromError(msg); scope != "" && s != nil && s.Confirm != nil {
+				token := s.Confirm.Request(s.UserID, scope, confirmationReason(name, argsUI))
+				pause = &toolExecutionPause{
+					Token: token,
+					Scope: scope,
+					Text:  "Confirmation required. Copy this into the chat to continue: `/confirm " + token + "`. Send any other reply to reject it.",
+					Call:  c,
+				}
+			}
+			if nm != nil {
+				msg = nm.RewriteTextToLLM(msg)
+			}
+			result = map[string]any{"error": msg}
+		} else if nm != nil && (name == "tool.search" || name == "tool.describe" || name == "tool.enable") {
+			// Rewrite tool names in protocol-shaped outputs.
+			jb, _ := json.Marshal(result)
+			var anyv any
+			if err := json.Unmarshal(jb, &anyv); err == nil {
+				result = nm.rewriteAnyStringsToLLM(anyv)
 			}
 		}
 
@@ -105,7 +160,7 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		// Audit tool call (best-effort). Avoid storing raw args/results.
 		if s.DB != nil {
 			uid := s.UserID
-			sum := sha256.Sum256(rawArgs)
+			sum := sha256.Sum256(rawArgsOrig)
 			payload := map[string]any{
 				"tool":           name,
 				"call_id":        callID,
@@ -116,6 +171,10 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 			}
 			pb, _ := json.Marshal(payload)
 			_ = store.AddAuditEvent(s.DB, &uid, "tool_call", string(pb))
+		}
+
+		if pause != nil {
+			return outputs, infos, pause
 		}
 
 		outID := "fco_" + callID
@@ -131,14 +190,19 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		})
 	}
 
-	return outputs, infos
+	return outputs, infos, nil
 }
 
-func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, userID, convID int64, baseItems []openrouter.ResponseItem, emit func(StreamEvent)) (string, string, []ToolCallInfo, error) {
+func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, userID, convID int64, baseItems []openrouter.ResponseItem, priorToolCalls []ToolCallInfo, emit func(StreamEvent)) (string, string, []ToolCallInfo, error) {
 	items := append([]openrouter.ResponseItem{}, baseItems...)
 	const maxIterations = 8
-	toolCalls := make([]ToolCallInfo, 0, 8)
+	toolCalls := append([]ToolCallInfo{}, priorToolCalls...)
 	var streamedReasoning strings.Builder
+
+	nm := newToolNameMap(nil)
+	if s != nil {
+		nm = newToolNameMap(s.Registry)
+	}
 
 	for i := 0; i < maxIterations; i++ {
 		req := openrouter.ResponsesRequest{
@@ -146,10 +210,11 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			Input:           items,
 			Temperature:     0.2,
 			MaxOutputTokens: 700,
-			Tools:           a.activeTools(s),
+			Tools:           a.activeTools(s, nm),
 			ToolChoice:      "auto",
 			Stream:          true,
 			Reasoning:       &openrouter.ResponsesReasoning{Effort: "medium"},
+			Provider:        a.openRouterProviderPrefs(),
 		}
 
 		// Accumulate tool calls as they arrive.
@@ -176,7 +241,11 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 						} else if len(args) > 80 {
 							args = args[:80] + "…"
 						}
-						emit(StreamEvent{Type: "tool_call", Tool: ToolCallInfo{Name: c.Name, Args: args}})
+						name := c.Name
+						if nm != nil {
+							name = nm.ToInternal(name)
+						}
+						emit(StreamEvent{Type: "tool_call", Tool: ToolCallInfo{Name: name, Args: args}})
 					}
 				} else if ev.Item != nil && ev.Item.Type == "reasoning" {
 					emitReasoningSummaryDelta(&streamedReasoning, reasoningSummaryText(ev.Item.Summary), emit)
@@ -227,6 +296,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			return nil
 		})
 		if err != nil {
+			a.logLLMError("openrouter.responses_stream", req.Model, userID, convID, err)
 			if emit != nil {
 				emit(StreamEvent{Type: "error", Err: err.Error()})
 			}
@@ -280,23 +350,69 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			} else if len(args) > 80 {
 				args = args[:80] + "…"
 			}
-			toolCalls = append(toolCalls, ToolCallInfo{Name: c.Name, Args: args})
+			name := c.Name
+			if nm != nil {
+				name = nm.ToInternal(name)
+			}
+			toolCalls = append(toolCalls, ToolCallInfo{Name: name, Args: args})
 		}
 
 		// Add only replay-safe model output items to history.
 		items = append(items, replayableResponseItems(final.Output)...)
 
 		// Execute tools and add function_call_output items.
-		toolOutputs, infos := a.executeFunctionCalls(ctx, s, calls)
+		toolOutputs, infos, pause := a.executeFunctionCalls(ctx, s, calls, nm)
 		if emit != nil {
-			for _, tc := range infos {
+			completedInfos := infos
+			if pause != nil && len(completedInfos) > len(toolOutputs) {
+				completedInfos = completedInfos[:len(toolOutputs)]
+			}
+			for _, tc := range completedInfos {
 				emit(StreamEvent{Type: "tool_result", Tool: tc})
 			}
+		}
+		if pause != nil {
+			items = append(items, toolOutputs...)
+			a.storePendingConfirmation(&pendingConfirmation{
+				UserID:         userID,
+				ConversationID: convID,
+				Token:          pause.Token,
+				Scope:          pause.Scope,
+				Session:        cloneSession(s),
+				Items:          append([]openrouter.ResponseItem{}, items...),
+				Call:           pause.Call,
+				ToolCalls:      append([]ToolCallInfo{}, toolCalls...),
+				CreatedAt:      time.Now(),
+			})
+			if emit != nil {
+				emit(StreamEvent{Type: "done", Text: pause.Text})
+			}
+			return pause.Text, strings.TrimSpace(streamedReasoning.String()), toolCalls, nil
 		}
 		items = append(items, toolOutputs...)
 	}
 
 	return "", strings.TrimSpace(streamedReasoning.String()), toolCalls, fmt.Errorf("agent loop: max iterations reached")
+}
+
+func confirmationScopeFromError(msg string) string {
+	match := confirmScopePattern.FindStringSubmatch(strings.TrimSpace(msg))
+	if len(match) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func confirmationReason(name string, args string) string {
+	name = strings.TrimSpace(name)
+	args = strings.TrimSpace(args)
+	if name == "" {
+		return "Approve this tool action."
+	}
+	if args == "" {
+		return "Approve tool use: " + name + "."
+	}
+	return "Approve tool use: " + name + " " + args
 }
 
 func emitReasoningSummaryDelta(dst *strings.Builder, summary string, emit func(StreamEvent)) {
