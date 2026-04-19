@@ -169,7 +169,9 @@ func (m chatModel) withSize(w, h int) chatModel {
 	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
 
 	bannerH := 1 + styleChatBanner.GetVerticalFrameSize()
-	m.textarea.SetWidth(inputW)
+	promptAndEnterW := lipgloss.Width(styleChatPrompt.Render("❯")+" ") +
+		lipgloss.Width(" "+styleChatEnterKey.Render("[enter]"))
+	m.textarea.SetWidth(max(10, inputW-promptAndEnterW))
 	composerH := m.composerHeight(innerW)
 	viewportH := max(3, h-bannerH-composerH-styleChatTranscript.GetVerticalFrameSize())
 
@@ -343,15 +345,40 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 func (m chatModel) View() tea.View {
 	innerW := max(20, m.width)
-	banner := styleChatBanner.Width(innerW).Render("Tether Chat  •  TAB for autocomplete  •  /help for commands  •  $skill for tools")
-	transcript := styleChatTranscript.Width(innerW).Render(m.viewport.View())
-	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
-	inputBox := styleChatInputBox.Width(composerW).Render(m.textarea.View())
-	if rendered := m.renderSuggestions(composerW); rendered != "" {
-		inputBox = rendered + "\n" + inputBox
+
+	// Banner: dim keyboard hints
+	bannerHints := []string{
+		styleChatBannerKey.Render("tab") + styleChatHint.Render(" autocomplete"),
+		styleChatBannerKey.Render("/") + styleChatHint.Render(" commands"),
+		styleChatBannerKey.Render("$") + styleChatHint.Render(" skills"),
+		styleChatBannerKey.Render("^O") + styleChatHint.Render(" reasoning"),
 	}
-	composerBody := inputBox + "\n" + styleChatHint.Render("Tab cycles suggestions, then send. Enter applies a suggestion or sends once the send step is focused. Use /clear for a fresh session. Ctrl+O toggles separate model reasoning when available.")
+	banner := styleChatBanner.Width(innerW).Render(strings.Join(bannerHints, "  "))
+
+	transcript := styleChatTranscript.Width(innerW).Render(m.viewport.View())
+
+	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
+	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
+
+	prompt := styleChatPrompt.Render("❯")
+	inputBox := styleChatInputBox.Width(inputW).Render(m.textarea.View())
+	enterKey := styleChatEnterKey.Render("[enter]")
+	inputRow := prompt + " " + inputBox + " " + enterKey
+
+	hintsRow := strings.Join([]string{
+		styleChatHintKey.Render("tab") + " cycle",
+		styleChatHintKey.Render("↵") + " apply",
+		styleChatHintKey.Render("esc") + " dismiss",
+		styleChatHintKey.Render("^O") + " reasoning",
+	}, "  ")
+	hintsLine := styleChatHint.Render(hintsRow)
+
+	composerBody := inputRow + "\n" + hintsLine
+	if rendered := m.renderSuggestions(composerW); rendered != "" {
+		composerBody = rendered + "\n" + composerBody
+	}
 	composer := styleChatComposer.Width(innerW).Render(composerBody)
+
 	content := lipgloss.JoinVertical(lipgloss.Left, banner, transcript, composer)
 	return tea.NewView(content)
 }
@@ -823,11 +850,11 @@ func (m chatModel) renderSuggestions(width int) string {
 		if strings.TrimSpace(s.Detail) != "" {
 			line += "  " + styleDim.Render(s.Detail)
 		}
-		style := styleAutocompleteSuggestion.Width(width)
 		if m.focus == composerFocusSuggestion && i == m.selectedSuggestion {
-			style = styleAutocompleteSuggestionActive.Width(width)
+			rows = append(rows, styleAutocompleteSuggestionActive.Width(width).Render(line))
+		} else {
+			rows = append(rows, styleAutocompleteSuggestion.Width(width).Render(line))
 		}
-		rows = append(rows, style.Render(line))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
@@ -850,7 +877,13 @@ func (m chatModel) suggestionsRenderHeight(width int) int {
 
 func (m chatModel) composerHeight(innerW int) int {
 	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
-	body := styleChatInputBox.Width(composerW).Render(m.textarea.View()) + "\n" + styleChatHint.Render("Tab cycles suggestions, then send. Enter applies a suggestion or sends once the send step is focused. Use /clear for a fresh session. Ctrl+O toggles separate model reasoning when available.")
+	inputW := max(18, composerW-styleChatInputBox.GetHorizontalFrameSize())
+	prompt := styleChatPrompt.Render("❯")
+	inputBox := styleChatInputBox.Width(inputW).Render(m.textarea.View())
+	enterKey := styleChatEnterKey.Render("[enter]")
+	inputRow := prompt + " " + inputBox + " " + enterKey
+	hintsLine := styleChatHint.Render("tab cycle  ↵ apply  esc dismiss  ^O reasoning")
+	body := inputRow + "\n" + hintsLine
 	if rendered := m.renderSuggestions(composerW); rendered != "" {
 		body = rendered + "\n" + body
 	}
