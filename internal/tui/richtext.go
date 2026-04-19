@@ -260,9 +260,9 @@ func indentWrapped(body string, prefix string) string {
 
 func richBodyColor(variant richTextVariant) color.Color {
 	if variant == richTextSystem {
-		return lipgloss.Color("245")
+		return colorDim
 	}
-	return lipgloss.Color("252")
+	return colorBody
 }
 
 func richColor(assistant, system string, variant richTextVariant) color.Color {
@@ -273,54 +273,56 @@ func richColor(assistant, system string, variant richTextVariant) color.Color {
 }
 
 func richStrongStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(richColor("75", "111", variant))
+	// Bold = white in assistant context, green-ish in system
+	return lipgloss.NewStyle().Bold(true).Foreground(richColor("255", "115", variant))
 }
 
 func richEmphStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Italic(true).Foreground(richColor("117", "110", variant))
+	return lipgloss.NewStyle().Italic(true).Foreground(richColor("252", "245", variant))
 }
 
 func richHeadingStyle(variant richTextVariant, level int) lipgloss.Style {
-	style := lipgloss.NewStyle().Bold(level <= 3).Foreground(richColor("81", "117", variant))
-	if level == 1 {
-		style = style.Foreground(lipgloss.Color("255"))
+	switch level {
+	case 1:
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
+	case 2:
+		return lipgloss.NewStyle().Bold(true).Foreground(colorBody)
+	default:
+		return lipgloss.NewStyle().Bold(true).Foreground(colorMuted)
 	}
-	return style
 }
 
 func richRuleStyle(variant richTextVariant) lipgloss.Style {
-	color := colorDim
-	if variant == richTextSystem {
-		color = lipgloss.Color("243")
-	}
-	return lipgloss.NewStyle().Foreground(color)
+	return lipgloss.NewStyle().Foreground(richColor("172", "236", variant)) // amber / dim
 }
 
 func richLinkStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Underline(true).Foreground(richColor("117", "111", variant))
+	return lipgloss.NewStyle().Underline(true).Foreground(richColor("172", "245", variant)) // amber
 }
 
 func richMutedStyle(variant richTextVariant) lipgloss.Style {
-	color := colorDim
-	if variant == richTextSystem {
-		color = lipgloss.Color("243")
-	}
-	return lipgloss.NewStyle().Foreground(color)
+	return lipgloss.NewStyle().Foreground(colorDim)
 }
 
 func richCodeStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(richColor("223", "252", variant)).Background(colorPanel).Padding(0, 1)
+	return lipgloss.NewStyle().
+		Foreground(richColor("222", "252", variant)). // warm yellow / white
+		Background(colorBotMsgBg).
+		Padding(0, 1)
 }
 
 func richCodeBlockStyle(variant richTextVariant) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(richBodyColor(variant)).
-		Background(colorPanel).
+		Background(colorBotMsgBg).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderForeground(colorToolBorder).
 		Padding(0, 1)
 }
 
 func richTableHeaderStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(richColor("75", "111", variant))
+	return lipgloss.NewStyle().Bold(true).Foreground(richColor("172", "245", variant)) // amber
 }
 
 func richTableCellStyle(variant richTextVariant) lipgloss.Style {
@@ -328,10 +330,7 @@ func richTableCellStyle(variant richTextVariant) lipgloss.Style {
 }
 
 func richTableBorderStyle(variant richTextVariant) lipgloss.Style {
-	if variant == richTextSystem {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	}
-	return lipgloss.NewStyle().Foreground(colorBorder)
+	return lipgloss.NewStyle().Foreground(colorToolBorder)
 }
 
 func stripANSI(text string) string {
