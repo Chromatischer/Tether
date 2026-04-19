@@ -390,7 +390,7 @@ func (m chatModel) cursor() *tea.Cursor {
 	viewportHeight := lipgloss.Height(m.viewport.View())
 	c := m.textarea.Cursor()
 	if c != nil {
-		c.X += 1
+		c.X += lipgloss.Width(styleChatPrompt.Render("❯") + " ")
 		c.Y += 1 + styleChatBanner.GetVerticalFrameSize() + viewportHeight + styleChatTranscript.GetVerticalFrameSize() + 1 + m.suggestionsRenderHeight(m.composerContentWidth())
 	}
 	return c
@@ -882,7 +882,12 @@ func (m chatModel) composerHeight(innerW int) int {
 	inputBox := styleChatInputBox.Width(inputW).Render(m.textarea.View())
 	enterKey := styleChatEnterKey.Render("[enter]")
 	inputRow := prompt + " " + inputBox + " " + enterKey
-	hintsLine := styleChatHint.Render("tab cycle  ↵ apply  esc dismiss  ^O reasoning")
+	hintsLine := styleChatHint.Render(strings.Join([]string{
+		styleChatHintKey.Render("tab") + " cycle",
+		styleChatHintKey.Render("↵") + " apply",
+		styleChatHintKey.Render("esc") + " dismiss",
+		styleChatHintKey.Render("^O") + " reasoning",
+	}, "  "))
 	body := inputRow + "\n" + hintsLine
 	if rendered := m.renderSuggestions(composerW); rendered != "" {
 		body = rendered + "\n" + body
