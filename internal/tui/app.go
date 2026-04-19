@@ -401,7 +401,7 @@ func (m appModel) renderHeader() string {
 		return ""
 	}
 
-	brand := styleHeaderBrand.Render("Tether")
+	brand := styleHeaderBrand.Render("TETHER")
 
 	buttons := m.headerButtons()
 	tabParts := make([]string, 0, len(buttons))
@@ -422,20 +422,28 @@ func (m appModel) renderHeader() string {
 			active = m.view == viewAdmin
 		}
 		if active {
-			tabParts = append(tabParts, styleTabActive.Render(b.Label))
+			tabParts = append(tabParts, styleTabActive.Render("▸ "+b.Label))
 		} else {
 			tabParts = append(tabParts, styleTab.Render(b.Label))
 		}
 	}
 	tabs := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
 
-	gap := m.w - lipgloss.Width(brand) - lipgloss.Width(tabs)
+	// Right side: online dot + username (only when logged in).
+	var userBadge string
+	if m.user != nil {
+		dot := lipgloss.NewStyle().Foreground(lipgloss.Color("71")).Render("●")
+		userBadge = styleHeaderUser.Render(dot + " " + m.user.Username)
+	}
+
+	usedW := lipgloss.Width(brand) + lipgloss.Width(tabs) + lipgloss.Width(userBadge)
+	gap := m.w - usedW
 	if gap < 0 {
 		gap = 0
 	}
 	spacer := styleHeaderSpacer.Render(strings.Repeat(" ", gap))
 
-	return brand + spacer + tabs
+	return brand + spacer + tabs + userBadge
 }
 
 func (m appModel) headerButtons() []headerButton {
