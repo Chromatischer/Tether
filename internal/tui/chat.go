@@ -283,7 +283,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case streamTickMsg:
 		if m.hasStreamingMessages() {
-			m.streamFrame = (m.streamFrame + 1) % 8
+			m.streamFrame = (m.streamFrame + 1) % 4
 			m.reflow()
 			return m, m.streamTickCmd()
 		}
