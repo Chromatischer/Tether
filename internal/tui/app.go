@@ -576,7 +576,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		m.activeRuns++
 		m.releasedRuns[requestID] = false
 		m.chat = m.chat.startStreamingAssistant(requestID)
-		return m, true, m.resumeConfirmationCmd(requestID, fields[1])
+		return m, true, tea.Batch(m.resumeConfirmationCmd(requestID, fields[1]), m.chat.streamTickCmd())
 
 	case "/admin":
 		if m.conv == nil || m.user == nil {
@@ -1690,6 +1690,23 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 		released := false
 		convID := m.conv.ID
 		var reasoning strings.Builder
+
+		// Default behavior: if the token is tied to a suspended tool execution, resume it.
+		// Otherwise treat /confirm as a standalone confirmation (e.g. tokens created via confirm.request).
+		if !ag.HasPendingConfirmationToken(userID, token) {
+			ok := ag.ConfirmToken(userID, token)
+			if !released {
+				released = true
+				ch <- agentReleaseMsg{ConversationID: convID, RequestID: requestID}
+			}
+			if ok {
+				ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: "confirmed"}
+			} else {
+				ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: "confirmation failed"}
+			}
+			return
+		}
+
 		reply, convID, ok, err := ag.ResumeConfirmedStream(ctx, userID, token, func(ev agent.StreamEvent) {
 			switch ev.Type {
 			case "assistant_delta":
@@ -1849,7 +1866,7 @@ func (m *appModel) dispatchNextWaitlist() tea.Cmd {
 	m.activeRuns++
 	m.releasedRuns[requestID] = false
 	m.chat = m.chat.startStreamingAssistant(requestID)
-	return m.askAgentCmdWithID(requestID, text)
+	return tea.Batch(m.askAgentCmdWithID(requestID, text), m.chat.streamTickCmd())
 }
 
 func (m *appModel) releaseWaitlistFor(requestID int) tea.Cmd {

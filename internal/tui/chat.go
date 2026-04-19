@@ -105,6 +105,8 @@ type chatNotificationsDeliveredMsg struct {
 	Lines []chatMessage
 }
 
+type streamTickMsg struct{}
+
 func newChatModel() chatModel {
 	ta := textarea.New()
 	ta.Placeholder = "Message Tether…"
@@ -136,6 +138,21 @@ func newChatModel() chatModel {
 		streamingAssistantIdx: map[int]int{},
 		streamingToolCalls:    map[int]map[string]int{},
 	}
+}
+
+func (m chatModel) hasStreamingMessages() bool {
+	for _, msg := range m.messages {
+		if msg.streaming {
+			return true
+		}
+	}
+	return false
+}
+
+func (m chatModel) streamTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return streamTickMsg{}
+	})
 }
 
 func (m chatModel) withConversation(db *sql.DB, userID, convID int64) chatModel {
@@ -263,6 +280,14 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, m.pollTickCmd()
+
+	case streamTickMsg:
+		if m.hasStreamingMessages() {
+			m.streamFrame = (m.streamFrame + 1) % 8
+			m.reflow()
+			return m, m.streamTickCmd()
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m = m.withSize(msg.Width, msg.Height)

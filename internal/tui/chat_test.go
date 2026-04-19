@@ -308,3 +308,33 @@ func TestFormatMessage_ToolCallInProgressShowsRunning(t *testing.T) {
 		t.Fatalf("expected in-progress indicator, got %q", out)
 	}
 }
+
+func TestStreamTickAdvancesFrameAndReflows(t *testing.T) {
+	m := newChatModel()
+	m = m.startStreamingAssistant(1)
+
+	if !m.hasStreamingMessages() {
+		t.Fatal("expected streaming message")
+	}
+
+	frame0 := m.streamFrame
+	updated, cmd := m.Update(streamTickMsg{})
+	if updated.streamFrame != frame0+1 {
+		t.Fatalf("expected streamFrame to advance, got %d → %d", frame0, updated.streamFrame)
+	}
+	if cmd == nil {
+		t.Fatal("expected ticker to re-fire while streaming")
+	}
+}
+
+func TestStreamTickStopsAfterStreamingEnds(t *testing.T) {
+	m := newChatModel()
+	m = m.startStreamingAssistant(1)
+	m = m.finishStreamingAssistant(1, "done", "")
+
+	updated, cmd := m.Update(streamTickMsg{})
+	_ = updated
+	if cmd != nil {
+		t.Fatal("expected ticker to stop after streaming finished")
+	}
+}
