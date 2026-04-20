@@ -21,6 +21,11 @@
 - **`confirm.scope` tool** to compute the exact confirmation scope string needed before destructive tool calls.
 
 ### Changed
+- **File editing is less permission-token driven and more context-bound**
+  - `write` no longer requires a confirmation token by default for overwriting existing files.
+  - Overwriting an existing file now requires that the same agent session has already read that exact path first.
+  - Creating a brand-new file still works without a prior read.
+  - Personality file overwrites still create `.history` backups, but now follow the same read-before-edit rule.
 - **Discord and TUI reply flow got dramatically better**
   - Discord assistant messages can now attach `1️⃣` through `🔟` reactions for numbered multiple-choice prompts, and clicking one resumes the same agent session as if the user had replied with that number.
   - The main prompt now tells Tether to format multiple-choice questions as numbered lists ending with `Reply with just the number.` so Discord reactions and TUI numeric replies share one clean interaction model.

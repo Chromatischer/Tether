@@ -75,6 +75,7 @@ func (t ReadFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 	if err != nil {
 		return nil, err
 	}
+	relPath := normalizeSandboxRelPath(args.Path)
 	// Open with O_NOFOLLOW as a best-effort guard against symlink races.
 	fd, err := unix.Open(p, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -101,6 +102,7 @@ func (t ReadFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 	if len(out) > max {
 		out = out[:max] + "\n... (truncated)"
 	}
+	s.MarkReadPath(relPath)
 	return map[string]any{"path": args.Path, "content": out}, nil
 }
 
@@ -118,15 +120,15 @@ func (t WriteFile) Spec() tools.ToolSpec {
 		Name:    "write",
 		Summary: "Write a file in the user sandbox (relative path).",
 		WhenToUse: "Use this to create new files or update files. Prefer small, targeted writes. " +
-			"If the file already exists, the host may pause and require the user to confirm before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.",
-		Safety: "Overwriting an existing file is treated as destructive and requires confirm_token, except for config/agents/**/PERSONALITY.md (self-editable; old versions are backed up). Symlinks are rejected.",
+			"If the file already exists, read it first in the same session so you have current context before overwriting it.",
+		Safety: "Creating new files is allowed. Overwriting an existing file requires that the same session has already read that path. Personality files under config/agents/**/PERSONALITY.md remain self-editable and keep backups. Symlinks are rejected.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"path":          map[string]any{"type": "string", "minLength": 1, "description": "relative path under the user sandbox root"},
 				"content":       map[string]any{"type": "string", "description": "full file content to write"},
-				"confirm_token": map[string]any{"type": "string", "description": "required when overwriting an existing file"},
+				"confirm_token": map[string]any{"type": "string", "description": "deprecated; ignored by the write tool"},
 			},
 			"required": []string{"path", "content"},
 		},
@@ -168,6 +170,7 @@ func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMess
 	if err != nil {
 		return nil, err
 	}
+	relPath := normalizeSandboxRelPath(args.Path)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return nil, err
 	}
@@ -179,14 +182,12 @@ func (t WriteFile) Execute(ctx context.Context, s *Session, rawArgs json.RawMess
 			return nil, fmt.Errorf("not a regular file")
 		}
 
-		// Overwriting an existing file is considered destructive, except for agent personality files.
+		if !s.HasReadPath(relPath) {
+			return nil, fmt.Errorf("overwriting existing file requires reading it first in this session: %q", relPath)
+		}
+
 		if isPersonalityRelPath(args.Path) {
 			_ = backupExistingPersonality(p)
-		} else {
-			scope := writeConfirmScope(args.Path)
-			if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
-				return nil, fmt.Errorf("overwriting existing file requires confirmation; scope=%q", scope)
-			}
 		}
 	}
 	fd, err := unix.Open(p, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW, 0o644)
@@ -244,6 +245,17 @@ func writeConfirmScope(relPath string) string {
 		preview = "(empty)"
 	}
 	return "write:overwrite:" + h + ":" + preview
+}
+
+func normalizeSandboxRelPath(relPath string) string {
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "/work" {
+		return ""
+	}
+	if strings.HasPrefix(relPath, "/work/") {
+		relPath = strings.TrimPrefix(relPath, "/work/")
+	}
+	return filepath.ToSlash(filepath.Clean(relPath))
 }
 
 func resolveUnderRoot(root, rel string) (string, error) {

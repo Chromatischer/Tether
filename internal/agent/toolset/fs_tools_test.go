@@ -47,7 +47,7 @@ func TestResolveUnderRoot_SymlinkComponentRejected(t *testing.T) {
 	}
 }
 
-func TestWriteFile_PersonalityOverwrite_NoConfirm(t *testing.T) {
+func TestWriteFile_PersonalityOverwrite_AfterRead_NoConfirm(t *testing.T) {
 	root := t.TempDir()
 	dirs := userspace.Dirs{Root: root}
 	// Seed an existing personality file.
@@ -60,6 +60,10 @@ func TestWriteFile_PersonalityOverwrite_NoConfirm(t *testing.T) {
 	}
 
 	s := &Session{UserID: 1, Dirs: dirs}
+	readArgs, _ := json.Marshal(map[string]any{"path": "config/agents/chat/PERSONALITY.md"})
+	if _, err := (ReadFile{}).Execute(nil, s, readArgs); err != nil {
+		t.Fatalf("expected read ok, got: %v", err)
+	}
 	args, _ := json.Marshal(map[string]any{"path": "config/agents/chat/PERSONALITY.md", "content": "new"})
 	_, err := (WriteFile{}).Execute(nil, s, args)
 	if err != nil {
@@ -77,7 +81,7 @@ func TestWriteFile_PersonalityOverwrite_NoConfirm(t *testing.T) {
 	}
 }
 
-func TestWriteFile_Overwrite_StillRequiresConfirm(t *testing.T) {
+func TestWriteFile_OverwriteRequiresPriorRead(t *testing.T) {
 	root := t.TempDir()
 	dirs := userspace.Dirs{Root: root}
 	p := filepath.Join(root, "workspace", "a.txt")
@@ -91,7 +95,48 @@ func TestWriteFile_Overwrite_StillRequiresConfirm(t *testing.T) {
 	s := &Session{UserID: 1, Dirs: dirs}
 	args, _ := json.Marshal(map[string]any{"path": "workspace/a.txt", "content": "new"})
 	_, err := (WriteFile{}).Execute(nil, s, args)
-	if err == nil || !strings.Contains(err.Error(), "requires confirmation") {
-		t.Fatalf("expected confirmation error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires reading it first") {
+		t.Fatalf("expected prior-read error, got: %v", err)
+	}
+}
+
+func TestWriteFile_OverwriteAfterReadAllowed(t *testing.T) {
+	root := t.TempDir()
+	dirs := userspace.Dirs{Root: root}
+	p := filepath.Join(root, "workspace", "a.txt")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Session{UserID: 1, Dirs: dirs}
+	readArgs, _ := json.Marshal(map[string]any{"path": "workspace/a.txt"})
+	if _, err := (ReadFile{}).Execute(nil, s, readArgs); err != nil {
+		t.Fatalf("expected read ok, got: %v", err)
+	}
+
+	writeArgs, _ := json.Marshal(map[string]any{"path": "workspace/a.txt", "content": "new"})
+	if _, err := (WriteFile{}).Execute(nil, s, writeArgs); err != nil {
+		t.Fatalf("expected write ok after read, got: %v", err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "new" {
+		t.Fatalf("unexpected content: %q", string(b))
+	}
+}
+
+func TestWriteFile_CreateNewFileWithoutRead(t *testing.T) {
+	root := t.TempDir()
+	dirs := userspace.Dirs{Root: root}
+	s := &Session{UserID: 1, Dirs: dirs}
+
+	args, _ := json.Marshal(map[string]any{"path": "workspace/new.txt", "content": "new"})
+	if _, err := (WriteFile{}).Execute(nil, s, args); err != nil {
+		t.Fatalf("expected create ok, got: %v", err)
 	}
 }

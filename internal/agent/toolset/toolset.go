@@ -104,6 +104,9 @@ type Session struct {
 	// InvokedSkills are kept in-memory for the lifetime of the Tether process.
 	// They are re-attached to the prompt each turn so they don’t fall out of the recent-history window.
 	InvokedSkills []InvokedSkill
+
+	// ReadPaths tracks files read during this session so write can require prior inspection.
+	ReadPaths map[string]bool
 }
 
 // AddInvokedSkill stores/replaces the most recent invocation of a skill.
@@ -141,7 +144,33 @@ func NewSession(reg *tools.Registry) *Session {
 	active["subagent.spawn"] = true
 	active["subagent.status"] = true
 	active["skill.invoke"] = true
-	return &Session{Registry: reg, Active: active, SkillSessionID: fmt.Sprintf("tether-%d", time.Now().UTC().UnixNano())}
+	return &Session{
+		Registry:       reg,
+		Active:         active,
+		SkillSessionID: fmt.Sprintf("tether-%d", time.Now().UTC().UnixNano()),
+		ReadPaths:      map[string]bool{},
+	}
+}
+
+func (s *Session) MarkReadPath(relPath string) {
+	if s == nil {
+		return
+	}
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "" {
+		return
+	}
+	if s.ReadPaths == nil {
+		s.ReadPaths = map[string]bool{}
+	}
+	s.ReadPaths[relPath] = true
+}
+
+func (s *Session) HasReadPath(relPath string) bool {
+	if s == nil || s.ReadPaths == nil {
+		return false
+	}
+	return s.ReadPaths[strings.TrimSpace(relPath)]
 }
 
 func (s *Session) IsActive(name string) bool { return s.Active[name] }
