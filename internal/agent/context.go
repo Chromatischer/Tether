@@ -160,8 +160,8 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.S
 			})
 		case "system":
 			items = append(items, openrouter.ResponseItem{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: m.Content}}})
-		case "tool_call":
-			// Display-only role stored for the chat UI; do not send it back to the model.
+		case "tool_call", "assistant_reasoning":
+			// Display-only roles stored for the chat UI; do not send them back to the model.
 			continue
 		default:
 			// user + any unknown role

@@ -63,6 +63,11 @@ var (
 				Foreground(colorMuted).
 				Padding(0, 1, 0, 0)
 
+	styleHeaderNotice = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorAmber).
+				Padding(0, 1)
+
 	// ── Auth screen ───────────────────────────────────────────────────────
 	styleLogo = lipgloss.NewStyle().
 			Background(colorBg).
@@ -75,6 +80,10 @@ var (
 	styleAuthHint = lipgloss.NewStyle().
 			Background(colorBg).
 			Foreground(colorMuted)
+
+	styleAuthNotice = lipgloss.NewStyle().
+			Background(colorBg).
+			Foreground(colorAmber)
 
 	styleAuthBox = lipgloss.NewStyle().
 			Background(colorHeaderBg).

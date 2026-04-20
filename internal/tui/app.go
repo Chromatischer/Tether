@@ -101,6 +101,13 @@ type agentReleaseMsg struct {
 	RequestID      int
 }
 
+type appBackendSyncPollMsg struct{}
+
+type appBackendSyncMsg struct {
+	Conversation *store.Conversation
+	Messages     []chatMessage
+}
+
 func usageBlock(lines ...string) string {
 	if len(lines) == 0 {
 		return "usage:"
@@ -120,18 +127,27 @@ func NewAppModel(ctx *SessionContext) tea.Model {
 	}
 	m.proEng = proactive.NewEngine(ctx.DB, ag, ag, ag.Subagents(), ctx.Config.Paths.DataDir)
 	m.view = viewLogin
-	m.auth = newAuthModel(authModeLogin)
-	m.chat = newChatModel()
+	m.auth = newAuthModel(authModeLogin).withDisclaimer(ctx.Term.Disclaimer)
+	m.chat = newChatModel().withTerminalProfile(ctx.Term)
 	m.memory = newMemoryModel()
 	m.settings = newSettingsModel(ctx)
 	m.admin = newAdminModel(ctx)
 	return m
 }
 
+func (m appModel) termProfile() TerminalProfile {
+	if m.ctx == nil {
+		return TerminalProfile{}
+	}
+	return m.ctx.Term
+}
+
 func (m appModel) activateConversation(conv *store.Conversation) appModel {
 	m.conv = conv
 	m.view = viewChat
+	term := m.termProfile()
 	m.chat = newChatModel().
+		withTerminalProfile(term).
 		withComposerContext(m.ctx.Config.Paths.DataDir, m.user != nil && m.user.Role == "admin").
 		withConversation(m.ctx.DB, m.user.ID, m.conv.ID)
 	m.chat = m.chat.withSize(m.w, m.h-1)
@@ -168,10 +184,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch b.ID {
 				case "login":
 					m.view = viewLogin
-					m.auth = newAuthModel(authModeLogin).withSize(m.w, m.h-1)
+					m.auth = newAuthModel(authModeLogin).withDisclaimer(m.termProfile().Disclaimer).withSize(m.w, m.h-1)
 				case "signup":
 					m.view = viewSignup
-					m.auth = newAuthModel(authModeSignup).withSize(m.w, m.h-1)
+					m.auth = newAuthModel(authModeSignup).withDisclaimer(m.termProfile().Disclaimer).withSize(m.w, m.h-1)
 				case "chat":
 					m.view = viewChat
 				case "memory":
@@ -196,7 +212,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.view = viewSignup
 		}
-		m.auth = newAuthModel(msg.Mode).withSize(m.w, m.h-1)
+		m.auth = newAuthModel(msg.Mode).withDisclaimer(m.termProfile().Disclaimer).withSize(m.w, m.h-1)
 		return m, nil
 
 	case authSubmitMsg:
@@ -269,6 +285,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
+			m.backendSyncTickCmd(),
 		)
 
 	case loginSuccessMsg:
@@ -279,7 +296,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
+			m.backendSyncTickCmd(),
 		)
+
+	case appBackendSyncPollMsg:
+		return m, tea.Batch(m.backendSyncNowCmd(), m.backendSyncTickCmd())
+
+	case appBackendSyncMsg:
+		if msg.Conversation == nil {
+			return m, nil
+		}
+		if m.conv == nil || m.conv.ID != msg.Conversation.ID {
+			m = m.activateConversation(msg.Conversation)
+		}
+		m.chat, _ = m.chat.Update(chatLoadedMsg{Messages: msg.Messages})
+		return m, nil
 
 	case chatSendMsg:
 		if strings.HasPrefix(msg.Text, "/") {
@@ -422,7 +453,8 @@ func (m appModel) renderHeader() string {
 }
 
 func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs string, userBadge string) {
-	brand = styleHeaderBrand.Render(renderBrandWordmark("TETHER", colorHeaderBg))
+	term := m.termProfile()
+	brand = styleHeaderBrand.Render(renderBrandWordmark("TETHER", colorHeaderBg, !term.DisableGradients))
 
 	buttons = m.headerButtons()
 	tabParts := make([]string, 0, len(buttons))
@@ -454,13 +486,22 @@ func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs str
 	}
 	tabs = lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
 
-	// Right side: online dot + username (only when logged in).
+	// Right side: terminal compatibility notice + online dot + username.
+	if label := strings.TrimSpace(term.HeaderLabel); label != "" {
+		userBadge = styleHeaderNotice.Render(label)
+	}
+
 	if m.user != nil {
-		userBadge = lipgloss.JoinHorizontal(
+		accountBadge := lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			styleHeaderUserDot.Render("●"),
 			styleHeaderUserText.Render(m.user.Username),
 		)
+		if userBadge != "" {
+			userBadge = lipgloss.JoinHorizontal(lipgloss.Top, userBadge, accountBadge)
+		} else {
+			userBadge = accountBadge
+		}
 	}
 
 	if lipgloss.Width(brand)+lipgloss.Width(userBadge) > m.w {
@@ -1709,8 +1750,8 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		m.user = nil
 		m.conv = nil
 		m.view = viewLogin
-		m.auth = newAuthModel(authModeLogin).withSize(m.w, m.h-1)
-		m.chat = newChatModel().withSize(m.w, m.h-1)
+		m.auth = newAuthModel(authModeLogin).withDisclaimer(m.termProfile().Disclaimer).withSize(m.w, m.h-1)
+		m.chat = newChatModel().withTerminalProfile(m.termProfile()).withSize(m.w, m.h-1)
 		return m, true, nil
 	}
 
@@ -1926,14 +1967,15 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		}
 		seen[key] = true
 		content := formatToolCallContent(tc)
-		if targetConvID != 0 {
+		if targetConvID != 0 && !renderInActiveChat {
 			_ = store.AddMessage(m.ctx.DB, targetConvID, "tool_call", content)
 		}
 		if renderInActiveChat {
 			if m.chat.hasStreamingToolCall(msg.RequestID, tc.Name, tc.Args) {
 				m.chat = m.chat.upsertStreamingToolCall(msg.RequestID, tc)
 			} else {
-				m.chat = m.chat.appendLocal("tool_call", content)
+				m.chat = m.chat.appendStreamingToolCall(msg.RequestID, tc.Name, tc.Args)
+				m.chat = m.chat.upsertStreamingToolCall(msg.RequestID, tc)
 			}
 		}
 	}
@@ -1954,7 +1996,7 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		}
 		return m, m.maybeDispatchWaitlist()
 	}
-	if targetConvID != 0 {
+	if targetConvID != 0 && !renderInActiveChat {
 		_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", clean)
 	}
 	if renderInActiveChat {
@@ -2040,5 +2082,49 @@ func (m appModel) triggerProactiveAgentCmd(agentID string, meta map[string]strin
 		defer cancel()
 		eng.TriggerAgent(ctx, uid, agentID, meta)
 		return nil
+	}
+}
+
+func (m appModel) backendSyncTickCmd() tea.Cmd {
+	if m.ctx == nil || m.ctx.DB == nil || m.user == nil {
+		return nil
+	}
+	return tea.Tick(4*time.Second, func(time.Time) tea.Msg { return appBackendSyncPollMsg{} })
+}
+
+func (m appModel) backendSyncNowCmd() tea.Cmd {
+	if m.ctx == nil || m.ctx.DB == nil || m.user == nil {
+		return nil
+	}
+	db := m.ctx.DB
+	userID := m.user.ID
+	currentConvID := int64(0)
+	if m.conv != nil {
+		currentConvID = m.conv.ID
+	}
+	knownLatestID := m.chat.latestPersistedMessageID()
+	hasStreaming := m.chat.hasStreamingMessages() || m.activeRuns > 0
+	return func() tea.Msg {
+		conv, err := store.GetOrCreateActiveConversation(db, userID)
+		if err != nil || conv == nil {
+			return nil
+		}
+		if hasStreaming {
+			return nil
+		}
+		if currentConvID != 0 && conv.ID == currentConvID {
+			latestID, ok, err := store.LatestMessageID(db, conv.ID)
+			if err != nil {
+				return nil
+			}
+			if (!ok && knownLatestID == 0) || (ok && latestID <= knownLatestID) {
+				return nil
+			}
+		}
+		msgs, err := loadChatMessages(db, conv.ID, 200)
+		if err != nil {
+			return nil
+		}
+		return appBackendSyncMsg{Conversation: conv, Messages: msgs}
 	}
 }

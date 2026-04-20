@@ -6,6 +6,8 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+
+	"tether/internal/store"
 )
 
 func TestChatModelStreamingToolCallIsDeduplicated(t *testing.T) {
@@ -72,25 +74,31 @@ func TestAppendStreamingToolCallRejectsInvalidToolName(t *testing.T) {
 }
 
 func TestFormatMessage_AssistantWithoutSeparateReasoningHasNoReasoningNotice(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80, 0)
-	// No reasoning notice is shown when there is no reasoning — keeps the message clean.
+	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80, 0, TerminalProfile{})
 	if strings.Contains(out, "reasoning") {
 		t.Fatalf("expected no reasoning notice for plain assistant message, got %q", out)
 	}
-	if !strings.Contains(out, "\x1b[") {
-		t.Fatalf("expected assistant body to include styled gradient output, got %q", out)
+	if !strings.Contains(out, "Hi") {
+		t.Fatalf("expected assistant body text, got %q", out)
 	}
 }
 
-func TestFormatMessage_AssistantWithReasoningShowsReasoningLabel(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "Hi", reasoning: "step 1"}, 80, 0)
+func TestFormatMessage_AssistantDisablesGradientIn256ColorMode(t *testing.T) {
+	out := formatMessage(chatMessage{role: "assistant", content: "Hi"}, 80, 0, TerminalProfile{DisableGradients: true})
+	if strings.Contains(out, "38;2;") {
+		t.Fatalf("expected no truecolor gradient escape codes in 256-color mode, got %q", out)
+	}
+}
+
+func TestFormatMessage_AssistantReasoningShowsReasoningLabel(t *testing.T) {
+	out := formatMessage(chatMessage{role: "assistant_reasoning", content: "step 1"}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "◈ reasoning") {
 		t.Fatalf("expected reasoning affordance, got %q", out)
 	}
 }
 
 func TestFormatMessage_SystemNoticeDoesNotRenderNoticeLabel(t *testing.T) {
-	out := formatMessage(chatMessage{role: "system", content: "Started a fresh conversation."}, 80, 0)
+	out := formatMessage(chatMessage{role: "system", content: "Started a fresh conversation."}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "Started a fresh conversation.") {
 		t.Fatalf("expected notice content, got %q", out)
 	}
@@ -100,7 +108,7 @@ func TestFormatMessage_SystemNoticeDoesNotRenderNoticeLabel(t *testing.T) {
 }
 
 func TestFormatMessage_ToolCallShowsResultInSameWidget(t *testing.T) {
-	out := formatMessage(chatMessage{role: "tool_call", content: "bash  {\"command\":\"pwd\"}\n\n{\n  \"exit_code\": 0,\n  \"stdout\": \"/work\\n\"\n}"}, 80, 0)
+	out := formatMessage(chatMessage{role: "tool_call", content: "bash  {\"command\":\"pwd\"}\n\n{\n  \"exit_code\": 0,\n  \"stdout\": \"/work\\n\"\n}", expanded: true}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "▷") {
 		t.Fatalf("expected tool icon ▷, got %q", out)
 	}
@@ -142,25 +150,28 @@ func TestRenderRichText_TableWrapsWithinWidth(t *testing.T) {
 	}
 }
 
-func TestStreamingReasoningStaysExpandedUntilAnswerTextStarts(t *testing.T) {
+func TestStreamingReasoningAndAnswerRenderAsSeparateTimelineRows(t *testing.T) {
 	m := newChatModel()
 
 	m = m.setStreamingReasoning(3, "step 1")
 	if len(m.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(m.messages))
 	}
-	if !m.messages[0].reasoningExpanded {
-		t.Fatal("expected streaming reasoning to start expanded before answer text")
+	if m.messages[0].role != "assistant_reasoning" {
+		t.Fatalf("expected first message to be reasoning, got %+v", m.messages[0])
 	}
 
 	m = m.setStreamingAssistant(3, "final answer")
-	if m.messages[0].reasoningExpanded {
-		t.Fatal("expected reasoning to collapse once answer text starts streaming")
+	if len(m.messages) != 2 {
+		t.Fatalf("expected separate reasoning and answer rows, got %d", len(m.messages))
+	}
+	if m.messages[1].role != "assistant" || m.messages[1].content != "final answer" {
+		t.Fatalf("unexpected answer row: %+v", m.messages[1])
 	}
 }
 
-func TestFormatMessage_StreamingReasoningRendersAtTopOfBubble(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80, 0)
+func TestFormatMessage_StreamingReasoningRendersAsOwnRow(t *testing.T) {
+	out := formatMessage(chatMessage{role: "assistant_reasoning", content: "step 1", streaming: true}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "◈ reasoning") {
 		t.Fatalf("expected streaming reasoning label, got %q", out)
 	}
@@ -169,10 +180,91 @@ func TestFormatMessage_StreamingReasoningRendersAtTopOfBubble(t *testing.T) {
 	}
 }
 
-func TestFormatMessage_StreamingReasoningHidesPlaceholderBody(t *testing.T) {
-	out := formatMessage(chatMessage{role: "assistant", content: "...", reasoning: "step 1", streaming: true}, 80, 0)
-	if strings.Contains(out, "\n\n...") {
-		t.Fatalf("expected placeholder body to be hidden while only reasoning is streaming, got %q", out)
+func TestStreamingReasoningResumesAsNewTimelineSegmentAfterToolCall(t *testing.T) {
+	m := newChatModel()
+	m = m.setStreamingReasoning(3, "step 1")
+	m = m.appendStreamingToolCall(3, "search", "{\"q\":\"x\"}")
+	m = m.setStreamingReasoning(3, "step 1step 2")
+
+	if len(m.messages) != 3 {
+		t.Fatalf("expected reasoning, tool, reasoning rows; got %d", len(m.messages))
+	}
+	if m.messages[2].role != "assistant_reasoning" || m.messages[2].content != "step 2" {
+		t.Fatalf("expected second reasoning segment to contain only the new suffix, got %+v", m.messages[2])
+	}
+}
+
+func TestStreamingTimelinePersistsForReload(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "timeline_persist", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newChatModel().withConversation(d, u.ID, conv.ID)
+	m = m.setStreamingReasoning(7, "reason 1")
+	m = m.appendStreamingToolCall(7, "search", "{\"q\":\"tether\"}")
+	m = m.upsertStreamingToolCall(7, toolCallEntry{Name: "search", Args: "{\"q\":\"tether\"}", Result: "{\"items\":[]}"})
+	m = m.setStreamingAssistant(7, "answer 1")
+	m = m.finishStreamingAssistant(7, "answer 1", "reason 1")
+
+	msgs, err := store.ListRecentMessages(d, conv.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected reasoning, tool, answer rows; got %d", len(msgs))
+	}
+	if msgs[0].Role != "assistant_reasoning" || msgs[1].Role != "tool_call" || msgs[2].Role != "assistant" {
+		t.Fatalf("unexpected persisted roles: %+v", msgs)
+	}
+	if msgs[0].Content != "reason 1" || !strings.Contains(msgs[1].Content, "\"items\":[]") || msgs[2].Content != "answer 1" {
+		t.Fatalf("unexpected persisted contents: %+v", msgs)
+	}
+}
+
+func TestFinishStreamingAssistantCollapsesReasoningAndToolRows(t *testing.T) {
+	m := newChatModel()
+	m = m.setStreamingReasoning(9, "reason")
+	m = m.appendStreamingToolCall(9, "search", "{\"q\":\"tether\"}")
+	m = m.upsertStreamingToolCall(9, toolCallEntry{Name: "search", Args: "{\"q\":\"tether\"}", Result: "{\"items\":[]}"})
+	m = m.setStreamingAssistant(9, "answer")
+	m = m.finishStreamingAssistant(9, "answer", "reason")
+
+	if m.messages[0].role != "assistant_reasoning" || m.messages[0].expanded {
+		t.Fatalf("expected completed reasoning row to be collapsed, got %+v", m.messages[0])
+	}
+	if m.messages[1].role != "tool_call" || m.messages[1].expanded {
+		t.Fatalf("expected completed tool row to be collapsed, got %+v", m.messages[1])
+	}
+}
+
+func TestFormatMessage_CollapsedToolCallShowsSummaryNotRunning(t *testing.T) {
+	out := formatMessage(chatMessage{role: "tool_call", content: "bash  {\"command\":\"pwd\"}\n\n{\"exit_code\":0}", expanded: false}, 80, 0, TerminalProfile{})
+	if strings.Contains(out, "running") {
+		t.Fatalf("expected completed tool row to avoid running state, got %q", out)
+	}
+	if !strings.Contains(out, "click to expand") {
+		t.Fatalf("expected collapsed tool summary hint, got %q", out)
+	}
+}
+
+func TestToggleExpandableAtExpandsClickedCompletedReasoningRow(t *testing.T) {
+	m := newChatModel().withSize(80, 24)
+	m = m.appendMessage(chatMessage{role: "assistant_reasoning", content: "reason"})
+	m.messages[0].expanded = false
+	m.reflow()
+	if len(m.rowHits) != 1 {
+		t.Fatalf("expected one row hit, got %d", len(m.rowHits))
+	}
+	y := 1 + m.rowHits[0].startLine
+	m = m.toggleExpandableAt(y)
+	if !m.messages[0].expanded {
+		t.Fatalf("expected clicked reasoning row to expand, got %+v", m.messages[0])
 	}
 }
 
@@ -280,7 +372,7 @@ func TestChatModelEnterOnSendDispatchesMessage(t *testing.T) {
 }
 
 func TestFormatMessage_UserMessageHasSenderGlyph(t *testing.T) {
-	out := formatMessage(chatMessage{role: "user", content: "hello"}, 80, 0)
+	out := formatMessage(chatMessage{role: "user", content: "hello"}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "you ›") {
 		t.Fatalf("expected sender glyph 'you ›', got %q", out)
 	}
@@ -290,21 +382,21 @@ func TestFormatMessage_UserMessageHasSenderGlyph(t *testing.T) {
 }
 
 func TestFormatMessage_SystemErrorPrefixGetsErrorStyle(t *testing.T) {
-	out := formatMessage(chatMessage{role: "system", content: "failed to load messages: db error"}, 80, 0)
+	out := formatMessage(chatMessage{role: "system", content: "failed to load messages: db error"}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "✗ error") {
 		t.Fatalf("expected error sender label, got %q", out)
 	}
 }
 
 func TestFormatMessage_SystemSuccessPrefixGetsInfoStyle(t *testing.T) {
-	out := formatMessage(chatMessage{role: "system", content: "memory added (id 7)"}, 80, 0)
+	out := formatMessage(chatMessage{role: "system", content: "memory added (id 7)"}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "✓ info") {
 		t.Fatalf("expected info sender label, got %q", out)
 	}
 }
 
 func TestFormatMessage_ProactiveNoticeUsesSystemStyle(t *testing.T) {
-	out := formatMessage(chatMessage{role: "system", content: "[Proactive/self_schedule] Follow up tomorrow."}, 80, 0)
+	out := formatMessage(chatMessage{role: "system", content: "[Proactive/self_schedule] Follow up tomorrow."}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "● system") {
 		t.Fatalf("expected system sender label, got %q", out)
 	}
@@ -328,7 +420,7 @@ func TestNewChatModelTextareaDoesNotRenderInternalPrompt(t *testing.T) {
 }
 
 func TestFormatMessage_ToolCallInProgressShowsRunning(t *testing.T) {
-	out := formatMessage(chatMessage{role: "tool_call", content: "bash  pwd"}, 80, 0)
+	out := formatMessage(chatMessage{role: "tool_call", content: "bash  pwd"}, 80, 0, TerminalProfile{})
 	if !strings.Contains(out, "▷") {
 		t.Fatalf("expected tool icon, got %q", out)
 	}
@@ -352,6 +444,33 @@ func TestStreamTickAdvancesFrameAndReflows(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected ticker to re-fire while streaming")
+	}
+}
+
+func TestPendingAssistantIndicatorClearsOnFirstRealStreamEvent(t *testing.T) {
+	m := newChatModel()
+	m = m.startStreamingAssistant(1)
+	if len(m.messages) != 1 || m.messages[0].role != "assistant_pending" {
+		t.Fatalf("expected pending assistant row, got %+v", m.messages)
+	}
+	m = m.setStreamingReasoning(1, "step 1")
+	if len(m.messages) != 2 {
+		t.Fatalf("expected reasoning row plus trailing pending indicator, got %+v", m.messages)
+	}
+	if m.messages[0].role != "assistant_reasoning" || m.messages[1].role != "assistant_pending" {
+		t.Fatalf("expected pending row to remain latest after first real stream event, got %+v", m.messages)
+	}
+}
+
+func TestPendingAssistantIndicatorStaysLatestDuringStreamingTurn(t *testing.T) {
+	m := newChatModel()
+	m = m.startStreamingAssistant(1)
+	m = m.setStreamingReasoning(1, "step 1")
+	m = m.appendStreamingToolCall(1, "search", "{\"q\":\"x\"}")
+	m = m.setStreamingAssistant(1, "answer")
+
+	if got := m.messages[len(m.messages)-1].role; got != "assistant_pending" {
+		t.Fatalf("expected pending indicator to stay latest while turn is active, got %q", got)
 	}
 }
 

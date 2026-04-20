@@ -5,6 +5,40 @@ import (
 	"testing"
 )
 
+func TestDetectDiscordChoiceCount(t *testing.T) {
+	msg := "Pick one:\n1. Alpha\n2. Beta\n3. Gamma\n\nReply with just the number."
+	if got := detectDiscordChoiceCount(msg); got != 3 {
+		t.Fatalf("expected 3 choices, got %d", got)
+	}
+}
+
+func TestDetectDiscordChoiceCountRejectsNonContiguous(t *testing.T) {
+	msg := "Pick one:\n1. Alpha\n3. Gamma\n\nReply with just the number."
+	if got := detectDiscordChoiceCount(msg); got != 0 {
+		t.Fatalf("expected 0 choices for non-contiguous list, got %d", got)
+	}
+}
+
+func TestDetectDiscordChoiceCountRequiresReplyInstruction(t *testing.T) {
+	msg := "Options:\n1. Alpha\n2. Beta"
+	if got := detectDiscordChoiceCount(msg); got != 0 {
+		t.Fatalf("expected 0 choices without reply instruction, got %d", got)
+	}
+}
+
+func TestDiscordChoiceEmojiRoundTrip(t *testing.T) {
+	for i := 1; i <= 10; i++ {
+		emoji, ok := discordChoiceEmoji(i)
+		if !ok {
+			t.Fatalf("missing emoji for %d", i)
+		}
+		n, ok := discordChoiceNumberFromEmoji(emoji)
+		if !ok || n != i {
+			t.Fatalf("round trip failed for %d: %q -> %d %v", i, emoji, n, ok)
+		}
+	}
+}
+
 func TestRenderDiscordPreviewReasoningBeforeAnswer(t *testing.T) {
 	got := renderDiscordPreview([]string{"web-fetch", "bash"}, "thinking...", "")
 	want := "tool: web-fetch\ntool: bash\n\nthinking..."

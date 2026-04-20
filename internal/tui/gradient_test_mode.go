@@ -65,7 +65,7 @@ func (m gradientTestModel) View() tea.View {
 		renderGradientStrip(contentW, lipgloss.Color("#b94f2b"), lipgloss.Color("#e59617"), "1D logo ramp"),
 		renderGradientStrip(contentW, lipgloss.Color("#7a2e1f"), lipgloss.Color("#f0a11a"), "wide warm ramp"),
 		renderGradientGrid(contentW, 8, "2D field"),
-		styleLogo.Render(renderBrandLogo(tetherLogo, colorBg)),
+		styleLogo.Render(renderBrandLogo(tetherLogo, colorBg, true)),
 		styleMutedBg.Render("If this still bands, the terminal is quantizing cell colors harder than the math."),
 	}
 

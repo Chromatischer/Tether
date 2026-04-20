@@ -20,7 +20,7 @@ config/*.pem
 bin/
 dist/
 coverage/
-tether
+/tether
 tether.exe
 
 # Editor / OS

@@ -21,6 +21,13 @@
 - **`confirm.scope` tool** to compute the exact confirmation scope string needed before destructive tool calls.
 
 ### Changed
+- **Discord and TUI reply flow got dramatically better**
+  - Discord assistant messages can now attach `1️⃣` through `🔟` reactions for numbered multiple-choice prompts, and clicking one resumes the same agent session as if the user had replied with that number.
+  - The main prompt now tells Tether to format multiple-choice questions as numbered lists ending with `Reply with just the number.` so Discord reactions and TUI numeric replies share one clean interaction model.
+  - The mixed-turn chat transcript now preserves time order across reasoning, tool calls, partial text, and final responses instead of collapsing them into a misleading merged block.
+  - Completed reasoning and tool-call rows collapse by default, can be expanded by click, and keep live tool rows populated instead of leaving stale `running...` entries behind.
+  - The working indicator came back as a bottom-pinned animated three-dot row while an agent turn is still active.
+  - These interaction changes are, in practice, **really fucking good**.
 - **Conversation summaries hardened**
   - Stored summaries are now re-injected as untrusted reference context instead of system instructions.
   - Summary generation explicitly excludes assistant instructions, prompt injection attempts, and credential/token requests.

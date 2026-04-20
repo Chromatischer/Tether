@@ -168,13 +168,10 @@ func TestMaybeDispatchWaitlistStartsStreamingAssistantImmediately(t *testing.T) 
 		t.Fatalf("expected activeRuns=1, got %d", m.activeRuns)
 	}
 	if len(m.chat.messages) != 1 {
-		t.Fatalf("expected streaming assistant placeholder, got %d messages", len(m.chat.messages))
+		t.Fatalf("expected one pending assistant indicator row, got %d", len(m.chat.messages))
 	}
-	if m.chat.messages[0].role != "assistant" || !m.chat.messages[0].streaming {
-		t.Fatalf("expected streaming assistant placeholder, got %+v", m.chat.messages[0])
-	}
-	if m.chat.messages[0].content != "..." {
-		t.Fatalf("expected placeholder content, got %q", m.chat.messages[0].content)
+	if m.chat.messages[0].role != "assistant_pending" || !m.chat.messages[0].streaming {
+		t.Fatalf("expected pending assistant indicator row, got %+v", m.chat.messages[0])
 	}
 }
 
@@ -346,5 +343,113 @@ func TestChatPollNotificationsStoresSystemMessages(t *testing.T) {
 	}
 	if msgs[0].Role != "system" {
 		t.Fatalf("expected delivered proactive notification to be system role, got %+v", msgs[0])
+	}
+}
+
+func TestBackendSyncLoadsMessagesWrittenOutsideTUI(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "frank", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateActiveConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		user: u,
+		conv: conv,
+		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
+	}
+	loaded, ok := m.chat.loadCmd()().(chatLoadedMsg)
+	if !ok {
+		t.Fatal("expected initial chat load")
+	}
+	m.chat, _ = m.chat.Update(loaded)
+
+	if err := store.AddMessage(d, conv.ID, "user", "discord says hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(d, conv.ID, "assistant", "hello from discord"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := m.backendSyncNowCmd()
+	if cmd == nil {
+		t.Fatal("expected backend sync command")
+	}
+	msg, ok := cmd().(appBackendSyncMsg)
+	if !ok {
+		t.Fatalf("expected appBackendSyncMsg, got %T", cmd())
+	}
+	updatedModel, _ := m.Update(msg)
+	updated := updatedModel.(appModel)
+
+	if len(updated.chat.messages) != 2 {
+		t.Fatalf("expected synced messages, got %+v", updated.chat.messages)
+	}
+	if updated.chat.messages[0].role != "user" || updated.chat.messages[0].content != "discord says hi" {
+		t.Fatalf("unexpected first synced message: %+v", updated.chat.messages[0])
+	}
+	if updated.chat.messages[1].role != "assistant" || updated.chat.messages[1].content != "hello from discord" {
+		t.Fatalf("unexpected second synced message: %+v", updated.chat.messages[1])
+	}
+}
+
+func TestBackendSyncFollowsActiveConversationSwitch(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "gina", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	convA, err := store.GetOrCreateActiveConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	convB, err := store.CreateConversation(d, u.ID, "discord")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(d, convA.ID, "assistant", "old chat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(d, convB.ID, "assistant", "new active chat"); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		user: u,
+		conv: convA,
+		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, convA.ID),
+	}
+	loaded, ok := m.chat.loadCmd()().(chatLoadedMsg)
+	if !ok {
+		t.Fatal("expected initial chat load")
+	}
+	m.chat, _ = m.chat.Update(loaded)
+
+	if err := store.SetActiveConversation(d, u.ID, convB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := m.backendSyncNowCmd()
+	if cmd == nil {
+		t.Fatal("expected backend sync command")
+	}
+	msg, ok := cmd().(appBackendSyncMsg)
+	if !ok {
+		t.Fatalf("expected appBackendSyncMsg, got %T", cmd())
+	}
+	updatedModel, _ := m.Update(msg)
+	updated := updatedModel.(appModel)
+
+	if updated.conv == nil || updated.conv.ID != convB.ID {
+		t.Fatalf("expected synced active conversation %d, got %+v", convB.ID, updated.conv)
+	}
+	if len(updated.chat.messages) != 1 || updated.chat.messages[0].content != "new active chat" {
+		t.Fatalf("expected reloaded new active conversation messages, got %+v", updated.chat.messages)
 	}
 }

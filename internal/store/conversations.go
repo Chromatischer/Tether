@@ -161,7 +161,24 @@ func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualI
 }
 
 func AddMessage(db *sql.DB, conversationID int64, role, content string) error {
-	_, err := db.Exec(`INSERT INTO messages(conversation_id, role, content, is_notice) VALUES (?, ?, ?, ?)`, conversationID, role, content, messageIsNotice(role, content))
+	_, err := AddMessageID(db, conversationID, role, content)
+	return err
+}
+
+func AddMessageID(db *sql.DB, conversationID int64, role, content string) (int64, error) {
+	res, err := db.Exec(`INSERT INTO messages(conversation_id, role, content, is_notice) VALUES (?, ?, ?, ?)`, conversationID, role, content, messageIsNotice(role, content))
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func UpdateMessageContent(db *sql.DB, id int64, content string) error {
+	_, err := db.Exec(`UPDATE messages SET content = ?, is_notice = ? WHERE id = ?`, content, messageIsNotice("", content), id)
 	return err
 }
 

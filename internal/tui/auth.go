@@ -3,6 +3,7 @@ package tui
 import (
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -39,6 +40,7 @@ type authModel struct {
 
 	statusText string
 	statusErr  bool
+	disclaimer string
 
 	// hit is a heap-allocated struct shared across copies of authModel
 	// (value receivers). View() mutates its fields so Update() can read the
@@ -79,6 +81,7 @@ func newAuthModel(mode authMode) authModel {
 	u := textinput.New()
 	u.Placeholder = "username"
 	u.Prompt = ""
+	u.SetVirtualCursor(false)
 	u.Focus()
 	u.CharLimit = 64
 	us := u.Styles()
@@ -91,6 +94,7 @@ func newAuthModel(mode authMode) authModel {
 	p := textinput.New()
 	p.Placeholder = "password"
 	p.Prompt = ""
+	p.SetVirtualCursor(false)
 	p.EchoMode = textinput.EchoPassword
 	p.CharLimit = 256
 	ps := p.Styles()
@@ -115,6 +119,11 @@ func (m authModel) withSize(w, h int) authModel {
 	const inputWidth = 28
 	m.username.SetWidth(inputWidth)
 	m.password.SetWidth(inputWidth)
+	return m
+}
+
+func (m authModel) withDisclaimer(disclaimer string) authModel {
+	m.disclaimer = disclaimer
 	return m
 }
 
@@ -194,7 +203,7 @@ func (m authModel) Update(msg tea.Msg) (authModel, tea.Cmd) {
 
 func (m authModel) View() tea.View {
 	// ── Logo ─────────────────────────────────────────────────────────────
-	logo := styleLogo.Render(renderBrandLogo(tetherLogo, colorBg))
+	logo := styleLogo.Render(renderBrandLogo(tetherLogo, colorBg, m.disclaimer == ""))
 	tagline := styleAuthTagline.Render("personal AI over SSH")
 
 	// ── Mode header (tab switcher inside the box) ─────────────────────────
@@ -206,18 +215,15 @@ func (m authModel) View() tea.View {
 		loginLabel = styleAuthModeHeader.Render("Login")
 		signupLabel = styleAuthModeHeaderActive.Render("▸ Sign up")
 	}
-	loginLabelW := lipgloss.Width(loginLabel)
-	signupLabelW := lipgloss.Width(signupLabel)
-	modeRow := lipgloss.JoinHorizontal(lipgloss.Top, loginLabel, signupLabel)
 
 	// ── Fields ────────────────────────────────────────────────────────────
 	usernameRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		styleAuthFieldLabel.Render("username"),
-		styleAuthFieldValue.Render(m.username.View()),
+		renderAuthInput(m.username),
 	)
 	passwordRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		styleAuthFieldLabel.Render("password"),
-		styleAuthFieldValue.Render(m.password.View()),
+		renderAuthInput(m.password),
 	)
 	// ── Submit button ─────────────────────────────────────────────────────
 	var submitLabel string
@@ -229,6 +235,18 @@ func (m authModel) View() tea.View {
 	// Compute form width from the wider of the two field rows, then size
 	// every other row to match so the box has a uniform interior bg.
 	formWidth := max(lipgloss.Width(usernameRow), lipgloss.Width(passwordRow))
+	loginTabW := formWidth / 2
+	signupTabW := formWidth - loginTabW
+	if m.mode == authModeLogin {
+		loginLabel = styleAuthModeHeaderActive.Width(loginTabW).Align(lipgloss.Center).Render("▸ Login")
+		signupLabel = styleAuthModeHeader.Width(signupTabW).Align(lipgloss.Center).Render("Sign up")
+	} else {
+		loginLabel = styleAuthModeHeader.Width(loginTabW).Align(lipgloss.Center).Render("Login")
+		signupLabel = styleAuthModeHeaderActive.Width(signupTabW).Align(lipgloss.Center).Render("▸ Sign up")
+	}
+	loginLabelW := lipgloss.Width(loginLabel)
+	signupLabelW := lipgloss.Width(signupLabel)
+	modeRow := lipgloss.JoinHorizontal(lipgloss.Top, loginLabel, signupLabel)
 	modeRow = styleAuthRow.Width(formWidth).Render(modeRow)
 	usernameRow = styleAuthRow.Width(formWidth).Render(usernameRow)
 	passwordRow = styleAuthRow.Width(formWidth).Render(passwordRow)
@@ -261,6 +279,10 @@ func (m authModel) View() tea.View {
 
 	// ── Hint ──────────────────────────────────────────────────────────────
 	hint := styleAuthHint.Render("tab · switch field   enter · submit   ctrl+c · quit")
+	disclaimer := ""
+	if strings.TrimSpace(m.disclaimer) != "" {
+		disclaimer = styleAuthNotice.Render(m.disclaimer)
+	}
 
 	// ── Stack centered ────────────────────────────────────────────────────
 	// Each child is pre-padded to a uniform `blockWidth` with bg=colorBg so
@@ -271,7 +293,7 @@ func (m authModel) View() tea.View {
 	wsOpt := lipgloss.WithWhitespaceStyle(bgStyle)
 
 	blockWidth := lipgloss.Width(logo)
-	for _, w := range []int{lipgloss.Width(tagline), lipgloss.Width(box), lipgloss.Width(hint)} {
+	for _, w := range []int{lipgloss.Width(tagline), lipgloss.Width(box), lipgloss.Width(hint), lipgloss.Width(disclaimer)} {
 		if w > blockWidth {
 			blockWidth = w
 		}
@@ -287,6 +309,7 @@ func (m authModel) View() tea.View {
 		emptyRow,
 		pad(box),
 		emptyRow,
+		pad(disclaimer),
 		pad(hint),
 	)
 
@@ -353,8 +376,57 @@ func (m authModel) View() tea.View {
 }
 
 func (m authModel) cursor() *tea.Cursor {
-	if m.focused == 0 {
-		return m.username.Cursor()
+	if m.hit == nil {
+		return nil
 	}
-	return m.password.Cursor()
+	const labelWidth = 10
+	if m.focused == 0 {
+		c := m.username.Cursor()
+		if c != nil {
+			c.X += m.hit.formX0 + labelWidth
+			c.Y = m.hit.usernameY - 1
+		}
+		return c
+	}
+	c := m.password.Cursor()
+	if c != nil {
+		c.X += m.hit.formX0 + labelWidth
+		c.Y = m.hit.passwordY - 1
+	}
+	return c
+}
+
+func renderAuthInput(input textinput.Model) string {
+	width := max(1, input.Width())
+	style := styleAuthFieldValue
+	if !input.Focused() {
+		style = styleAuthFieldValue.Foreground(colorMuted)
+	}
+
+	var content string
+	switch {
+	case input.Value() == "":
+		content = lipgloss.NewStyle().
+			Background(colorHeaderBg).
+			Foreground(colorDim).
+			Render(truncateRunes(input.Placeholder, width))
+	case input.EchoMode == textinput.EchoPassword:
+		content = strings.Repeat(string(input.EchoCharacter), utf8.RuneCountInString(input.Value()))
+	default:
+		content = input.Value()
+	}
+
+	content = truncateRunes(content, width)
+	return style.Width(width).MaxWidth(width).Render(content)
+}
+
+func truncateRunes(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	return string(runes[:width])
 }

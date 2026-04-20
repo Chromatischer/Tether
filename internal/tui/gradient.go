@@ -36,7 +36,14 @@ func gradientTextBlock(text string, bg color.Color, start, end color.Color) stri
 	return b.String()
 }
 
-func renderBrandWordmark(text string, bg color.Color) string {
+func renderBrandWordmark(text string, bg color.Color, gradientsEnabled bool) string {
+	if !gradientsEnabled {
+		return lipgloss.NewStyle().
+			Foreground(colorAmber).
+			Background(bg).
+			Bold(true).
+			Render(strings.ToUpper(text))
+	}
 	return renderColumnGradientText(
 		strings.ToUpper(text),
 		bg,
@@ -49,7 +56,10 @@ func renderBrandWordmark(text string, bg color.Color) string {
 	)
 }
 
-func renderBrandLogo(text string, bg color.Color) string {
+func renderBrandLogo(text string, bg color.Color, gradientsEnabled bool) string {
+	if !gradientsEnabled {
+		return text
+	}
 	return renderGridGradientText(
 		text,
 		bg,

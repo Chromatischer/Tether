@@ -37,11 +37,12 @@ type chatSuggestion struct {
 
 // chatMessage holds a single chat entry with its role for layout decisions.
 type chatMessage struct {
-	role              string // user | assistant | system | tool_call
-	content           string
-	reasoning         string
-	reasoningExpanded bool
-	streaming         bool
+	role      string // user | assistant | assistant_reasoning | assistant_pending | system | tool_call
+	content   string
+	streaming bool
+	requestID int
+	dbID      int64
+	expanded  bool
 }
 
 type chatModel struct {
@@ -56,8 +57,9 @@ type chatModel struct {
 	textarea              textarea.Model
 	messages              []chatMessage
 	streamFrame           int // drives streaming dot animation
-	streamingAssistantIdx map[int]int
+	pendingAssistantIdx   map[int]int
 	streamingToolCalls    map[int]map[string]int
+	streamStates          map[int]streamState
 	dataDir               string
 	isAdmin               bool
 	skills                []string
@@ -65,9 +67,11 @@ type chatModel struct {
 	suggestions           []chatSuggestion
 	selectedSuggestion    int
 	autocompleteDismissed bool
+	rowHits               []chatRowHit
 
 	polling bool
 	err     error
+	term    TerminalProfile
 }
 
 type chatSendMsg struct {
@@ -107,6 +111,17 @@ type chatNotificationsDeliveredMsg struct {
 
 type streamTickMsg struct{}
 
+type streamState struct {
+	lastReasoning string
+	lastText      string
+}
+
+type chatRowHit struct {
+	startLine int
+	endLine   int
+	msgIndex  int
+}
+
 func newChatModel() chatModel {
 	ta := textarea.New()
 	ta.Placeholder = "Message Tether…"
@@ -132,11 +147,12 @@ func newChatModel() chatModel {
 	vp.KeyMap.Right.SetEnabled(false)
 
 	return chatModel{
-		viewport:              vp,
-		textarea:              ta,
-		messages:              []chatMessage{},
-		streamingAssistantIdx: map[int]int{},
-		streamingToolCalls:    map[int]map[string]int{},
+		viewport:            vp,
+		textarea:            ta,
+		messages:            []chatMessage{},
+		pendingAssistantIdx: map[int]int{},
+		streamingToolCalls:  map[int]map[string]int{},
+		streamStates:        map[int]streamState{},
 	}
 }
 
@@ -173,6 +189,11 @@ func (m chatModel) withComposerContext(dataDir string, isAdmin bool) chatModel {
 	return m
 }
 
+func (m chatModel) withTerminalProfile(term TerminalProfile) chatModel {
+	m.term = term
+	return m
+}
+
 func (m chatModel) withSize(w, h int) chatModel {
 	if w <= 0 || h <= 0 {
 		return m
@@ -204,20 +225,9 @@ func (m chatModel) loadCmd() tea.Cmd {
 	db := m.db
 	convID := m.convID
 	return func() tea.Msg {
-		msgs, err := store.ListRecentMessages(db, convID, 200)
+		chatMsgs, err := loadChatMessages(db, convID, 200)
 		if err != nil {
 			return authStatusMsg{Text: "failed to load messages: " + err.Error(), IsErr: true}
-		}
-		chatMsgs := make([]chatMessage, 0, len(msgs))
-		for _, mm := range msgs {
-			role := mm.Role
-			if mm.IsNotice {
-				role = "system"
-			}
-			if role == "tool_call" && !isValidToolCallContent(mm.Content) {
-				role = "system"
-			}
-			chatMsgs = append(chatMsgs, chatMessage{role: role, content: mm.Content})
 		}
 		return chatLoadedMsg{Messages: chatMsgs}
 	}
@@ -262,7 +272,7 @@ func (m chatModel) pollNotificationsCmd() tea.Cmd {
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatLoadedMsg:
-		m.messages = msg.Messages
+		m.messages = preserveLoadedMessageState(m.messages, msg.Messages)
 		m.reflow()
 		m.viewport.GotoBottom()
 		if !m.polling {
@@ -341,7 +351,6 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+o":
-			m = m.toggleLatestReasoning()
 			return m, nil
 		}
 
@@ -351,8 +360,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		return m, cmd
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && m.clickInTranscript(msg.Y) {
-			m = m.toggleLatestReasoning()
+		if msg.Button == tea.MouseLeft {
+			m = m.toggleExpandableAt(msg.Y)
 			return m, nil
 		}
 	}
@@ -392,8 +401,6 @@ func (m chatModel) View() tea.View {
 		styleChatHintKey.Render("esc"),
 		styleChatHintText.Render(" dismiss"),
 		styleChatHintGap.Render("  "),
-		styleChatHintKey.Render("^O"),
-		styleChatHintText.Render(" reasoning"),
 	}
 	hintsLine := styleChatRow.Width(composerW).Render(lipgloss.JoinHorizontal(lipgloss.Top, hintParts...))
 
@@ -429,9 +436,19 @@ func (m *chatModel) reflow() {
 	}
 	w := m.viewport.Width()
 	lines := make([]string, 0, len(m.messages))
-	for _, msg := range m.messages {
-		lines = append(lines, formatMessage(msg, w, m.streamFrame))
+	hits := make([]chatRowHit, 0, len(m.messages))
+	lineCursor := 0
+	for i, msg := range m.messages {
+		rendered := formatMessage(msg, w, m.streamFrame, m.term)
+		lines = append(lines, rendered)
+		hits = append(hits, chatRowHit{
+			startLine: lineCursor,
+			endLine:   lineCursor + max(1, lipgloss.Height(rendered)),
+			msgIndex:  i,
+		})
+		lineCursor += max(1, lipgloss.Height(rendered)) + 1
 	}
+	m.rowHits = hits
 	m.viewport.SetContent(strings.Join(lines, "\n\n"))
 }
 
@@ -447,20 +464,110 @@ func (m chatModel) appendLocal(sender, text string) chatModel {
 	default:
 		role = "system"
 	}
-	if role == "tool_call" && !isValidToolCallContent(text) {
-		role = "system"
-	}
-	m.messages = append(m.messages, chatMessage{role: role, content: text})
+	m.messages = append(m.messages, chatMessage{role: m.normalizeRole(role, text), content: text})
 	m.reflow()
 	m.viewport.GotoBottom()
 	return m
 }
 
+func (m chatModel) latestPersistedMessageID() int64 {
+	var latest int64
+	for _, msg := range m.messages {
+		if msg.dbID > latest {
+			latest = msg.dbID
+		}
+	}
+	return latest
+}
+
+func (m chatModel) normalizeRole(role, text string) string {
+	if role == "tool_call" && !isValidToolCallContent(text) {
+		return "system"
+	}
+	if role == "assistant_text" {
+		return "assistant"
+	}
+	return role
+}
+
+func (m *chatModel) ensureStreamState(requestID int) {
+	if m.streamStates == nil {
+		m.streamStates = map[int]streamState{}
+	}
+	if _, ok := m.streamStates[requestID]; !ok {
+		m.streamStates[requestID] = streamState{}
+	}
+}
+
+func (m chatModel) appendMessage(msg chatMessage) chatModel {
+	msg.role = m.normalizeRole(msg.role, msg.content)
+	if msg.role == "assistant_reasoning" || msg.role == "tool_call" {
+		msg.expanded = true
+	}
+	if msg.role != "assistant_pending" && msg.dbID == 0 && msg.requestID != 0 && m.db != nil && m.convID != 0 {
+		if id, err := store.AddMessageID(m.db, m.convID, msg.role, msg.content); err == nil {
+			msg.dbID = id
+		}
+	}
+	m.messages = append(m.messages, msg)
+	m.reflow()
+	m.viewport.GotoBottom()
+	return m
+}
+
+func (m chatModel) updateMessageContent(idx int, content string) chatModel {
+	if idx < 0 || idx >= len(m.messages) {
+		return m
+	}
+	m.messages[idx].content = content
+	if m.messages[idx].dbID != 0 && m.db != nil {
+		_ = store.UpdateMessageContent(m.db, m.messages[idx].dbID, content)
+	}
+	m.reflow()
+	m.viewport.GotoBottom()
+	return m
+}
+
+func (m chatModel) toggleExpandableAt(y int) chatModel {
+	if y <= 0 {
+		return m
+	}
+	bodyY := y - 1
+	line := m.viewport.YOffset() + bodyY
+	for _, hit := range m.rowHits {
+		if line < hit.startLine || line >= hit.endLine {
+			continue
+		}
+		if hit.msgIndex < 0 || hit.msgIndex >= len(m.messages) {
+			return m
+		}
+		msg := &m.messages[hit.msgIndex]
+		if !msg.isExpandable() || msg.streaming {
+			return m
+		}
+		msg.expanded = !msg.expanded
+		m.reflow()
+		return m
+	}
+	return m
+}
+
+func (m chatMessage) isExpandable() bool {
+	switch m.role {
+	case "assistant_reasoning", "tool_call":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m chatModel) appendStreamingToolCall(requestID int, name, args string) chatModel {
+	m.ensureStreamState(requestID)
 	return m.upsertStreamingToolCall(requestID, toolCallEntry{Name: name, Args: args})
 }
 
 func (m chatModel) upsertStreamingToolCall(requestID int, entry toolCallEntry) chatModel {
+	m.ensureStreamState(requestID)
 	if !isValidToolName(entry.Name) {
 		return m
 	}
@@ -470,13 +577,16 @@ func (m chatModel) upsertStreamingToolCall(requestID int, entry toolCallEntry) c
 	}
 	if idx, ok := m.streamingToolCalls[requestID][key]; ok {
 		if idx >= 0 && idx < len(m.messages) {
-			m.messages[idx].content = formatToolCallContent(entry)
-			m.reflow()
-			m.viewport.GotoBottom()
+			m = m.updateMessageContent(idx, formatToolCallContent(entry))
 		}
 		return m
 	}
-	m = m.appendLocal("tool_call", formatToolCallContent(entry))
+	if idx, ok := m.findStreamingToolCallRow(requestID, entry); ok {
+		m.streamingToolCalls[requestID][key] = idx
+		m = m.updateMessageContent(idx, formatToolCallContent(entry))
+		return m
+	}
+	m = m.appendMessage(chatMessage{role: "tool_call", content: formatToolCallContent(entry), requestID: requestID})
 	m.streamingToolCalls[requestID][key] = len(m.messages) - 1
 	return m
 }
@@ -486,104 +596,196 @@ func (m chatModel) hasStreamingToolCall(requestID int, name, args string) bool {
 	return ok
 }
 
+func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) (int, bool) {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok || parsed.Name != entry.Name {
+			continue
+		}
+		if strings.TrimSpace(entry.Result) != "" && strings.TrimSpace(parsed.Result) == "" {
+			return i, true
+		}
+		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
+			return i, true
+		}
+		if strings.TrimSpace(parsed.Result) == "" {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func (m chatModel) startStreamingAssistant(requestID int) chatModel {
-	if _, ok := m.streamingAssistantIdx[requestID]; ok {
+	m.ensureStreamState(requestID)
+	if _, ok := m.pendingAssistantIdx[requestID]; ok {
+		m = m.movePendingAssistantToEnd(requestID)
 		return m
 	}
-	m.messages = append(m.messages, chatMessage{role: "assistant", content: "...", streaming: true})
-	m.streamingAssistantIdx[requestID] = len(m.messages) - 1
-	m.reflow()
-	m.viewport.GotoBottom()
+	m = m.appendMessage(chatMessage{role: "assistant_pending", streaming: true, requestID: requestID})
+	m.pendingAssistantIdx[requestID] = len(m.messages) - 1
 	return m
 }
 
 func (m chatModel) setStreamingReasoning(requestID int, text string) chatModel {
-	m = m.startStreamingAssistant(requestID)
-	idx, ok := m.streamingAssistantIdx[requestID]
-	if !ok || idx < 0 || idx >= len(m.messages) {
-		return m
-	}
-	m.messages[idx].reasoning = text
-	if strings.TrimSpace(m.messages[idx].content) == "" || m.messages[idx].content == "..." {
-		m.messages[idx].reasoningExpanded = true
-	}
-	m.reflow()
-	m.viewport.GotoBottom()
-	return m
+	return m.appendStreamingSegment(requestID, "assistant_reasoning", text)
 }
 
 func (m chatModel) setStreamingAssistant(requestID int, text string) chatModel {
-	m = m.startStreamingAssistant(requestID)
-	idx, ok := m.streamingAssistantIdx[requestID]
-	if !ok || idx < 0 || idx >= len(m.messages) {
-		return m
-	}
-	if strings.TrimSpace(text) == "" {
-		m.messages[idx].content = "..."
-	} else {
-		m.messages[idx].content = text
-		if strings.TrimSpace(m.messages[idx].reasoning) != "" {
-			m.messages[idx].reasoningExpanded = false
-		}
-	}
-	m.reflow()
-	m.viewport.GotoBottom()
-	return m
+	return m.appendStreamingSegment(requestID, "assistant", text)
 }
 
 func (m chatModel) finishStreamingAssistant(requestID int, text string, reasoning string) chatModel {
-	m = m.startStreamingAssistant(requestID)
-	idx, ok := m.streamingAssistantIdx[requestID]
-	if !ok || idx < 0 || idx >= len(m.messages) {
-		delete(m.streamingAssistantIdx, requestID)
-		delete(m.streamingToolCalls, requestID)
-		return m
-	}
-	if strings.TrimSpace(text) == "" {
-		if strings.TrimSpace(m.messages[idx].content) == "" {
-			m.messages[idx].content = "..."
-		}
-	} else {
-		m.messages[idx].content = text
-	}
+	m.ensureStreamState(requestID)
+	m = m.clearPendingAssistant(requestID)
 	if strings.TrimSpace(reasoning) != "" {
-		m.messages[idx].reasoning = reasoning
+		m = m.appendStreamingSegment(requestID, "assistant_reasoning", reasoning)
 	}
-	m.messages[idx].streaming = false
-	if strings.TrimSpace(m.messages[idx].reasoning) != "" {
-		m.messages[idx].reasoningExpanded = false
+	if strings.TrimSpace(text) != "" {
+		m = m.appendStreamingSegment(requestID, "assistant", text)
 	}
-	delete(m.streamingAssistantIdx, requestID)
+	for i := range m.messages {
+		if m.messages[i].requestID == requestID {
+			m.messages[i].streaming = false
+			if m.messages[i].isExpandable() {
+				m.messages[i].expanded = false
+			}
+		}
+	}
 	delete(m.streamingToolCalls, requestID)
+	delete(m.streamStates, requestID)
+	delete(m.pendingAssistantIdx, requestID)
 	m.reflow()
 	m.viewport.GotoBottom()
 	return m
 }
 
-func (m chatModel) toggleLatestReasoning() chatModel {
+func (m chatModel) appendStreamingSegment(requestID int, role string, cumulative string) chatModel {
+	m.ensureStreamState(requestID)
+	state := m.streamStates[requestID]
+	prev := ""
+	switch role {
+	case "assistant_reasoning":
+		prev = state.lastReasoning
+	case "assistant":
+		prev = state.lastText
+	}
+	if cumulative == prev {
+		return m
+	}
+	content := strings.TrimPrefix(cumulative, prev)
+	if content == cumulative && prev != "" && strings.HasPrefix(prev, cumulative) {
+		return m
+	}
+	if strings.TrimSpace(content) == "" && strings.TrimSpace(cumulative) == "" {
+		return m
+	}
+	switch role {
+	case "assistant_reasoning":
+		state.lastReasoning = cumulative
+	case "assistant":
+		state.lastText = cumulative
+	}
+	m.streamStates[requestID] = state
+
+	updateIdx := -1
 	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].role == "assistant" && strings.TrimSpace(m.messages[i].reasoning) != "" && !m.messages[i].streaming {
-			m.messages[i].reasoningExpanded = !m.messages[i].reasoningExpanded
-			m.reflow()
-			return m
+		msg := m.messages[i]
+		if msg.requestID != requestID {
+			continue
+		}
+		if msg.role == "assistant_pending" {
+			continue
+		}
+		if msg.role == role && msg.streaming {
+			updateIdx = i
+		}
+		break
+	}
+	if updateIdx >= 0 {
+		if content == cumulative && prev == "" {
+			m.messages[updateIdx].content = cumulative
+		} else {
+			m.messages[updateIdx].content += content
+		}
+		if m.messages[updateIdx].dbID != 0 && m.db != nil {
+			_ = store.UpdateMessageContent(m.db, m.messages[updateIdx].dbID, m.messages[updateIdx].content)
+		}
+		m = m.movePendingAssistantToEnd(requestID)
+		m.reflow()
+		m.viewport.GotoBottom()
+		return m
+	}
+	if content == "" {
+		content = cumulative
+	}
+	m = m.appendMessage(chatMessage{role: role, content: content, streaming: true, requestID: requestID, expanded: true})
+	return m.movePendingAssistantToEnd(requestID)
+}
+
+func (m chatModel) clearPendingAssistant(requestID int) chatModel {
+	idx, ok := m.pendingAssistantIdx[requestID]
+	if !ok {
+		return m
+	}
+	delete(m.pendingAssistantIdx, requestID)
+	if idx < 0 || idx >= len(m.messages) {
+		return m
+	}
+	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	for id, cur := range m.pendingAssistantIdx {
+		if cur > idx {
+			m.pendingAssistantIdx[id] = cur - 1
 		}
 	}
+	for reqID, toolMap := range m.streamingToolCalls {
+		for key, cur := range toolMap {
+			if cur > idx {
+				toolMap[key] = cur - 1
+			}
+		}
+		m.streamingToolCalls[reqID] = toolMap
+	}
+	m.reflow()
+	m.viewport.GotoBottom()
 	return m
 }
 
-func (m chatModel) clickInTranscript(y int) bool {
-	if y <= 0 {
-		return false
+func (m chatModel) movePendingAssistantToEnd(requestID int) chatModel {
+	idx, ok := m.pendingAssistantIdx[requestID]
+	if !ok || idx < 0 || idx >= len(m.messages) || idx == len(m.messages)-1 {
+		return m
 	}
-	bodyY := y - 1 // header row
-	top := 0
-	bottom := top + lipgloss.Height(m.viewport.View())
-	return bodyY >= top && bodyY < bottom
+	msg := m.messages[idx]
+	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	m.messages = append(m.messages, msg)
+	for id, cur := range m.pendingAssistantIdx {
+		switch {
+		case id == requestID:
+			m.pendingAssistantIdx[id] = len(m.messages) - 1
+		case cur > idx:
+			m.pendingAssistantIdx[id] = cur - 1
+		}
+	}
+	for reqID, toolMap := range m.streamingToolCalls {
+		for key, cur := range toolMap {
+			if cur > idx {
+				toolMap[key] = cur - 1
+			}
+		}
+		m.streamingToolCalls[reqID] = toolMap
+	}
+	m.reflow()
+	m.viewport.GotoBottom()
+	return m
 }
 
 // formatMessage renders a single chat message as a full-width left-border strip.
 // frame drives the streaming dot animation; pass 0 when not animating.
-func formatMessage(msg chatMessage, width int, frame int) string {
+func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -595,33 +797,21 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 		body := lipgloss.Wrap(msg.content, bodyW, " ")
 		return styleUserMsg.Width(width).Render(label + "\n" + body)
 
+	case "assistant_pending":
+		dotLevels := []lipgloss.Style{
+			lipgloss.NewStyle().Foreground(colorDim),
+			lipgloss.NewStyle().Foreground(colorMuted),
+			lipgloss.NewStyle().Foreground(colorAmber),
+			lipgloss.NewStyle().Foreground(colorMuted),
+		}
+		d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
+		return styleAgentMsg.Width(width).Render(d(0) + " " + d(1) + " " + d(2))
+
 	case "assistant":
 		label := styleSenderBot.Render("◆ Tether")
 		bodyW := max(16, width-styleAgentMsg.GetHorizontalFrameSize())
-		var parts []string
-
-		// Reasoning block
-		if strings.TrimSpace(msg.reasoning) != "" {
-			if msg.streaming && (strings.TrimSpace(msg.content) == "" || msg.content == "...") {
-				parts = append(parts,
-					styleReasoningHeader.Render("◈ reasoning"),
-					lipgloss.Wrap(msg.reasoning, bodyW, " "),
-				)
-			} else if msg.reasoningExpanded {
-				parts = append(parts,
-					styleReasoningHeader.Render("◈ reasoning  ")+styleReasoningHint.Render("^O to collapse"),
-					lipgloss.Wrap(msg.reasoning, bodyW, " "),
-				)
-			} else {
-				parts = append(parts,
-					styleDim.Render("◈ reasoning  ")+styleReasoningHint.Render("^O to expand"),
-				)
-			}
-		}
-
-		// Body / streaming dots
 		body := strings.TrimSpace(msg.content)
-		if msg.streaming && (body == "" || body == "...") {
+		if msg.streaming && body == "" {
 			// Animated dot pulse: four brightness levels, each dot offset by 1 frame.
 			dotLevels := []lipgloss.Style{
 				lipgloss.NewStyle().Foreground(colorDim),
@@ -630,12 +820,23 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 				lipgloss.NewStyle().Foreground(colorMuted),
 			}
 			d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
-			parts = append(parts, d(0)+" "+d(1)+" "+d(2))
+			body = d(0) + " " + d(1) + " " + d(2)
 		} else if body != "" {
-			parts = append(parts, renderAssistantBody(body, bodyW))
+			body = renderAssistantBody(body, bodyW, term)
 		}
+		return styleAgentMsg.Width(width).Render(label + "\n" + body)
 
-		return styleAgentMsg.Width(width).Render(label + "\n" + strings.Join(parts, "\n"))
+	case "assistant_reasoning":
+		label := styleReasoningHeader.Render("◈ reasoning")
+		bodyW := max(16, width-styleToolResult.GetHorizontalFrameSize())
+		body := lipgloss.Wrap(strings.TrimSpace(msg.content), bodyW, " ")
+		if msg.streaming && strings.TrimSpace(body) == "" {
+			body = styleReasoningHint.Render("thinking…")
+		}
+		if !msg.streaming && !msg.expanded {
+			return styleToolResult.Width(width).Render(label + "  " + styleReasoningHint.Render("click to expand"))
+		}
+		return styleToolResult.Width(width).Render(label + "\n" + body)
 
 	case "tool_call":
 		if !isValidToolCallContent(msg.content) {
@@ -645,12 +846,15 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 			return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
 		}
 		entry, _ := parseToolCallContent(msg.content)
-		invLine := "▷  " + entry.Name
+		invLine := styleAccent.Render("▷") + "  " + styleTitle.Render(entry.Name)
 		if args := strings.TrimSpace(entry.Args); args != "" {
-			invLine += "  ·  " + args
+			invLine += "  " + styleMuted.Render("·") + "  " + args
 		}
 		invRow := styleToolStrip.Width(width).Render(invLine)
 		if result := strings.TrimSpace(entry.Result); result != "" {
+			if !msg.streaming && !msg.expanded {
+				return styleToolStrip.Width(width).Render(styleInfo.Render("✓") + "  " + styleTitle.Render(entry.Name) + "  " + styleReasoningHint.Render("click to expand"))
+			}
 			return invRow + "\n" + styleToolResult.Width(width).Render("✓  "+result)
 		}
 		return invRow + "\n" + styleToolResult.Width(width).Render("·  running…")
@@ -663,12 +867,12 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 	}
 }
 
-func renderAssistantBody(text string, width int) string {
+func renderAssistantBody(text string, width int, term TerminalProfile) string {
 	if looksLikeRichText(text) {
 		return renderRichText(text, width, richTextAssistant)
 	}
 	wrapped := lipgloss.Wrap(text, width, " ")
-	return gradientTextBlock(wrapped, colorBotMsgBg, lipgloss.Color("203"), colorAmber)
+	return wrapped
 }
 
 func looksLikeRichText(text string) bool {
@@ -757,6 +961,52 @@ func parseToolCallContent(content string) (toolCallEntry, bool) {
 	}
 	entry.Result = strings.TrimSpace(body)
 	return entry, true
+}
+
+func loadChatMessages(db *sql.DB, convID int64, limit int) ([]chatMessage, error) {
+	msgs, err := store.ListRecentMessages(db, convID, limit)
+	if err != nil {
+		return nil, err
+	}
+	chatMsgs := make([]chatMessage, 0, len(msgs))
+	for _, mm := range msgs {
+		role := mm.Role
+		if mm.IsNotice {
+			role = "system"
+		}
+		if role == "tool_call" && !isValidToolCallContent(mm.Content) {
+			role = "system"
+		}
+		chatMsgs = append(chatMsgs, chatMessage{
+			role:     role,
+			content:  mm.Content,
+			dbID:     mm.ID,
+			expanded: !(role == "assistant_reasoning" || role == "tool_call"),
+		})
+	}
+	return chatMsgs, nil
+}
+
+func preserveLoadedMessageState(prev, loaded []chatMessage) []chatMessage {
+	if len(prev) == 0 || len(loaded) == 0 {
+		return loaded
+	}
+	expandedByID := make(map[int64]bool, len(prev))
+	for _, msg := range prev {
+		if msg.dbID == 0 || !msg.isExpandable() {
+			continue
+		}
+		expandedByID[msg.dbID] = msg.expanded
+	}
+	for i := range loaded {
+		if loaded[i].dbID == 0 || !loaded[i].isExpandable() {
+			continue
+		}
+		if expanded, ok := expandedByID[loaded[i].dbID]; ok {
+			loaded[i].expanded = expanded
+		}
+	}
+	return loaded
 }
 
 func (m *chatModel) reloadSkills() {
@@ -937,7 +1187,6 @@ func (m chatModel) composerHeight(innerW int) int {
 		styleChatHintKey.Render("tab") + " cycle",
 		styleChatHintKey.Render("↵") + " apply",
 		styleChatHintKey.Render("esc") + " dismiss",
-		styleChatHintKey.Render("^O") + " reasoning",
 	}, "  "))
 	emptyLine := styleChatRow.Width(composerW).Render("")
 	body := emptyLine + "\n" + inputRow + "\n" + hintsLine

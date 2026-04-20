@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,8 @@ type discordPendingReaction struct {
 	UserID         int64
 	ConversationID int64
 	ChannelID      string
+	Kind           string
+	ChoiceCount    int
 }
 
 const (
@@ -54,7 +57,11 @@ const (
 	discordTypingInterval       = 8 * time.Second
 	discordStreamingActivity    = "Answering DMs"
 	discordStreamingPlaceholder = "..."
+	discordReactionConfirm      = "confirm"
+	discordReactionChoice       = "choice"
 )
+
+var discordChoiceLinePattern = regexp.MustCompile(`(?m)^\s*(10|[1-9])[\.\)]\s+\S`)
 
 func NewGateway(cfg *config.Config, db *sql.DB, ag *agent.Agent) *Gateway {
 	return &Gateway{
@@ -226,44 +233,7 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 	payload, _ := json.Marshal(map[string]any{"from": discordUID, "len": len(content), "sha256": hex.EncodeToString(sum[:])})
 	_ = store.AddAuditEvent(g.db, &uid, "discord_inbound", string(payload))
 
-	clean, findings := redact.ScanAndRedact(content)
-	if g.ag.HasPendingConfirmation(uid, conv.ID) {
-		note := "Pending tool confirmation rejected by the user."
-		_ = g.ag.RejectPendingConfirmation(uid, conv.ID)
-		_ = store.AddMessage(g.db, conv.ID, "system", note)
-	}
-	_ = store.AddMessage(g.db, conv.ID, "user", clean)
-	if len(findings) > 0 {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Your message looked like it contained secrets/tokens and was redacted. Please use /secret add via SSH for secrets.")
-	}
-
-	stream := newDiscordReplyStream(ctx, s, m.ChannelID)
-	defer stream.Close()
-	stream.Start()
-
-	reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: uid, ConversationID: conv.ID, Text: clean}, func(ev agent.StreamEvent) {
-		stream.OnEvent(ev)
-	})
-	if err != nil {
-		log.Warn("agent reply failed", "error", err, "user_id", uid, "conversation_id", conv.ID, "discord_channel", m.ChannelID)
-		stream.Finish("Agent error: " + err.Error())
-		return
-	}
-
-	out, of := redact.ScanAndRedact(reply.Text)
-	_ = store.AddMessage(g.db, conv.ID, "assistant", out)
-
-	// Best-effort audit without storing message content.
-	sum2 := sha256.Sum256([]byte(out))
-	payload2, _ := json.Marshal(map[string]any{"to": discordUID, "len": len(out), "sha256": hex.EncodeToString(sum2[:])})
-	_ = store.AddAuditEvent(g.db, &uid, "discord_send", string(payload2))
-
-	if len(of) > 0 {
-		stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
-		return
-	}
-	stream.Finish(out)
-	g.attachPendingConfirmationReaction(uid, conv.ID, m.ChannelID, stream.MessageID())
+	g.handleConversationTurn(ctx, s, uid, conv.ID, m.ChannelID, content, discordUID)
 }
 
 func (g *Gateway) sendChunks(s *discordgo.Session, channelID string, msg string) {
@@ -275,10 +245,6 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 		return
 	}
 	if g.s != nil && g.s.State != nil && g.s.State.User != nil && r.UserID == g.s.State.User.ID {
-		return
-	}
-	emoji := strings.TrimSpace(r.Emoji.Name)
-	if emoji != "✅" && emoji != "❌" {
 		return
 	}
 
@@ -294,60 +260,144 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 		return
 	}
 
-	g.clearPendingReaction(r.ChannelID, r.MessageID)
-	if emoji == "✅" {
-		token, ok := g.ag.PendingConfirmationToken(pending.UserID, pending.ConversationID)
-		if !ok {
+	emoji := strings.TrimSpace(r.Emoji.Name)
+	switch pending.Kind {
+	case discordReactionConfirm:
+		if emoji != "✅" && emoji != "❌" {
 			return
 		}
+		g.clearPendingReaction(r.ChannelID, r.MessageID)
+		if emoji == "✅" {
+			token, ok := g.ag.PendingConfirmationToken(pending.UserID, pending.ConversationID)
+			if !ok {
+				return
+			}
+			stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+			defer stream.Close()
+			stream.Start()
+			reply, convID, resumed, err := g.ag.ResumeConfirmedStream(ctx, pending.UserID, token, func(ev agent.StreamEvent) {
+				stream.OnEvent(ev)
+			})
+			if err != nil {
+				stream.Finish("Agent error: " + err.Error())
+				return
+			}
+			if !resumed {
+				stream.Finish("confirmation failed")
+				return
+			}
+			out, of := redact.ScanAndRedact(reply.Text)
+			_ = store.AddMessage(g.db, convID, "assistant", out)
+			if len(of) > 0 {
+				stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
+				return
+			}
+			stream.Finish(out)
+			g.attachPendingConfirmationReaction(pending.UserID, convID, r.ChannelID, stream.MessageID())
+			g.attachPendingChoiceReactions(pending.UserID, convID, r.ChannelID, stream.MessageID(), out)
+			return
+		}
+
+		if !g.ag.RejectPendingConfirmation(pending.UserID, pending.ConversationID) {
+			return
+		}
+		note := "Pending tool confirmation rejected by the user."
+		_ = store.AddMessage(g.db, pending.ConversationID, "system", note)
 		stream := newDiscordReplyStream(ctx, s, r.ChannelID)
 		defer stream.Close()
 		stream.Start()
-		reply, convID, resumed, err := g.ag.ResumeConfirmedStream(ctx, pending.UserID, token, func(ev agent.StreamEvent) {
+		reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: pending.UserID, ConversationID: pending.ConversationID, Text: ""}, func(ev agent.StreamEvent) {
 			stream.OnEvent(ev)
 		})
 		if err != nil {
 			stream.Finish("Agent error: " + err.Error())
 			return
 		}
-		if !resumed {
-			stream.Finish("confirmation failed")
-			return
-		}
 		out, of := redact.ScanAndRedact(reply.Text)
-		_ = store.AddMessage(g.db, convID, "assistant", out)
+		_ = store.AddMessage(g.db, pending.ConversationID, "assistant", out)
 		if len(of) > 0 {
 			stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 			return
 		}
 		stream.Finish(out)
-		g.attachPendingConfirmationReaction(pending.UserID, convID, r.ChannelID, stream.MessageID())
-		return
+		g.attachPendingConfirmationReaction(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID())
+		g.attachPendingChoiceReactions(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID(), out)
+	case discordReactionChoice:
+		choice, ok := discordChoiceNumberFromEmoji(emoji)
+		if !ok || choice < 1 || choice > pending.ChoiceCount {
+			return
+		}
+		g.clearPendingReaction(r.ChannelID, r.MessageID)
+		payload, _ := json.Marshal(map[string]any{"choice": choice, "message_id": r.MessageID})
+		_ = store.AddAuditEvent(g.db, &uid, "discord_reaction_choice", string(payload))
+		g.handleConversationTurn(ctx, s, uid, pending.ConversationID, r.ChannelID, strconv.Itoa(choice), strings.TrimSpace(r.UserID))
+	}
+}
+
+func (g *Gateway) handleConversationTurn(ctx context.Context, s *discordgo.Session, uid, convID int64, channelID, content, remoteID string) {
+	clean, findings := redact.ScanAndRedact(content)
+	if g.ag.HasPendingConfirmation(uid, convID) {
+		note := "Pending tool confirmation rejected by the user."
+		_ = g.ag.RejectPendingConfirmation(uid, convID)
+		_ = store.AddMessage(g.db, convID, "system", note)
+	}
+	_ = store.AddMessage(g.db, convID, "user", clean)
+	if len(findings) > 0 {
+		_, _ = s.ChannelMessageSend(channelID, "Your message looked like it contained secrets/tokens and was redacted. Please use /secret add via SSH for secrets.")
 	}
 
-	if !g.ag.RejectPendingConfirmation(pending.UserID, pending.ConversationID) {
-		return
-	}
-	note := "Pending tool confirmation rejected by the user."
-	_ = store.AddMessage(g.db, pending.ConversationID, "system", note)
-	stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+	stream := newDiscordReplyStream(ctx, s, channelID)
 	defer stream.Close()
 	stream.Start()
-	reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: pending.UserID, ConversationID: pending.ConversationID, Text: ""}, func(ev agent.StreamEvent) {
+
+	reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: uid, ConversationID: convID, Text: clean}, func(ev agent.StreamEvent) {
 		stream.OnEvent(ev)
 	})
 	if err != nil {
+		log.Warn("agent reply failed", "error", err, "user_id", uid, "conversation_id", convID, "discord_channel", channelID)
 		stream.Finish("Agent error: " + err.Error())
 		return
 	}
+
 	out, of := redact.ScanAndRedact(reply.Text)
-	_ = store.AddMessage(g.db, pending.ConversationID, "assistant", out)
+	_ = store.AddMessage(g.db, convID, "assistant", out)
+
+	sum := sha256.Sum256([]byte(out))
+	payload, _ := json.Marshal(map[string]any{"to": remoteID, "len": len(out), "sha256": hex.EncodeToString(sum[:])})
+	_ = store.AddAuditEvent(g.db, &uid, "discord_send", string(payload))
+
 	if len(of) > 0 {
 		stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 		return
 	}
 	stream.Finish(out)
-	g.attachPendingConfirmationReaction(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID())
+	g.attachPendingConfirmationReaction(uid, convID, channelID, stream.MessageID())
+	g.attachPendingChoiceReactions(uid, convID, channelID, stream.MessageID(), out)
+}
+
+func (g *Gateway) attachPendingChoiceReactions(userID, convID int64, channelID, messageID, text string) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return
+	}
+	choiceCount := detectDiscordChoiceCount(text)
+	if choiceCount < 2 {
+		return
+	}
+	for i := 1; i <= choiceCount; i++ {
+		if emoji, ok := discordChoiceEmoji(i); ok {
+			_ = g.s.MessageReactionAdd(channelID, messageID, emoji)
+		}
+	}
+	g.mu.Lock()
+	g.pendingByMessage[messageID] = discordPendingReaction{
+		UserID:         userID,
+		ConversationID: convID,
+		ChannelID:      channelID,
+		Kind:           discordReactionChoice,
+		ChoiceCount:    choiceCount,
+	}
+	g.mu.Unlock()
 }
 
 func (g *Gateway) attachPendingConfirmationReaction(userID, convID int64, channelID string, messageID string) {
@@ -361,16 +411,126 @@ func (g *Gateway) attachPendingConfirmationReaction(userID, convID int64, channe
 	_ = g.s.MessageReactionAdd(channelID, messageID, "✅")
 	_ = g.s.MessageReactionAdd(channelID, messageID, "❌")
 	g.mu.Lock()
-	g.pendingByMessage[messageID] = discordPendingReaction{UserID: userID, ConversationID: convID, ChannelID: channelID}
+	g.pendingByMessage[messageID] = discordPendingReaction{
+		UserID:         userID,
+		ConversationID: convID,
+		ChannelID:      channelID,
+		Kind:           discordReactionConfirm,
+	}
 	g.mu.Unlock()
 }
 
 func (g *Gateway) clearPendingReaction(channelID string, messageID string) {
-	_ = g.s.MessageReactionRemove(channelID, messageID, "✅", "@me")
-	_ = g.s.MessageReactionRemove(channelID, messageID, "❌", "@me")
 	g.mu.Lock()
-	delete(g.pendingByMessage, messageID)
+	pending, ok := g.pendingByMessage[messageID]
+	if ok {
+		delete(g.pendingByMessage, messageID)
+	}
 	g.mu.Unlock()
+	if !ok {
+		return
+	}
+	switch pending.Kind {
+	case discordReactionConfirm:
+		_ = g.s.MessageReactionRemove(channelID, messageID, "✅", "@me")
+		_ = g.s.MessageReactionRemove(channelID, messageID, "❌", "@me")
+	case discordReactionChoice:
+		for i := 1; i <= pending.ChoiceCount; i++ {
+			if emoji, ok := discordChoiceEmoji(i); ok {
+				_ = g.s.MessageReactionRemove(channelID, messageID, emoji, "@me")
+			}
+		}
+	}
+}
+
+func detectDiscordChoiceCount(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "reply with just the number") &&
+		!strings.Contains(lower, "respond with just the number") &&
+		!strings.Contains(lower, "reply with the number") &&
+		!strings.Contains(lower, "respond with the number") {
+		return 0
+	}
+	matches := discordChoiceLinePattern.FindAllStringSubmatch(text, -1)
+	if len(matches) < 2 {
+		return 0
+	}
+	seen := map[int]bool{}
+	maxChoice := 0
+	for _, match := range matches {
+		n, err := strconv.Atoi(strings.TrimSpace(match[1]))
+		if err != nil || n < 1 || n > 10 {
+			return 0
+		}
+		seen[n] = true
+		if n > maxChoice {
+			maxChoice = n
+		}
+	}
+	for i := 1; i <= maxChoice; i++ {
+		if !seen[i] {
+			return 0
+		}
+	}
+	return maxChoice
+}
+
+func discordChoiceEmoji(n int) (string, bool) {
+	switch n {
+	case 1:
+		return "1️⃣", true
+	case 2:
+		return "2️⃣", true
+	case 3:
+		return "3️⃣", true
+	case 4:
+		return "4️⃣", true
+	case 5:
+		return "5️⃣", true
+	case 6:
+		return "6️⃣", true
+	case 7:
+		return "7️⃣", true
+	case 8:
+		return "8️⃣", true
+	case 9:
+		return "9️⃣", true
+	case 10:
+		return "🔟", true
+	default:
+		return "", false
+	}
+}
+
+func discordChoiceNumberFromEmoji(emoji string) (int, bool) {
+	switch strings.TrimSpace(emoji) {
+	case "1️⃣":
+		return 1, true
+	case "2️⃣":
+		return 2, true
+	case "3️⃣":
+		return 3, true
+	case "4️⃣":
+		return 4, true
+	case "5️⃣":
+		return 5, true
+	case "6️⃣":
+		return 6, true
+	case "7️⃣":
+		return 7, true
+	case "8️⃣":
+		return 8, true
+	case "9️⃣":
+		return 9, true
+	case "🔟":
+		return 10, true
+	default:
+		return 0, false
+	}
 }
 
 type discordReplyStream struct {

@@ -3,6 +3,7 @@ package portal
 import (
 	"context"
 	"database/sql"
+	"io"
 	"net"
 	"os"
 
@@ -49,6 +50,7 @@ func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, gradientTest boo
 			activeterm.Middleware(),
 			recover.Middleware(),
 			logging.Middleware(),
+			terminalGuardMiddleware(),
 		),
 	}
 
@@ -70,6 +72,20 @@ func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, gradientTest boo
 	}
 
 	return &Server{s: server}, nil
+}
+
+func terminalGuardMiddleware() wish.Middleware {
+	return func(next ssh.Handler) ssh.Handler {
+		return func(s ssh.Session) {
+			profile := tui.DetectTerminalProfile(s)
+			if profile.Blocked() {
+				_, _ = io.WriteString(s, profile.BlockMessage+"\r\n")
+				_ = s.Exit(1)
+				return
+			}
+			next(s)
+		}
+	}
 }
 
 func (s *Server) ListenAndServe() error {
