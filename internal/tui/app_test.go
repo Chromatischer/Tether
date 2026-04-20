@@ -215,6 +215,65 @@ func TestHandleCommandClearShowsFreshConversationMessageAsSystemNotice(t *testin
 	}
 }
 
+func TestChatLoadCmdReloadsPersistedNoticeAsSystemNotice(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "dana_reload", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(d, conv.ID, "assistant", "usage: /resume <code>"); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID)
+	msg := m.loadCmd()()
+	loaded, ok := msg.(chatLoadedMsg)
+	if !ok {
+		t.Fatalf("expected chatLoadedMsg, got %T", msg)
+	}
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("expected 1 loaded message, got %d", len(loaded.Messages))
+	}
+	if loaded.Messages[0].role != "system" {
+		t.Fatalf("expected persisted notice to reload as system, got %+v", loaded.Messages[0])
+	}
+}
+
+func TestHandleCommandGroupedUsageIsMultiLine(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "help_multiline", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		user: u,
+		conv: conv,
+		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
+	}
+
+	updated, handled, _ := m.handleCommand("/tools nope")
+	if !handled {
+		t.Fatal("expected /tools nope to be handled")
+	}
+	if len(updated.chat.messages) == 0 {
+		t.Fatal("expected usage message")
+	}
+	got := updated.chat.messages[len(updated.chat.messages)-1].content
+	if !strings.Contains(got, "usage:\n  /tools list\n  /tools search <query>\n  /tools describe <name>") {
+		t.Fatalf("expected multi-line usage block, got %q", got)
+	}
+}
+
 func TestRenderHeaderStaysSingleLineWithActiveChatTab(t *testing.T) {
 	m := appModel{
 		w:    80,

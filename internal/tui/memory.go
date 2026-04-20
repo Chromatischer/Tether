@@ -21,7 +21,7 @@ type memoryModel struct {
 
 	viewport viewport.Model
 	items    []store.MemoryItem // flat, all kinds, sorted pinned-first per kind
-	cursor   int               // index into items
+	cursor   int                // index into items
 
 	// inline edit mode
 	editing   bool
@@ -46,6 +46,7 @@ func newMemoryModel() memoryModel {
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
 	vp.KeyMap.Left.SetEnabled(false)
 	vp.KeyMap.Right.SetEnabled(false)
+	vp.Style = lipgloss.NewStyle().Background(colorBg)
 
 	ei := textinput.New()
 	ei.Prompt = "> "
@@ -272,7 +273,7 @@ func (m *memoryModel) rebuild() {
 		}
 
 		// Section header
-		b.WriteString(styleAccent.Render(kindLabels[kind]) + "  " + styleDim.Render("─────────────────────") + "\n")
+		b.WriteString(styleAccentBg.Render(kindLabels[kind]) + styleBodyBg.Render("  ") + styleDimBg.Render("─────────────────────") + "\n")
 		lineNum++
 
 		for _, idx := range kindIdxs {
@@ -282,16 +283,16 @@ func (m *memoryModel) rebuild() {
 			// Prefix indicator
 			prefix := "  "
 			if it.Pinned {
-				prefix = styleSenderBot.Render("●") + " "
+				prefix = styleSenderBotBg.Render("●") + styleBodyBg.Render(" ")
 			} else if it.LastUsedAt != nil && time.Since(*it.LastUsedAt) < time.Hour {
-				prefix = styleAccent.Render("→") + " "
+				prefix = styleAccentBg.Render("→") + styleBodyBg.Render(" ")
 			}
 
 			// Suffix indicator
 			suffix := ""
 			if it.ExpiresAt != nil {
 				days := int(time.Until(*it.ExpiresAt).Hours() / 24)
-				suffix = "  " + styleDim.Render(fmt.Sprintf("(exp %dd)", days))
+				suffix = styleBodyBg.Render("  ") + styleDimBg.Render(fmt.Sprintf("(exp %dd)", days))
 			}
 
 			// Content (replaced by input in edit mode)
@@ -302,10 +303,10 @@ func (m *memoryModel) rebuild() {
 				if contentW < 0 {
 					contentW = 0
 				}
-				highlighted := styleTitle.Width(contentW).Render(it.Content)
+				highlighted := styleTitleBg.Width(contentW).Render(it.Content)
 				b.WriteString(prefix + highlighted + suffix + "\n")
 			} else {
-				b.WriteString(prefix + styleMuted.Render(it.Content) + suffix + "\n")
+				b.WriteString(prefix + styleMutedBg.Render(it.Content) + suffix + "\n")
 			}
 			lineNum++
 		}
@@ -319,16 +320,16 @@ func (m *memoryModel) rebuild() {
 	}
 
 	// Hint / status line
-	hint := styleDim.Render("↑↓·move  e·edit  p·pin  x·expire  D·delete  r·refresh")
+	hint := styleDimBg.Render("↑↓·move  e·edit  p·pin  x·expire  D·delete  r·refresh")
 	if m.status != "" {
 		if m.statusErr {
-			hint = styleError.Render(m.status)
+			hint = styleErrorBg.Render(m.status)
 		} else {
-			hint = styleInfo.Render(m.status) + "  " + styleDim.Render("r·refresh")
+			hint = styleInfoBg.Render(m.status) + styleBodyBg.Render("  ") + styleDimBg.Render("r·refresh")
 		}
 	}
 	content := strings.TrimRight(b.String(), "\n") + "\n\n" + hint
-	m.viewport.SetContent(content)
+	setViewportContent(&m.viewport, content, colorBg)
 
 	// Scroll to keep cursor visible
 	for line, idx := range lineToItemIdx {
@@ -345,8 +346,8 @@ func (m *memoryModel) rebuild() {
 
 func (m memoryModel) View() tea.View {
 	content := m.viewport.View()
-	if m.w > 0 {
-		content = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(content)
+	if m.w > 0 || m.h > 0 {
+		content = fillArea(content, m.w, m.h, colorBg)
 	}
 	return tea.NewView(content)
 }

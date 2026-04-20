@@ -27,7 +27,7 @@ type Server struct {
 	s *ssh.Server
 }
 
-func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent) (*Server, error) {
+func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, gradientTest bool) (*Server, error) {
 	passwordHandler := func(_ ssh.Context, password string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(cfg.SSH.PortalPasswordHash), []byte(password)) == nil
 	}
@@ -40,6 +40,9 @@ func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent) (*Server, error)
 			wishbubbletea.Middleware(func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 				// Bubble Tea v2 controls alt screen + mouse via tea.View fields.
 				// We keep ProgramOptions empty so the model controls its own rendering.
+				if gradientTest {
+					return tui.NewGradientTestModel(s), nil
+				}
 				ctx := tui.NewSessionContext(s, cfg, db, ag)
 				return tui.NewAppModel(ctx), nil
 			}),

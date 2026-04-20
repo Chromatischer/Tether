@@ -85,6 +85,7 @@ func newSettingsModel(ctx *SessionContext) settingsModel {
 		vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
 		vp.KeyMap.Left.SetEnabled(false)
 		vp.KeyMap.Right.SetEnabled(false)
+		vp.Style = lipgloss.NewStyle().Background(colorBg)
 		return vp
 	}
 
@@ -499,16 +500,16 @@ func (m *settingsModel) rebuildRules() {
 		return
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("proactive rules") + "\n\n")
+	b.WriteString(styleTitleBg.Render("proactive rules") + "\n\n")
 	if m.rulesContent == "" {
-		b.WriteString(styleDim.Render("(no rules loaded)") + "\n")
+		b.WriteString(styleDimBg.Render("(no rules loaded)") + "\n")
 	} else {
 		for _, line := range strings.Split(m.rulesContent, "\n") {
-			b.WriteString(styleMuted.Render(line) + "\n")
+			b.WriteString(styleMutedBg.Render(line) + "\n")
 		}
 	}
 	b.WriteString("\n" + m.hintLine(settingsSectionRules))
-	m.rulesVP.SetContent(strings.TrimRight(b.String(), "\n"))
+	setViewportContent(&m.rulesVP, strings.TrimRight(b.String(), "\n"), colorBg)
 	m.rulesVP.GotoTop()
 }
 
@@ -517,20 +518,20 @@ func (m *settingsModel) rebuildConfirm() {
 		return
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("confirmation strictness") + "\n\n")
-	b.WriteString(styleMuted.Render("When should Tether ask for confirmation before acting?") + "\n\n")
+	b.WriteString(styleTitleBg.Render("confirmation strictness") + "\n\n")
+	b.WriteString(styleMutedBg.Render("When should Tether ask for confirmation before acting?") + "\n\n")
 	for i, opt := range m.confirmOpts {
 		if i == m.confirmSel {
-			b.WriteString(styleAccent.Render("▶ "+opt) + "\n")
+			b.WriteString(styleAccentBg.Render("▶ "+opt) + "\n")
 		} else {
-			b.WriteString(styleDim.Render("  "+opt) + "\n")
+			b.WriteString(styleDimBg.Render("  "+opt) + "\n")
 		}
 	}
-	b.WriteString("\n" + styleDim.Render("ask") + " — prompt before tool calls that look risky\n")
-	b.WriteString(styleDim.Render("always") + " — always prompt, even for safe operations\n")
-	b.WriteString(styleDim.Render("never") + " — never prompt (use with caution)\n")
+	b.WriteString("\n" + styleDimBg.Render("ask") + styleBodyBg.Render(" — ") + styleMutedBg.Render("prompt before tool calls that look risky") + "\n")
+	b.WriteString(styleDimBg.Render("always") + styleBodyBg.Render(" — ") + styleMutedBg.Render("always prompt, even for safe operations") + "\n")
+	b.WriteString(styleDimBg.Render("never") + styleBodyBg.Render(" — ") + styleMutedBg.Render("never prompt (use with caution)") + "\n")
 	b.WriteString("\n" + m.hintLine(settingsSectionConfirm))
-	m.confirmVP.SetContent(strings.TrimRight(b.String(), "\n"))
+	setViewportContent(&m.confirmVP, strings.TrimRight(b.String(), "\n"), colorBg)
 }
 
 func (m *settingsModel) rebuildSignal() {
@@ -538,34 +539,34 @@ func (m *settingsModel) rebuildSignal() {
 		return
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("signal") + "\n\n")
+	b.WriteString(styleTitleBg.Render("signal") + "\n\n")
 	if !m.ctx.Config.Signal.Enabled {
-		b.WriteString(styleDim.Render("Signal integration is disabled in server config.") + "\n")
-		m.signalVP.SetContent(strings.TrimRight(b.String(), "\n"))
+		b.WriteString(styleDimBg.Render("Signal integration is disabled in server config.") + "\n")
+		setViewportContent(&m.signalVP, strings.TrimRight(b.String(), "\n"), colorBg)
 		return
 	}
 	if m.signalLinked {
-		b.WriteString(styleInfo.Render("linked") + "  " + styleMuted.Render(m.signalNumber) + "\n\n")
-		b.WriteString(styleDim.Render("u · unlink") + "\n")
+		b.WriteString(styleInfoBg.Render("linked") + styleBodyBg.Render("  ") + styleMutedBg.Render(m.signalNumber) + "\n\n")
+		b.WriteString(styleDimBg.Render("u · unlink") + "\n")
 	} else {
-		b.WriteString(styleDim.Render("not linked") + "\n\n")
-		b.WriteString(styleDim.Render("l · generate link code") + "\n")
+		b.WriteString(styleDimBg.Render("not linked") + "\n\n")
+		b.WriteString(styleDimBg.Render("l · generate link code") + "\n")
 	}
 	if m.signalLinkCode != "" {
-		b.WriteString("\n" + styleMuted.Render("send this code to the Tether bot:") + "\n")
-		b.WriteString(styleAccent.Render("  /link "+m.signalLinkCode) + "\n")
-		b.WriteString(styleDim.Render(fmt.Sprintf("  (expires in 10 min)")) + "\n")
+		b.WriteString("\n" + styleMutedBg.Render("send this code to the Tether bot:") + "\n")
+		b.WriteString(styleAccentBg.Render("  /link "+m.signalLinkCode) + "\n")
+		b.WriteString(styleDimBg.Render("  (expires in 10 min)") + "\n")
 	}
 	b.WriteString("\n" + m.hintLine(settingsSectionSignal))
-	m.signalVP.SetContent(strings.TrimRight(b.String(), "\n"))
+	setViewportContent(&m.signalVP, strings.TrimRight(b.String(), "\n"), colorBg)
 }
 
 func (m *settingsModel) rebuildRetention() {
 	if m.retentionVP.Width() <= 0 {
 		return
 	}
-	chatLabel := styleMuted.Render("chat history")
-	memLabel := styleMuted.Render("memory items")
+	chatLabel := styleMutedBg.Render("chat history")
+	memLabel := styleMutedBg.Render("memory items")
 	chatVal := "forever"
 	if m.retentionDays > 0 {
 		chatVal = fmt.Sprintf("%d days", m.retentionDays)
@@ -576,39 +577,39 @@ func (m *settingsModel) rebuildRetention() {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("retention") + "\n\n")
-	b.WriteString(chatLabel + "  " + styleDim.Render("(current: "+chatVal+")") + "\n")
+	b.WriteString(styleTitleBg.Render("retention") + "\n\n")
+	b.WriteString(chatLabel + styleBodyBg.Render("  ") + styleDimBg.Render("(current: "+chatVal+")") + "\n")
 	b.WriteString(m.retentionInput.View() + "\n\n")
-	b.WriteString(memLabel + "  " + styleDim.Render("(current: "+memVal+")") + "\n")
+	b.WriteString(memLabel + styleBodyBg.Render("  ") + styleDimBg.Render("(current: "+memVal+")") + "\n")
 	b.WriteString(m.retentionInput2.View() + "\n\n")
 	b.WriteString(m.hintLine(settingsSectionRetention))
-	m.retentionVP.SetContent(strings.TrimRight(b.String(), "\n"))
+	setViewportContent(&m.retentionVP, strings.TrimRight(b.String(), "\n"), colorBg)
 }
 
 func (m settingsModel) hintLine(sec settingsSection) string {
-	base := styleDim.Render("[/] sections  r·refresh")
+	base := styleDimBg.Render("[/] sections  r·refresh")
 	extra := ""
 	switch sec {
 	case settingsSectionRules:
-		extra = "  " + styleDim.Render("e·edit")
+		extra = styleBodyBg.Render("  ") + styleDimBg.Render("e·edit")
 	case settingsSectionConfirm:
-		extra = "  " + styleDim.Render("↑↓·select  enter·save")
+		extra = styleBodyBg.Render("  ") + styleDimBg.Render("↑↓·select  enter·save")
 	case settingsSectionSignal:
 		if m.ctx.Config.Signal.Enabled {
 			if m.signalLinked {
-				extra = "  " + styleDim.Render("u·unlink")
+				extra = styleBodyBg.Render("  ") + styleDimBg.Render("u·unlink")
 			} else {
-				extra = "  " + styleDim.Render("l·link code")
+				extra = styleBodyBg.Render("  ") + styleDimBg.Render("l·link code")
 			}
 		}
 	case settingsSectionRetention:
-		extra = "  " + styleDim.Render("tab·switch  enter·save")
+		extra = styleBodyBg.Render("  ") + styleDimBg.Render("tab·switch  enter·save")
 	}
 	if m.status != "" {
 		if m.statusErr {
-			return styleError.Render(m.status) + "  " + base + extra
+			return styleErrorBg.Render(m.status) + styleBodyBg.Render("  ") + base + extra
 		}
-		return styleInfo.Render(m.status) + "  " + base + extra
+		return styleInfoBg.Render(m.status) + styleBodyBg.Render("  ") + base + extra
 	}
 	return base + extra
 }
@@ -669,8 +670,8 @@ func (m settingsModel) View() tea.View {
 	case settingsSectionRetention:
 		body = m.retentionVP.View()
 	}
-	if m.w > 0 {
-		body = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(body)
+	if m.w > 0 || m.h > 0 {
+		body = fillArea(body, m.w, max(0, m.h-1), colorBg)
 	}
 
 	return tea.NewView(tabBar + "\n" + body)

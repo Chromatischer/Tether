@@ -211,6 +211,9 @@ func (m chatModel) loadCmd() tea.Cmd {
 		chatMsgs := make([]chatMessage, 0, len(msgs))
 		for _, mm := range msgs {
 			role := mm.Role
+			if mm.IsNotice {
+				role = "system"
+			}
 			if role == "tool_call" && !isValidToolCallContent(mm.Content) {
 				role = "system"
 			}
@@ -629,7 +632,7 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 			d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
 			parts = append(parts, d(0)+" "+d(1)+" "+d(2))
 		} else if body != "" {
-			parts = append(parts, renderRichText(body, bodyW, richTextAssistant))
+			parts = append(parts, renderAssistantBody(body, bodyW))
 		}
 
 		return styleAgentMsg.Width(width).Render(label + "\n" + strings.Join(parts, "\n"))
@@ -658,6 +661,28 @@ func formatMessage(msg chatMessage, width int, frame int) string {
 		rendered := renderRichText(msg.content, bodyW, richTextSystem)
 		return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
 	}
+}
+
+func renderAssistantBody(text string, width int) string {
+	if looksLikeRichText(text) {
+		return renderRichText(text, width, richTextAssistant)
+	}
+	wrapped := lipgloss.Wrap(text, width, " ")
+	return gradientTextBlock(wrapped, colorBotMsgBg, lipgloss.Color("203"), colorAmber)
+}
+
+func looksLikeRichText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	richMarkers := []string{"```", "#", "*", "_", "[", "](", "|", "\n- ", "\n1. ", "\n## ", "\n### ", "\n---"}
+	for _, marker := range richMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // systemMessageVariant picks a sender label and style based on the content prefix.
@@ -867,11 +892,16 @@ func (m chatModel) renderSuggestions(width int) string {
 	}
 	rows := make([]string, 0, len(m.suggestions))
 	for i, s := range m.suggestions {
+		active := m.focus == composerFocusSuggestion && i == m.selectedSuggestion
 		line := s.Label
 		if strings.TrimSpace(s.Detail) != "" {
-			line += "  " + styleDim.Render(s.Detail)
+			detailStyle := styleAutocompleteDetail
+			if active {
+				detailStyle = styleAutocompleteDetailActive
+			}
+			line += "  " + detailStyle.Render(s.Detail)
 		}
-		if m.focus == composerFocusSuggestion && i == m.selectedSuggestion {
+		if active {
 			rows = append(rows, styleAutocompleteSuggestionActive.Width(width).Render(line))
 		} else {
 			rows = append(rows, styleAutocompleteSuggestion.Width(width).Render(line))

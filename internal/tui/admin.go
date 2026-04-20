@@ -37,6 +37,7 @@ type adminModel struct {
 	users  viewport.Model
 	jobs   viewport.Model
 	signal viewport.Model
+	setup  viewport.Model
 
 	userList []store.User
 	userSel  int
@@ -69,6 +70,7 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
 		vp.KeyMap.Left.SetEnabled(false)
 		vp.KeyMap.Right.SetEnabled(false)
+		vp.Style = lipgloss.NewStyle().Background(colorBg)
 		return vp
 	}
 	masked := func(prompt string) textinput.Model {
@@ -91,6 +93,7 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		users:           mk(),
 		jobs:            mk(),
 		signal:          mk(),
+		setup:           mk(),
 		setupPath:       config.AdminEnvPath(ctx.Config.Paths.DataDir),
 		setupOpenRouter: masked("OpenRouter API key: "),
 		setupDiscord:    masked("Discord bot token: "),
@@ -115,6 +118,8 @@ func (m adminModel) withSize(w, h int) adminModel {
 	m.jobs.SetHeight(ch)
 	m.signal.SetWidth(w)
 	m.signal.SetHeight(ch)
+	m.setup.SetWidth(w)
+	m.setup.SetHeight(ch)
 	inputW := max(24, w-6)
 	m.setupOpenRouter.SetWidth(inputW)
 	m.setupDiscord.SetWidth(inputW)
@@ -139,12 +144,12 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 			var b strings.Builder
 			for _, ev := range evs {
 				ts := ev.CreatedAt.UTC().Format("01-02 15:04:05")
-				line := styleDim.Render(ts) + "  " + styleAccent.Render(ev.Type)
+				line := styleDimBg.Render(ts) + styleBodyBg.Render("  ") + styleAccentBg.Render(ev.Type)
 				if ev.UserID != nil {
-					line += styleDim.Render(fmt.Sprintf("  user=%d", *ev.UserID))
+					line += styleBodyBg.Render("  ") + styleDimBg.Render(fmt.Sprintf("user=%d", *ev.UserID))
 				}
 				if ev.Payload != "" {
-					line += "  " + ev.Payload
+					line += styleBodyBg.Render("  ") + styleMutedBg.Render(ev.Payload)
 				}
 				b.WriteString(line + "\n")
 			}
@@ -164,34 +169,34 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 				lt = lastTick.UTC().Format(time.RFC3339)
 			}
 			undelivered, _ := store.CountUndeliveredNotifications(ctx.DB)
-			content := styleTitle.Render("jobs") + "\n\n" +
-				styleMuted.Render("proactive_tick last run") + "\n  " + lt + "\n\n" +
-				styleMuted.Render("undelivered notifications") + "\n  " + fmt.Sprintf("%d", undelivered) + "\n\n" +
-				styleDim.Render("r · refresh")
+			content := styleTitleBg.Render("jobs") + "\n\n" +
+				styleMutedBg.Render("proactive_tick last run") + "\n" + styleMutedBg.Render("  "+lt) + "\n\n" +
+				styleMutedBg.Render("undelivered notifications") + "\n" + styleMutedBg.Render(fmt.Sprintf("  %d", undelivered)) + "\n\n" +
+				styleDimBg.Render("r · refresh")
 			return adminLoadMsg{tab: tab, content: content}
 
 		case adminTabSignal:
 			if !ctx.Config.Signal.Enabled {
-				return adminLoadMsg{tab: tab, content: styleTitle.Render("signal") + "\n\n" + styleDim.Render("disabled in config")}
+				return adminLoadMsg{tab: tab, content: styleTitleBg.Render("signal") + "\n\n" + styleDimBg.Render("disabled in config")}
 			}
 			addr := ctx.Config.Signal.HTTPAddr
 			base := addr
 			if !strings.HasPrefix(base, "http") {
 				base = "http://" + base
 			}
-			checkLine := styleDim.Render("(checking…)")
+			checkLine := styleDimBg.Render("(checking…)")
 			if req, err := http.NewRequest(http.MethodGet, base+"/api/v1/check", nil); err == nil {
 				if resp, err := http.DefaultClient.Do(req); err != nil {
-					checkLine = styleError.Render("check failed: " + err.Error())
+					checkLine = styleErrorBg.Render("check failed: " + err.Error())
 				} else {
 					resp.Body.Close()
-					checkLine = styleInfo.Render(fmt.Sprintf("HTTP %d", resp.StatusCode))
+					checkLine = styleInfoBg.Render(fmt.Sprintf("HTTP %d", resp.StatusCode))
 				}
 			}
-			content := styleTitle.Render("signal") + "\n\n" +
-				styleMuted.Render("account") + "\n  " + ctx.Config.Signal.AccountNumber + "\n\n" +
-				styleMuted.Render("status") + "\n  " + checkLine + "\n\n" +
-				styleDim.Render("r · refresh")
+			content := styleTitleBg.Render("signal") + "\n\n" +
+				styleMutedBg.Render("account") + "\n" + styleMutedBg.Render("  "+ctx.Config.Signal.AccountNumber) + "\n\n" +
+				styleMutedBg.Render("status") + "\n" + styleBodyBg.Render("  ") + checkLine + "\n\n" +
+				styleDimBg.Render("r · refresh")
 			return adminLoadMsg{tab: tab, content: content}
 
 		case adminTabSetup:
@@ -226,7 +231,7 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 				m.setupStatusErr = true
 				return m, nil
 			}
-			m.setTabContent(msg.tab, styleError.Render("error: "+msg.err.Error()))
+			m.setTabContent(msg.tab, styleErrorBg.Render("error: "+msg.err.Error()))
 			return m, nil
 		}
 		switch msg.tab {
@@ -401,35 +406,35 @@ func (m adminModel) switchTab(tab adminTab) (adminModel, tea.Cmd) {
 func (m *adminModel) setTabContent(tab adminTab, content string) {
 	switch tab {
 	case adminTabAudit:
-		m.audit.SetContent(content)
+		setViewportContent(&m.audit, content, colorBg)
 		m.audit.GotoTop()
 	case adminTabUsers:
-		m.users.SetContent(content)
+		setViewportContent(&m.users, content, colorBg)
 		m.users.GotoTop()
 	case adminTabJobs:
-		m.jobs.SetContent(content)
+		setViewportContent(&m.jobs, content, colorBg)
 		m.jobs.GotoTop()
 	case adminTabSignal:
-		m.signal.SetContent(content)
+		setViewportContent(&m.signal, content, colorBg)
 		m.signal.GotoTop()
 	}
 }
 
 func (m *adminModel) rebuildUsersViewport() {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("users") + "\n\n")
+	b.WriteString(styleTitleBg.Render("users") + "\n\n")
 	for i, u := range m.userList {
-		roleTag := styleDim.Render("[" + u.Role + "]")
+		roleTag := styleDimBg.Render("[" + u.Role + "]")
 		var line string
 		if i == m.userSel {
-			line = styleTabActive.Render(" "+u.Username+" ") + "  " + roleTag
+			line = styleTabActive.Render(" "+u.Username+" ") + styleBodyBg.Render("  ") + roleTag
 		} else {
-			line = "  " + u.Username + "  " + roleTag
+			line = styleMutedBg.Render("  "+u.Username) + styleBodyBg.Render("  ") + roleTag
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\n" + styleDim.Render("↑↓ · select   p · promote   d · demote   r · refresh"))
-	m.users.SetContent(strings.TrimRight(b.String(), "\n"))
+	b.WriteString("\n" + styleDimBg.Render("↑↓ · select   p · promote   d · demote   r · refresh"))
+	setViewportContent(&m.users, strings.TrimRight(b.String(), "\n"), colorBg)
 }
 
 func (m *adminModel) setSetupFocus(focus int) {
@@ -494,22 +499,22 @@ func (m adminModel) renderSetup() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("admin setup") + "\n\n")
-	b.WriteString(styleMuted.Render("persistent host-side env store") + "\n")
-	b.WriteString("  " + styleDim.Render(m.setupPath) + "\n\n")
+	b.WriteString(styleTitleBg.Render("admin setup") + "\n\n")
+	b.WriteString(styleMutedBg.Render("persistent host-side env store") + "\n")
+	b.WriteString(styleDimBg.Render("  "+m.setupPath) + "\n\n")
 	b.WriteString(m.setupOpenRouter.View() + "\n\n")
 	b.WriteString(m.setupDiscord.View() + "\n\n")
 	b.WriteString(m.setupSignal.View() + "\n\n")
 	b.WriteString(m.setupMasterKey.View() + "\n\n")
 	b.WriteString(saveLabel + "\n\n")
-	b.WriteString(styleDim.Render("tab/shift+tab · move   ctrl+s · save   OpenRouter/master key update live; Discord/Signal require restart"))
+	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ctrl+s · save   OpenRouter/master key update live; Discord/Signal require restart"))
 	if !m.ctx.Config.Discord.Enabled || !m.ctx.Config.Signal.Enabled {
-		b.WriteString("\n" + styleDim.Render("Discord/Signal still require enabled=true in server config."))
+		b.WriteString("\n" + styleDimBg.Render("Discord/Signal still require enabled=true in server config."))
 	}
 	if m.setupStatus != "" {
-		line := styleInfo.Render(m.setupStatus)
+		line := styleInfoBg.Render(m.setupStatus)
 		if m.setupStatusErr {
-			line = styleError.Render(m.setupStatus)
+			line = styleErrorBg.Render(m.setupStatus)
 		}
 		b.WriteString("\n\n" + line)
 	}
@@ -543,10 +548,11 @@ func (m adminModel) View() tea.View {
 	case adminTabSignal:
 		body = m.signal.View()
 	case adminTabSetup:
-		body = m.renderSetup()
+		setViewportContent(&m.setup, m.renderSetup(), colorBg)
+		body = m.setup.View()
 	}
-	if m.w > 0 {
-		body = lipgloss.NewStyle().Background(colorBg).Width(m.w).Render(body)
+	if m.w > 0 || m.h > 0 {
+		body = fillArea(body, m.w, max(0, m.h-1), colorBg)
 	}
 	return tea.NewView(tabBar + "\n" + body)
 }

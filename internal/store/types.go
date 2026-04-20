@@ -17,5 +17,6 @@ type Message struct {
 	ConversationID int64
 	Role           string
 	Content        string
+	IsNotice       bool
 	CreatedAt      string
 }

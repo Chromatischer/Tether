@@ -260,7 +260,7 @@ func indentWrapped(body string, prefix string) string {
 
 func richBodyColor(variant richTextVariant) color.Color {
 	if variant == richTextSystem {
-		return colorDim
+		return colorMuted
 	}
 	return colorBody
 }
@@ -273,12 +273,11 @@ func richColor(assistant, system string, variant richTextVariant) color.Color {
 }
 
 func richStrongStyle(variant richTextVariant) lipgloss.Style {
-	// Bold = white in assistant context, green-ish in system
-	return lipgloss.NewStyle().Bold(true).Foreground(richColor("255", "115", variant))
+	return lipgloss.NewStyle().Bold(true).Foreground(richColor("255", "194", variant))
 }
 
 func richEmphStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Italic(true).Foreground(richColor("252", "245", variant))
+	return lipgloss.NewStyle().Italic(true).Foreground(richColor("252", "223", variant))
 }
 
 func richHeadingStyle(variant richTextVariant, level int) lipgloss.Style {
@@ -288,26 +287,26 @@ func richHeadingStyle(variant richTextVariant, level int) lipgloss.Style {
 	case 2:
 		return lipgloss.NewStyle().Bold(true).Foreground(colorBody)
 	default:
-		return lipgloss.NewStyle().Bold(true).Foreground(colorMuted)
+		return lipgloss.NewStyle().Bold(true).Foreground(colorBody)
 	}
 }
 
 func richRuleStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(richColor("172", "236", variant)) // amber / dim
+	return lipgloss.NewStyle().Foreground(richColor("179", "244", variant))
 }
 
 func richLinkStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Underline(true).Foreground(richColor("172", "245", variant)) // amber
+	return lipgloss.NewStyle().Underline(true).Foreground(richColor("179", "223", variant))
 }
 
 func richMutedStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(colorDim)
+	return lipgloss.NewStyle().Foreground(colorMuted)
 }
 
 func richCodeStyle(variant richTextVariant) lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(richColor("222", "252", variant)). // warm yellow / white
-		Background(colorToolBorder).                  // "236" — lifts above all message bg tones
+		Foreground(richColor("230", "255", variant)).
+		Background(colorToolBorder).
 		Padding(0, 1)
 }
 
@@ -322,7 +321,7 @@ func richCodeBlockStyle(variant richTextVariant) lipgloss.Style {
 }
 
 func richTableHeaderStyle(variant richTextVariant) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(richColor("172", "245", variant)) // amber
+	return lipgloss.NewStyle().Bold(true).Foreground(richColor("179", "223", variant))
 }
 
 func richTableCellStyle(variant richTextVariant) lipgloss.Style {

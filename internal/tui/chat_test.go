@@ -77,6 +77,9 @@ func TestFormatMessage_AssistantWithoutSeparateReasoningHasNoReasoningNotice(t *
 	if strings.Contains(out, "reasoning") {
 		t.Fatalf("expected no reasoning notice for plain assistant message, got %q", out)
 	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected assistant body to include styled gradient output, got %q", out)
+	}
 }
 
 func TestFormatMessage_AssistantWithReasoningShowsReasoningLabel(t *testing.T) {

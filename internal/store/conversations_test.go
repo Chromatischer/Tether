@@ -87,3 +87,26 @@ func TestAddAndListRecentMessages_OrderAndLimit(t *testing.T) {
 		t.Fatalf("unexpected order: %+v", msgs)
 	}
 }
+
+func TestAddMessageMarksAssistantNotices(t *testing.T) {
+	d := openTestDB(t)
+	u, _ := store.CreateUser(d, "alice", "pw")
+	c, _ := store.GetOrCreateDefaultConversation(d, u.ID)
+
+	_ = store.AddMessage(d, c.ID, "assistant", "usage: /resume <code>")
+	_ = store.AddMessage(d, c.ID, "assistant", "Here is the actual answer.")
+
+	msgs, err := store.ListRecentMessages(d, c.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if !msgs[0].IsNotice {
+		t.Fatalf("expected usage message to be marked as notice, got %+v", msgs[0])
+	}
+	if msgs[1].IsNotice {
+		t.Fatalf("expected normal assistant reply to stay non-notice, got %+v", msgs[1])
+	}
+}

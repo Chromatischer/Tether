@@ -5,24 +5,24 @@ import "charm.land/lipgloss/v2"
 // Color palette — ANSI 256 for broad SSH terminal compatibility.
 // Dark green user-bubble bg has no good ANSI 256 equivalent; truecolor is used.
 var (
-	colorAmber      = lipgloss.Color("172")      // #e5890a — amber accent
-	colorGreen      = lipgloss.Color("71")        // #3fb950 — user / success
-	colorRed        = lipgloss.Color("203")       // #f85149 — error
-	colorBg         = lipgloss.Color("233")       // #111 — main background
-	colorHeaderBg   = lipgloss.Color("232")       // #0e0e0e — header / composer bg
-	colorBotMsgBg   = lipgloss.Color("234")       // #161616 — assistant strip
-	colorUserMsgBg  = lipgloss.Color("#0f1a12")   // dark green tint — user strip
-	colorToolBg     = lipgloss.Color("233")       // #131313 — tool strip
-	colorBorder     = lipgloss.Color("235")       // #1e1e1e — borders
-	colorToolBorder = lipgloss.Color("236")       // #252525 — tool strip border
-	colorMuted      = lipgloss.Color("240")       // #555
-	colorDim        = lipgloss.Color("236")       // #333
-	colorBody       = lipgloss.Color("252")       // #ccc — main body text
-	colorUserBody   = lipgloss.Color("115")       // #a3e4b2 — user body text
+	colorAmber      = lipgloss.Color("172")     // hard yellow-orange accent
+	colorGreen      = lipgloss.Color("114")     // brighter green for status/user accents
+	colorRed        = lipgloss.Color("210")     // softer bright red for errors
+	colorBg         = lipgloss.Color("233")     // main background
+	colorHeaderBg   = lipgloss.Color("232")     // header / composer bg
+	colorBotMsgBg   = lipgloss.Color("234")     // assistant strip
+	colorUserMsgBg  = lipgloss.Color("#132016") // slightly lighter green tint for user strip
+	colorToolBg     = lipgloss.Color("234")     // tool strip
+	colorBorder     = lipgloss.Color("238")     // visible but restrained borders
+	colorToolBorder = lipgloss.Color("240")     // raised panels / tool block bg
+	colorMuted      = lipgloss.Color("246")     // softer secondary text
+	colorDim        = lipgloss.Color("242")     // subdued text
+	colorBody       = lipgloss.Color("255")     // main body text
+	colorUserBody   = lipgloss.Color("194")     // high-contrast user body text
 
 	// ── Backwards-compat: mapped to new palette ─────────────────────────
-	colorPanel    = colorBotMsgBg  // code/table backgrounds
-	colorPanelAlt = colorHeaderBg  // composer input bg
+	colorPanel    = colorBotMsgBg // code/table backgrounds
+	colorPanelAlt = colorHeaderBg // composer input bg
 )
 
 var (
@@ -30,17 +30,18 @@ var (
 	styleDim    = lipgloss.NewStyle().Foreground(colorDim)
 	styleMuted  = lipgloss.NewStyle().Foreground(colorMuted)
 	styleAccent = lipgloss.NewStyle().Foreground(colorAmber)
+	styleBodyBg = lipgloss.NewStyle().Background(colorBg)
 
 	// ── Header bar ────────────────────────────────────────────────────────
 	styleHeaderBrand = lipgloss.NewStyle().
-				Background(colorAmber).
-				Foreground(lipgloss.Color("232")). // black on amber
+				Background(colorHeaderBg).
+				Foreground(colorBody).
 				Bold(true).
 				Padding(0, 2)
 
 	styleTab = lipgloss.NewStyle().
 			Background(colorHeaderBg).
-			Foreground(colorDim).
+			Foreground(colorMuted).
 			Padding(0, 2)
 
 	styleTabActive = lipgloss.NewStyle().
@@ -53,42 +54,61 @@ var (
 	styleHeaderBar    = lipgloss.NewStyle().Background(colorHeaderBg)
 
 	styleHeaderUserDot = lipgloss.NewStyle().
-			Background(colorHeaderBg).
-			Foreground(colorGreen).
-			Padding(0, 1, 0, 1)
+				Background(colorHeaderBg).
+				Foreground(colorGreen).
+				Padding(0, 1, 0, 1)
 
 	styleHeaderUserText = lipgloss.NewStyle().
 				Background(colorHeaderBg).
-				Foreground(colorDim).
+				Foreground(colorMuted).
 				Padding(0, 1, 0, 0)
 
 	// ── Auth screen ───────────────────────────────────────────────────────
-	styleLogo = lipgloss.NewStyle().Foreground(colorAmber)
+	styleLogo = lipgloss.NewStyle().
+			Background(colorBg).
+			Foreground(colorAmber)
+
+	styleAuthTagline = lipgloss.NewStyle().
+				Background(colorBg).
+				Foreground(colorMuted)
+
+	styleAuthHint = lipgloss.NewStyle().
+			Background(colorBg).
+			Foreground(colorMuted)
 
 	styleAuthBox = lipgloss.NewStyle().
+			Background(colorHeaderBg).
 			Border(lipgloss.RoundedBorder()).
+			BorderBackground(colorBg).
 			BorderForeground(colorBorder).
 			Padding(0, 0)
 
 	styleAuthModeHeader = lipgloss.NewStyle().
-				Foreground(colorDim).
+				Background(colorHeaderBg).
+				Foreground(colorMuted).
 				Padding(0, 2)
 
 	styleAuthModeHeaderActive = lipgloss.NewStyle().
+					Background(lipgloss.Color("234")).
 					Foreground(colorAmber).
 					Bold(true).
 					Padding(0, 2)
 
 	styleAuthFieldLabel = lipgloss.NewStyle().
 				Background(colorHeaderBg).
-				Foreground(colorDim).
+				Foreground(colorMuted).
 				Width(10)
 
 	styleAuthFieldValue = lipgloss.NewStyle().
-				Foreground(colorMuted)
+				Background(colorHeaderBg).
+				Foreground(colorBody)
 
 	styleAuthRow = lipgloss.NewStyle().
 			Background(colorHeaderBg)
+
+	styleAuthDivider = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorMuted)
 
 	styleAuthSubmit = lipgloss.NewStyle().
 			Background(colorAmber).
@@ -97,15 +117,23 @@ var (
 			Align(lipgloss.Center).
 			Padding(0, 2)
 
+	styleAuthStatusErr = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorRed)
+
+	styleAuthStatusOK = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorGreen)
+
 	// ── Chat banner ───────────────────────────────────────────────────────
 	styleChatBanner = lipgloss.NewStyle().
 			Background(lipgloss.Color("232")).
-			Foreground(colorDim).
+			Foreground(colorMuted).
 			Padding(0, 1)
 
 	styleChatBannerKey = lipgloss.NewStyle().
 				Background(colorBotMsgBg).
-				Foreground(colorMuted).
+				Foreground(colorBody).
 				Padding(0, 1)
 
 	// ── Chat transcript ───────────────────────────────────────────────────
@@ -130,7 +158,7 @@ var (
 
 	styleSystemMsg = lipgloss.NewStyle().
 			Background(colorBg).
-			Foreground(colorDim).
+			Foreground(colorMuted).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderForeground(colorToolBorder).
@@ -139,7 +167,7 @@ var (
 
 	styleErrorMsg = lipgloss.NewStyle().
 			Background(colorBg).
-			Foreground(lipgloss.Color("167")). // muted red
+			Foreground(lipgloss.Color("217")).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderForeground(colorRed).
@@ -148,7 +176,7 @@ var (
 
 	styleInfoMsg = lipgloss.NewStyle().
 			Background(colorBg).
-			Foreground(lipgloss.Color("71")). // same as green
+			Foreground(colorGreen).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderForeground(colorGreen).
@@ -157,7 +185,7 @@ var (
 	// Tool call strips
 	styleToolStrip = lipgloss.NewStyle().
 			Background(colorToolBg).
-			Foreground(colorDim).
+			Foreground(colorMuted).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderForeground(colorToolBorder).
@@ -165,21 +193,21 @@ var (
 
 	styleToolResult = lipgloss.NewStyle().
 			Background(colorBg).
-			Foreground(colorDim).
+			Foreground(colorMuted).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
-			BorderForeground(lipgloss.Color("234")). // barely-visible
-			Padding(0, 0, 0, 3).                    // extra left padding (indent)
+			BorderForeground(colorBorder).
+			Padding(0, 0, 0, 3). // extra left padding (indent)
 			Italic(true)
 
 	// Sender labels
 	styleSenderUser   = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAmber)
-	styleSenderSystem = lipgloss.NewStyle().Foreground(colorDim)
+	styleSenderSystem = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// Reasoning
-	styleReasoningHeader = lipgloss.NewStyle().Foreground(colorMuted)
-	styleReasoningHint   = lipgloss.NewStyle().Foreground(colorDim)
+	styleReasoningHeader = lipgloss.NewStyle().Foreground(colorBody)
+	styleReasoningHint   = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// ── Composer ─────────────────────────────────────────────────────────
 	styleChatComposer = lipgloss.NewStyle().
@@ -201,19 +229,19 @@ var (
 
 	styleChatHint = lipgloss.NewStyle().
 			Background(colorHeaderBg).
-			Foreground(colorDim)
+			Foreground(colorMuted)
 
 	styleChatHintKey = lipgloss.NewStyle().
 				Background(colorBotMsgBg).
-				Foreground(colorMuted).
+				Foreground(colorBody).
 				Padding(0, 1)
 
 	styleChatHintText = lipgloss.NewStyle().
 				Background(colorHeaderBg).
-				Foreground(colorDim)
+				Foreground(colorMuted)
 
 	styleChatHintGap = lipgloss.NewStyle().
-			Background(colorHeaderBg)
+				Background(colorHeaderBg)
 
 	styleChatRow = lipgloss.NewStyle().
 			Background(colorHeaderBg)
@@ -221,7 +249,7 @@ var (
 	// ── Autocomplete ─────────────────────────────────────────────────────
 	styleAutocompleteSuggestion = lipgloss.NewStyle().
 					Background(colorHeaderBg).
-					Foreground(colorMuted).
+					Foreground(colorBody).
 					Padding(0, 1)
 
 	styleAutocompleteSuggestionActive = lipgloss.NewStyle().
@@ -233,9 +261,28 @@ var (
 						BorderForeground(colorAmber).
 						Padding(0, 1)
 
+	// Detail text inside suggestion rows. Must carry an explicit background
+	// matching the row it's rendered into — otherwise the detail span resets
+	// mid-line and the row's bg breaks on those cells.
+	styleAutocompleteDetail = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorMuted)
+
+	styleAutocompleteDetailActive = lipgloss.NewStyle().
+					Background(colorBotMsgBg).
+					Foreground(colorMuted)
+
 	// ── Status / feedback ─────────────────────────────────────────────────
 	styleError = lipgloss.NewStyle().Foreground(colorRed)
 	styleInfo  = lipgloss.NewStyle().Foreground(colorGreen)
+
+	styleTitleBg     = styleTitle.Background(colorBg)
+	styleDimBg       = styleDim.Background(colorBg)
+	styleMutedBg     = styleMuted.Background(colorBg)
+	styleAccentBg    = styleAccent.Background(colorBg)
+	styleSenderBotBg = styleSenderBot.Background(colorBg)
+	styleErrorBg     = styleError.Background(colorBg)
+	styleInfoBg      = styleInfo.Background(colorBg)
 
 	styleDivider = lipgloss.NewStyle().Foreground(colorBorder)
 

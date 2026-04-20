@@ -101,6 +101,13 @@ type agentReleaseMsg struct {
 	RequestID      int
 }
 
+func usageBlock(lines ...string) string {
+	if len(lines) == 0 {
+		return "usage:"
+	}
+	return "usage:\n  " + strings.Join(lines, "\n  ")
+}
+
 func NewAppModel(ctx *SessionContext) tea.Model {
 	ag := ctx.Agent
 	m := appModel{
@@ -182,6 +189,15 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+
+	case authSwitchModeMsg:
+		if msg.Mode == authModeLogin {
+			m.view = viewLogin
+		} else {
+			m.view = viewSignup
+		}
+		m.auth = newAuthModel(msg.Mode).withSize(m.w, m.h-1)
+		return m, nil
 
 	case authSubmitMsg:
 		// In-app authentication (separate from SSH portal auth).
@@ -406,7 +422,7 @@ func (m appModel) renderHeader() string {
 }
 
 func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs string, userBadge string) {
-	brand = styleHeaderBrand.Render("TETHER")
+	brand = styleHeaderBrand.Render(renderBrandWordmark("TETHER", colorHeaderBg))
 
 	buttons = m.headerButtons()
 	tabParts := make([]string, 0, len(buttons))
@@ -607,7 +623,14 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /admin users ... | /admin audit tail [n] | /admin signal status | /admin jobs status"
+			resp := usageBlock(
+				"/admin users list",
+				"/admin users promote <username>",
+				"/admin users demote <username>",
+				"/admin audit tail [n]",
+				"/admin signal status",
+				"/admin jobs status",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -616,7 +639,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		switch section {
 		case "users":
 			if len(fields) < 3 {
-				resp := "usage: /admin users list | /admin users promote <username> | /admin users demote <username>"
+				resp := usageBlock(
+					"/admin users list",
+					"/admin users promote <username>",
+					"/admin users demote <username>",
+				)
 				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 				m.chat = m.chat.appendLocal("System", resp)
 				return m, true, nil
@@ -649,7 +676,10 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 
 			case "promote", "demote":
 				if len(fields) < 4 {
-					resp := "usage: /admin users promote <username> | /admin users demote <username>"
+					resp := usageBlock(
+						"/admin users promote <username>",
+						"/admin users demote <username>",
+					)
 					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 					m.chat = m.chat.appendLocal("System", resp)
 					return m, true, nil
@@ -672,7 +702,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				m.chat = m.chat.appendLocal("System", resp)
 				return m, true, nil
 			}
-			resp := "usage: /admin users list | /admin users promote <username> | /admin users demote <username>"
+			resp := usageBlock(
+				"/admin users list",
+				"/admin users promote <username>",
+				"/admin users demote <username>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -822,7 +856,14 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
-		resp := "usage: /admin users ... | /admin audit tail [n] | /admin signal status | /admin jobs status"
+		resp := usageBlock(
+			"/admin users list",
+			"/admin users promote <username>",
+			"/admin users demote <username>",
+			"/admin audit tail [n]",
+			"/admin signal status",
+			"/admin jobs status",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -912,7 +953,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			}
 			infos = m.toolReg.Search(q)
 		} else {
-			resp := "usage: /tools list | /tools search <query> | /tools describe <name>"
+			resp := usageBlock(
+				"/tools list",
+				"/tools search <query>",
+				"/tools describe <name>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -939,7 +984,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /signal link | /signal status | /signal unlink"
+			resp := usageBlock(
+				"/signal link",
+				"/signal status",
+				"/signal unlink",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1001,7 +1050,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
-		resp := "usage: /signal link | /signal status | /signal unlink"
+		resp := usageBlock(
+			"/signal link",
+			"/signal status",
+			"/signal unlink",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1011,7 +1064,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /discord status | /discord link <code> | /discord unlink"
+			resp := usageBlock(
+				"/discord status",
+				"/discord link <code>",
+				"/discord unlink",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1127,7 +1184,11 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
-		resp := "usage: /discord status | /discord link <code> | /discord unlink"
+		resp := usageBlock(
+			"/discord status",
+			"/discord link <code>",
+			"/discord unlink",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1137,7 +1198,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /memory list [kind] | /memory add <kind> <content> | /memory update <id> <content> | /memory delete <id>"
+			resp := usageBlock(
+				"/memory list [kind]",
+				"/memory add <kind> <content>",
+				"/memory update <id> <content>",
+				"/memory delete <id>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1259,7 +1325,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
-		resp := "usage: /memory list [kind] | /memory add <kind> <content> | /memory update <id> <content> | /memory delete <id>"
+		resp := usageBlock(
+			"/memory list [kind]",
+			"/memory add <kind> <content>",
+			"/memory update <id> <content>",
+			"/memory delete <id>",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1269,7 +1340,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /task list | /task add <text> | /task edit <id> <text> | /task done <id>"
+			resp := usageBlock(
+				"/task list",
+				"/task add <text>",
+				"/task edit <id> <text>",
+				"/task done <id>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1384,7 +1460,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": text})
 		}
 
-		resp := "usage: /task list | /task add <text> | /task edit <id> <text> | /task done <id>"
+		resp := usageBlock(
+			"/task list",
+			"/task add <text>",
+			"/task edit <id> <text>",
+			"/task done <id>",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1395,7 +1476,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		}
 		// NOTE: we never persist or display secret plaintext.
 		if len(fields) < 2 {
-			resp := "usage: /secret add <label> <secret> | /secret list | /secret delete <label> | /secret clear"
+			resp := usageBlock(
+				"/secret add <label> <secret>",
+				"/secret list",
+				"/secret delete <label>",
+				"/secret clear",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1503,7 +1589,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
-		resp := "usage: /secret add <label> <secret> | /secret list | /secret delete <label> | /secret clear"
+		resp := usageBlock(
+			"/secret add <label> <secret>",
+			"/secret list",
+			"/secret delete <label>",
+			"/secret clear",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1513,7 +1604,10 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 2 {
-			resp := "usage: /subagent spawn <prompt> | /subagent status <id>"
+			resp := usageBlock(
+				"/subagent spawn <prompt>",
+				"/subagent status <id>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1560,7 +1654,10 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
 		}
-		resp := "usage: /subagent spawn <prompt> | /subagent status <id>"
+		resp := usageBlock(
+			"/subagent spawn <prompt>",
+			"/subagent status <id>",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil
@@ -1570,7 +1667,10 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if len(fields) < 3 {
-			resp := "usage: /proactive action <name> | /proactive agent <id>"
+			resp := usageBlock(
+				"/proactive action <name>",
+				"/proactive agent <id>",
+			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
@@ -1596,7 +1696,10 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, m.triggerProactiveAgentCmd(agID, map[string]string{"text": text})
 		}
 
-		resp := "usage: /proactive action <name> | /proactive agent <id>"
+		resp := usageBlock(
+			"/proactive action <name>",
+			"/proactive agent <id>",
+		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
 		return m, true, nil

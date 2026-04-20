@@ -99,7 +99,7 @@ func DecodeResumeCode(code string) (int64, error) {
 }
 
 func ListRecentMessages(db *sql.DB, conversationID int64, limit int) ([]Message, error) {
-	rows, err := db.Query(`SELECT id, conversation_id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?`, conversationID, limit)
+	rows, err := db.Query(`SELECT id, conversation_id, role, content, COALESCE(is_notice, 0), created_at FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?`, conversationID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func ListRecentMessages(db *sql.DB, conversationID int64, limit int) ([]Message,
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.IsNotice, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -137,7 +137,7 @@ func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualI
 	if beforeOrEqualID <= 0 {
 		return ListRecentMessages(db, conversationID, limit)
 	}
-	rows, err := db.Query(`SELECT id, conversation_id, role, content, created_at FROM messages WHERE conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`, conversationID, beforeOrEqualID, limit)
+	rows, err := db.Query(`SELECT id, conversation_id, role, content, COALESCE(is_notice, 0), created_at FROM messages WHERE conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`, conversationID, beforeOrEqualID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualI
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.IsNotice, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -161,6 +161,58 @@ func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualI
 }
 
 func AddMessage(db *sql.DB, conversationID int64, role, content string) error {
-	_, err := db.Exec(`INSERT INTO messages(conversation_id, role, content) VALUES (?, ?, ?)`, conversationID, role, content)
+	_, err := db.Exec(`INSERT INTO messages(conversation_id, role, content, is_notice) VALUES (?, ?, ?, ?)`, conversationID, role, content, messageIsNotice(role, content))
 	return err
+}
+
+func messageIsNotice(role, content string) bool {
+	role = strings.TrimSpace(strings.ToLower(role))
+	switch role {
+	case "system":
+		return true
+	case "user", "tool_call":
+		return false
+	}
+
+	content = strings.ToLower(strings.TrimSpace(content))
+	if content == "" {
+		return false
+	}
+
+	noticePrefixes := []string{
+		"(agent error)",
+		"(skill error)",
+		"admin only",
+		"conversation not found",
+		"failed",
+		"invalid",
+		"memory added",
+		"memory updated",
+		"memory deleted",
+		"pending tool confirmation rejected",
+		"secret stored",
+		"secrets unavailable",
+		"sensitive data detected",
+		"signal linked",
+		"signal unlinked",
+		"signal:",
+		"discord linked",
+		"discord unlinked",
+		"discord:",
+		"started a fresh conversation",
+		"spawned subagent",
+		"task added",
+		"task updated",
+		"task marked done",
+		"the assistant response contained secret-like content and was redacted",
+		"unknown command",
+		"updated role",
+		"usage:",
+	}
+	for _, prefix := range noticePrefixes {
+		if strings.HasPrefix(content, prefix) {
+			return true
+		}
+	}
+	return false
 }

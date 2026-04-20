@@ -73,6 +73,14 @@ func TestMigrate_IdempotentAndAppliesAll(t *testing.T) {
 	if c != len(migs) {
 		t.Fatalf("expected %d applied migrations, got %d", len(migs), c)
 	}
+
+	var notNull int
+	if err := d.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('messages') WHERE name='is_notice' AND "notnull" = 1`).Scan(&notNull); err != nil {
+		t.Fatal(err)
+	}
+	if notNull != 1 {
+		t.Fatalf("expected messages.is_notice column to exist and be NOT NULL, got count=%d", notNull)
+	}
 }
 
 func TestLoadMigrations_SortedByVersion(t *testing.T) {
