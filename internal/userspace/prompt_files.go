@@ -1,10 +1,8 @@
 package userspace
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"tether/internal/systemprompt"
 )
@@ -38,14 +36,5 @@ func EnsurePromptTemplateFile(d Dirs, name string) error {
 	if !ok {
 		return nil
 	}
-	if _, err := os.Stat(p); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	content := systemprompt.DefaultMarkdown(name)
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	content = "<!-- Tether system prompt template (auto-created: " + stamp + ") -->\n\n" + strings.TrimSpace(content) + "\n"
-	return os.WriteFile(p, []byte(content), 0o644)
+	return ensureManagedMarkdownFile(p, "Tether system prompt template", systemprompt.DefaultMarkdown(name))
 }

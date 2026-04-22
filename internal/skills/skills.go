@@ -440,31 +440,10 @@ func (m *Manager) listBundled() ([]Skill, error) {
 			return nil
 		}
 		fm, body := splitFrontmatter(string(b))
-		desc := strings.TrimSpace(fm.Description)
-		when := strings.TrimSpace(fm.WhenToUse)
-		if desc == "" {
-			desc = firstParagraph(body)
-		}
-		userInv := true
-		if fm.UserInvocable != nil {
-			userInv = *fm.UserInvocable
-		}
-		out = append(out, Skill{
-			Name:                   coalesce(strings.TrimSpace(fm.Name), norm),
-			Description:            desc,
-			WhenToUse:              when,
-			DisableModelInvocation: fm.DisableModelInvoke,
-			UserInvocable:          userInv,
-			AllowedTools:           parseStringList(fm.AllowedTools),
-			Model:                  strings.TrimSpace(fm.Model),
-			Effort:                 strings.TrimSpace(fm.Effort),
-			Context:                strings.TrimSpace(fm.Context),
-			Agent:                  strings.TrimSpace(fm.Agent),
-			Shell:                  strings.TrimSpace(fm.Shell),
-			Paths:                  parseStringList(fm.Paths),
-			Source:                 SourceBundled,
-			bundledRelDir:          dir,
-		})
+		skill := skillFromFrontmatter(norm, fm, body)
+		skill.Source = SourceBundled
+		skill.bundledRelDir = dir
+		out = append(out, skill)
 		return nil
 	})
 	return out, nil
@@ -491,32 +470,11 @@ func (m *Manager) listUser(d userspace.Dirs) ([]Skill, error) {
 			continue
 		}
 		fm, body := splitFrontmatter(string(b))
-		desc := strings.TrimSpace(fm.Description)
-		when := strings.TrimSpace(fm.WhenToUse)
-		if desc == "" {
-			desc = firstParagraph(body)
-		}
-		userInv := true
-		if fm.UserInvocable != nil {
-			userInv = *fm.UserInvocable
-		}
-		out = append(out, Skill{
-			Name:                   coalesce(strings.TrimSpace(fm.Name), norm),
-			Description:            desc,
-			WhenToUse:              when,
-			DisableModelInvocation: fm.DisableModelInvoke,
-			UserInvocable:          userInv,
-			AllowedTools:           parseStringList(fm.AllowedTools),
-			Model:                  strings.TrimSpace(fm.Model),
-			Effort:                 strings.TrimSpace(fm.Effort),
-			Context:                strings.TrimSpace(fm.Context),
-			Agent:                  strings.TrimSpace(fm.Agent),
-			Shell:                  strings.TrimSpace(fm.Shell),
-			Paths:                  parseStringList(fm.Paths),
-			Source:                 SourceUser,
-			DirHostAbs:             dir,
-			EntryHostAbs:           entry,
-		})
+		skill := skillFromFrontmatter(norm, fm, body)
+		skill.Source = SourceUser
+		skill.DirHostAbs = dir
+		skill.EntryHostAbs = entry
+		out = append(out, skill)
 	}
 	return out, nil
 }
@@ -560,32 +518,11 @@ func (m *Manager) listProject(d userspace.Dirs) ([]Skill, error) {
 			return nil
 		}
 		fm, body := splitFrontmatter(string(b))
-		desc := strings.TrimSpace(fm.Description)
-		when := strings.TrimSpace(fm.WhenToUse)
-		if desc == "" {
-			desc = firstParagraph(body)
-		}
-		userInv := true
-		if fm.UserInvocable != nil {
-			userInv = *fm.UserInvocable
-		}
-		out = append(out, Skill{
-			Name:                   coalesce(strings.TrimSpace(fm.Name), norm),
-			Description:            desc,
-			WhenToUse:              when,
-			DisableModelInvocation: fm.DisableModelInvoke,
-			UserInvocable:          userInv,
-			AllowedTools:           parseStringList(fm.AllowedTools),
-			Model:                  strings.TrimSpace(fm.Model),
-			Effort:                 strings.TrimSpace(fm.Effort),
-			Context:                strings.TrimSpace(fm.Context),
-			Agent:                  strings.TrimSpace(fm.Agent),
-			Shell:                  strings.TrimSpace(fm.Shell),
-			Paths:                  parseStringList(fm.Paths),
-			Source:                 SourceProject,
-			DirHostAbs:             filepath.Dir(path),
-			EntryHostAbs:           path,
-		})
+		skill := skillFromFrontmatter(norm, fm, body)
+		skill.Source = SourceProject
+		skill.DirHostAbs = filepath.Dir(path)
+		skill.EntryHostAbs = path
+		out = append(out, skill)
 		return nil
 	})
 	return out, nil
@@ -670,6 +607,33 @@ func parseStringList(v any) []string {
 		}
 	}
 	return out
+}
+
+func skillFromFrontmatter(defaultName string, fm Frontmatter, body string) Skill {
+	desc := strings.TrimSpace(fm.Description)
+	if desc == "" {
+		desc = firstParagraph(body)
+	}
+
+	userInv := true
+	if fm.UserInvocable != nil {
+		userInv = *fm.UserInvocable
+	}
+
+	return Skill{
+		Name:                   coalesce(strings.TrimSpace(fm.Name), defaultName),
+		Description:            desc,
+		WhenToUse:              strings.TrimSpace(fm.WhenToUse),
+		DisableModelInvocation: fm.DisableModelInvoke,
+		UserInvocable:          userInv,
+		AllowedTools:           parseStringList(fm.AllowedTools),
+		Model:                  strings.TrimSpace(fm.Model),
+		Effort:                 strings.TrimSpace(fm.Effort),
+		Context:                strings.TrimSpace(fm.Context),
+		Agent:                  strings.TrimSpace(fm.Agent),
+		Shell:                  strings.TrimSpace(fm.Shell),
+		Paths:                  parseStringList(fm.Paths),
+	}
 }
 
 func firstParagraph(body string) string {

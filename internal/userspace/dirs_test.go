@@ -12,13 +12,8 @@ func TestForUserAndEnsure(t *testing.T) {
 	if d.Root == "" || d.Workspace == "" || d.Config == "" || d.Skills == "" || d.Cache == "" {
 		t.Fatalf("expected all dirs to be set: %+v", d)
 	}
-	if filepath.Dir(d.Root) == filepath.Dir(root) {
-		// root/users/42
-	} else {
-		// sanity check
-		if filepath.Base(d.Root) != "42" {
-			t.Fatalf("unexpected root path: %s", d.Root)
-		}
+	if filepath.Base(d.Root) != "42" {
+		t.Fatalf("unexpected root path: %s", d.Root)
 	}
 	if err := Ensure(d); err != nil {
 		t.Fatal(err)

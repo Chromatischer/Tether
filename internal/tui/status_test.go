@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"tether/internal/agent"
-	"tether/internal/config"
 	"tether/internal/store"
 )
 
@@ -65,9 +64,10 @@ func TestHandleCommandStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ag := agent.New(&config.Config{}, d)
+	cfg := newTUITestConfig(t)
+	ag := agent.New(cfg, d)
 	m := appModel{
-		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:  &SessionContext{Config: cfg, DB: d},
 		user: u,
 		conv: conv,
 		ag:   ag,

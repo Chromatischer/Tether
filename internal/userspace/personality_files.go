@@ -1,10 +1,8 @@
 package userspace
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"tether/internal/personality"
 )
@@ -35,15 +33,5 @@ func EnsurePersonalityFile(d Dirs, agentKey string) error {
 	if !ok {
 		return nil
 	}
-	if _, err := os.Stat(p); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	content := personality.DefaultMarkdown(agentKey)
-	// Include a small header that makes it obvious this is managed.
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	content = "<!-- Tether personality file (auto-created: " + stamp + ") -->\n\n" + strings.TrimSpace(content) + "\n"
-	return os.WriteFile(p, []byte(content), 0o644)
+	return ensureManagedMarkdownFile(p, "Tether personality file", personality.DefaultMarkdown(agentKey))
 }

@@ -113,7 +113,7 @@ func (g *Gateway) waitForCheck(ctx context.Context, timeout time.Duration) error
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, g.baseURL()+"/api/v1/check", nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := g.httpClient().Do(req)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
@@ -189,7 +189,7 @@ func (g *Gateway) consumeEvents(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := g.httpClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -319,7 +319,7 @@ func (g *Gateway) send(ctx context.Context, recipient string, message string) (i
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := g.httpClient().Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -454,4 +454,11 @@ func (g *Gateway) sendReaction(ctx context.Context, recipient string, emoji stri
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+func (g *Gateway) httpClient() *http.Client {
+	if g != nil && g.http != nil {
+		return g.http
+	}
+	return http.DefaultClient
 }
