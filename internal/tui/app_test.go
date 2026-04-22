@@ -138,6 +138,104 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 	}
 }
 
+func TestHandleAgentReplyKeepsRepeatedToolCallsSeparateInActiveChat(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "bob_repeat", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		user:         u,
+		conv:         conv,
+		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
+		activeRuns:   1,
+		releasedRuns: map[int]bool{9: false},
+	}
+	m.chat = m.chat.appendStreamingToolCall(9, "bash", "{\"command\":\"pwd\"}")
+	m.chat = m.chat.appendStreamingToolCall(9, "bash", "{\"command\":\"pwd\"}")
+	m.chat = m.chat.startStreamingAssistant(9)
+
+	updated, _ := m.handleAgentReply(agentReplyMsg{
+		ConversationID: conv.ID,
+		RequestID:      9,
+		Text:           "done",
+		ToolCalls: []toolCallEntry{
+			{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/one\\n\"\n}"},
+			{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/two\\n\"\n}"},
+		},
+	})
+
+	if len(updated.chat.messages) != 3 {
+		t.Fatalf("expected two tool rows plus assistant reply, got %d messages", len(updated.chat.messages))
+	}
+	if !strings.Contains(updated.chat.messages[0].content, "/work/one") {
+		t.Fatalf("expected first tool row to keep first result, got %+v", updated.chat.messages[0])
+	}
+	if !strings.Contains(updated.chat.messages[1].content, "/work/two") {
+		t.Fatalf("expected second tool row to keep second result, got %+v", updated.chat.messages[1])
+	}
+
+	msgs, err := store.ListRecentMessages(d, conv.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected persisted tool_call, tool_call, assistant; got %d", len(msgs))
+	}
+	if msgs[0].Role != "tool_call" || msgs[1].Role != "tool_call" || msgs[2].Role != "assistant" {
+		t.Fatalf("unexpected persisted roles: %+v", msgs)
+	}
+}
+
+func TestHandleAgentReplyDoesNotAppendDuplicateCompletedRowsAfterStreamedResults(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "bob_streamed_results", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateDefaultConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		user:         u,
+		conv:         conv,
+		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
+		activeRuns:   1,
+		releasedRuns: map[int]bool{9: false},
+	}
+	m.chat = m.chat.upsertStreamingToolCall(9, toolCallEntry{Name: "bash", Args: "{\"command\":\"pwd\"}"})
+	m.chat = m.chat.upsertStreamingToolCall(9, toolCallEntry{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/one\\n\"\n}"})
+	m.chat = m.chat.upsertStreamingToolCall(9, toolCallEntry{Name: "bash", Args: "{\"command\":\"pwd\"}"})
+	m.chat = m.chat.upsertStreamingToolCall(9, toolCallEntry{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/two\\n\"\n}"})
+	m.chat = m.chat.startStreamingAssistant(9)
+
+	updated, _ := m.handleAgentReply(agentReplyMsg{
+		ConversationID: conv.ID,
+		RequestID:      9,
+		Text:           "done",
+		ToolCalls: []toolCallEntry{
+			{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/one\\n\"\n}"},
+			{Name: "bash", Args: "{\"command\":\"pwd\"}", Result: "{\n  \"stdout\": \"/work/two\\n\"\n}"},
+		},
+	})
+
+	if len(updated.chat.messages) != 3 {
+		t.Fatalf("expected two existing tool rows plus assistant reply, got %d messages", len(updated.chat.messages))
+	}
+	if strings.Contains(updated.chat.messages[0].content, "running") || strings.Contains(updated.chat.messages[1].content, "running") {
+		t.Fatalf("expected no running artifact in completed tool rows: %+v", updated.chat.messages)
+	}
+}
+
 func TestMaybeDispatchWaitlistStartsStreamingAssistantImmediately(t *testing.T) {
 	d := openTUITestDB(t)
 	u, err := store.CreateUser(d, "cara", "pw")

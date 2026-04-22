@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -13,15 +14,22 @@ import (
 	"tether/internal/userspace"
 )
 
-func (a *Agent) buildContextInputItems(userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
-	return a.buildContextInputItemsWithSession(a.sessionFor(userID, convID), userID, convID, history)
+func (a *Agent) buildContextInputItems(ctx context.Context, userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
+	return a.buildContextInputItemsWithSession(ctx, a.sessionFor(userID, convID), userID, convID, history)
 }
 
-func (a *Agent) buildContextInputItemsWithSession(sess *toolset.Session, userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
-	return a.buildContextInputItemsWithSessionAndSystemPrompt(sess, userID, convID, history, systemPrompt)
+func (a *Agent) buildContextInputItemsWithSession(ctx context.Context, sess *toolset.Session, userID, convID int64, history []store.Message) ([]openrouter.ResponseItem, error) {
+	return a.buildContextInputItemsWithSessionAndSystemPrompt(ctx, sess, userID, convID, history, a.chatSystemPromptText(userID, convID))
 }
 
-func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.Session, userID, convID int64, history []store.Message, sysPrompt string) ([]openrouter.ResponseItem, error) {
+func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(ctx context.Context, sess *toolset.Session, userID, convID int64, history []store.Message, sysPrompt string) ([]openrouter.ResponseItem, error) {
+	if convID != 0 && len(history) == 0 && a.db != nil {
+		var err error
+		history, err = a.prepareConversationHistoryForContext(ctx, convID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	items := make([]openrouter.ResponseItem, 0, len(history)+10)
 
 	nm := newToolNameMap(nil)
@@ -54,8 +62,8 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.S
 	}
 
 	// Conversation summary (if available)
-	if sum, _, ok, err := store.GetConversationSummary(a.db, convID); err == nil && ok {
-		if summaryRef := formatConversationSummaryReference(sum); summaryRef != "" {
+	if st, ok, err := store.GetConversationSummaryState(a.db, convID); err == nil && ok {
+		if summaryRef := formatConversationSummaryReference(st.Summary); summaryRef != "" {
 			items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: summaryRef}}})
 		}
 	}
@@ -169,6 +177,116 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(sess *toolset.S
 		}
 	}
 	return items, nil
+}
+
+func (a *Agent) prepareConversationHistoryForContext(ctx context.Context, conversationID int64) ([]store.Message, error) {
+	if a == nil || a.db == nil || conversationID == 0 {
+		return nil, nil
+	}
+	modelLimit := a.modelInfo(a.cfg.OpenRouter.Model).ContextLength
+	if modelLimit <= 0 {
+		modelLimit = 128000
+	}
+	compactThreshold := int(float64(modelLimit) * 0.66)
+	if compactThreshold <= 0 {
+		compactThreshold = 84000
+	}
+	rawTailBudget := int(float64(modelLimit) * 0.22)
+	if rawTailBudget <= 0 {
+		rawTailBudget = 28000
+	}
+
+	if err := a.compactConversationIfNeeded(ctx, conversationID, compactThreshold, rawTailBudget); err != nil {
+		return nil, err
+	}
+
+	st, ok, err := store.GetConversationSummaryState(a.db, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return store.ListMessagesAfterID(a.db, conversationID, 0)
+	}
+	return store.ListMessagesAfterID(a.db, conversationID, st.SummarizedThroughMessageID)
+}
+
+func (a *Agent) compactConversationIfNeeded(ctx context.Context, conversationID int64, compactThreshold, rawTailBudget int) error {
+	st, ok, err := store.GetConversationSummaryState(a.db, conversationID)
+	if err != nil {
+		return err
+	}
+	afterID := int64(0)
+	if ok {
+		afterID = st.SummarizedThroughMessageID
+	}
+	history, err := store.ListMessagesAfterID(a.db, conversationID, afterID)
+	if err != nil {
+		return err
+	}
+	if estimateMessagesTokens(history) <= compactThreshold {
+		return nil
+	}
+	if len(history) < 8 {
+		return nil
+	}
+
+	tailStart := findTailStartByBudget(history, rawTailBudget)
+	if tailStart <= 0 || tailStart >= len(history) {
+		return nil
+	}
+	compactSlice := history[:tailStart]
+	throughID := compactSlice[len(compactSlice)-1].ID
+	var prior string
+	if ok {
+		prior = strings.TrimSpace(st.Summary)
+	}
+	if prior != "" {
+		prefix := store.Message{ID: afterID, Role: "system", Content: "Previously compacted conversation summary:\n" + prior}
+		compactSlice = append([]store.Message{prefix}, compactSlice...)
+	}
+	sum, err := a.compactConversationSlice(ctx, compactSlice, 300)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(sum) == "" {
+		return nil
+	}
+	return store.SetConversationSummaryState(a.db, conversationID, sum, throughID)
+}
+
+func estimateMessagesTokens(history []store.Message) int {
+	total := 0
+	for _, m := range history {
+		total += estimateTextTokens(m.Role)
+		total += estimateTextTokens(m.Content)
+	}
+	return total
+}
+
+func estimateTextTokens(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	return (len(s)+3)/4 + 8
+}
+
+func findTailStartByBudget(history []store.Message, budget int) int {
+	if budget <= 0 {
+		return len(history)
+	}
+	total := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		total += estimateTextTokens(history[i].Role)
+		total += estimateTextTokens(history[i].Content)
+		if total > budget {
+			if i+1 < len(history) {
+				return i + 1
+			}
+			return i
+		}
+	}
+	return 0
 }
 
 func loadPersonalityText(d userspace.Dirs, agentKey string) string {

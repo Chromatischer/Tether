@@ -67,6 +67,7 @@ type MCPCaller interface {
 type LLM interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
+	RunProactivePromptForUser(ctx context.Context, userID int64, prompt string) (string, error)
 }
 
 type InvokedSkill struct {
@@ -79,6 +80,9 @@ type Session struct {
 	UserID         int64
 	ConversationID int64
 	Dirs           userspace.Dirs
+	SessionID      string
+	StartedAt      time.Time
+	LastActivityAt time.Time
 
 	// IsSubagent is set by the runtime when tools are being executed from a sub-agent context.
 	// Some tools (e.g. self.schedule) are explicitly disallowed for sub-agents.
@@ -105,8 +109,21 @@ type Session struct {
 	// They are re-attached to the prompt each turn so they don’t fall out of the recent-history window.
 	InvokedSkills []InvokedSkill
 
+	TotalToolCalls    int
+	TotalInputTokens  int
+	TotalOutputTokens int
+	TotalTokens       int
+	TotalCost         float64
+	LastModel         string
+	LastInputTokens   int
+	LastContextLimit  int
+
 	// ReadPaths tracks files read during this session so write can require prior inspection.
 	ReadPaths map[string]bool
+
+	// BashNetworkEnabled allows the bash tool to run with network access for this session.
+	// It must only be enabled through an explicit confirmed action.
+	BashNetworkEnabled bool
 }
 
 // AddInvokedSkill stores/replaces the most recent invocation of a skill.
@@ -144,12 +161,23 @@ func NewSession(reg *tools.Registry) *Session {
 	active["subagent.spawn"] = true
 	active["subagent.status"] = true
 	active["skill.invoke"] = true
+	now := time.Now().UTC()
 	return &Session{
 		Registry:       reg,
 		Active:         active,
-		SkillSessionID: fmt.Sprintf("tether-%d", time.Now().UTC().UnixNano()),
+		SessionID:      fmt.Sprintf("sess-%d", now.UnixNano()),
+		StartedAt:      now,
+		LastActivityAt: now,
+		SkillSessionID: fmt.Sprintf("tether-%d", now.UnixNano()),
 		ReadPaths:      map[string]bool{},
 	}
+}
+
+func (s *Session) TouchActivity() {
+	if s == nil {
+		return
+	}
+	s.LastActivityAt = time.Now().UTC()
 }
 
 func (s *Session) MarkReadPath(relPath string) {

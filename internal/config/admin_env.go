@@ -10,6 +10,7 @@ import (
 
 type AdminEnv struct {
 	OpenRouterAPIKey string `yaml:"openrouter_api_key,omitempty"`
+	OpenRouterModel  string `yaml:"openrouter_model,omitempty"`
 	DiscordBotToken  string `yaml:"discord_bot_token,omitempty"`
 	SignalNumber     string `yaml:"signal_number,omitempty"`
 	MasterKey        string `yaml:"master_key,omitempty"`
@@ -57,6 +58,7 @@ func SaveAdminEnv(dataDir string, env AdminEnv) error {
 
 func (e *AdminEnv) normalize() {
 	e.OpenRouterAPIKey = strings.TrimSpace(e.OpenRouterAPIKey)
+	e.OpenRouterModel = strings.TrimSpace(e.OpenRouterModel)
 	e.DiscordBotToken = strings.TrimSpace(e.DiscordBotToken)
 	e.SignalNumber = strings.TrimSpace(e.SignalNumber)
 	e.MasterKey = strings.TrimSpace(e.MasterKey)
@@ -64,6 +66,7 @@ func (e *AdminEnv) normalize() {
 
 func (e AdminEnv) empty() bool {
 	return e.OpenRouterAPIKey == "" &&
+		e.OpenRouterModel == "" &&
 		e.DiscordBotToken == "" &&
 		e.SignalNumber == "" &&
 		e.MasterKey == ""

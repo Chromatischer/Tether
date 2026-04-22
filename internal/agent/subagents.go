@@ -21,7 +21,7 @@ func (r agentSubagentRunner) Run(ctx context.Context, userID int64, req subagent
 	if err != nil {
 		return "", err
 	}
-	items, err := r.ag.buildContextInputItemsWithSessionAndSystemPrompt(sess, userID, 0, nil, systemPrompt)
+	items, err := r.ag.buildContextInputItemsWithSessionAndSystemPrompt(ctx, sess, userID, 0, nil, r.ag.chatSystemPromptText(userID, 0))
 	if err != nil {
 		return "", err
 	}

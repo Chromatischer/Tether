@@ -160,6 +160,40 @@ func ListRecentMessagesBeforeID(db *sql.DB, conversationID int64, beforeOrEqualI
 	return out, nil
 }
 
+func ListMessagesAfterID(db *sql.DB, conversationID int64, afterExclusiveID int64) ([]Message, error) {
+	rows, err := db.Query(`SELECT id, conversation_id, role, content, COALESCE(is_notice, 0), created_at FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id ASC`, conversationID, afterExclusiveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.IsNotice, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func ListMessagesInRange(db *sql.DB, conversationID int64, afterExclusiveID int64, throughInclusiveID int64) ([]Message, error) {
+	rows, err := db.Query(`SELECT id, conversation_id, role, content, COALESCE(is_notice, 0), created_at FROM messages WHERE conversation_id = ? AND id > ? AND id <= ? ORDER BY id ASC`, conversationID, afterExclusiveID, throughInclusiveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.IsNotice, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func AddMessage(db *sql.DB, conversationID int64, role, content string) error {
 	_, err := AddMessageID(db, conversationID, role, content)
 	return err

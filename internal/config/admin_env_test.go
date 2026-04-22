@@ -12,6 +12,7 @@ func TestSaveLoadAdminEnv(t *testing.T) {
 	dir := t.TempDir()
 	in := AdminEnv{
 		OpenRouterAPIKey: "openrouter-key",
+		OpenRouterModel:  "openai/gpt-5.4-mini",
 		DiscordBotToken:  "discord-token",
 		SignalNumber:     "+4912345",
 		MasterKey:        "master-key",
@@ -50,6 +51,7 @@ func TestLoad_AdminEnvFallbacks(t *testing.T) {
 	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 	if err := SaveAdminEnv(dir, AdminEnv{
 		OpenRouterAPIKey: "admin-openrouter",
+		OpenRouterModel:  "openai/gpt-5.4-mini",
 		DiscordBotToken:  "admin-discord",
 		SignalNumber:     "+498765",
 		MasterKey:        "admin-master",
@@ -64,6 +66,9 @@ func TestLoad_AdminEnvFallbacks(t *testing.T) {
 	}
 	if cfg.OpenRouter.APIKey != "admin-openrouter" {
 		t.Fatalf("expected admin openrouter fallback, got %q", cfg.OpenRouter.APIKey)
+	}
+	if cfg.OpenRouter.Model != "openai/gpt-5.4-mini" {
+		t.Fatalf("expected admin openrouter model override, got %q", cfg.OpenRouter.Model)
 	}
 	if cfg.Discord.BotToken != "admin-discord" {
 		t.Fatalf("expected admin discord fallback, got %q", cfg.Discord.BotToken)
@@ -81,6 +86,7 @@ func TestLoad_ConfigOverridesAdminEnv(t *testing.T) {
 	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 	if err := SaveAdminEnv(dir, AdminEnv{
 		OpenRouterAPIKey: "admin-openrouter",
+		OpenRouterModel:  "openai/gpt-5.4-mini",
 		DiscordBotToken:  "admin-discord",
 		SignalNumber:     "+498765",
 		MasterKey:        "admin-master",
@@ -104,5 +110,8 @@ func TestLoad_ConfigOverridesAdminEnv(t *testing.T) {
 		cfg.Signal.AccountNumber != "+49111" ||
 		cfg.Discord.BotToken != "cfg-discord" {
 		t.Fatalf("config values should override admin env: %#v", cfg)
+	}
+	if cfg.OpenRouter.Model != "openai/gpt-5.4-mini" {
+		t.Fatalf("expected admin env model override, got %q", cfg.OpenRouter.Model)
 	}
 }

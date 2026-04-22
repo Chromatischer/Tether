@@ -78,7 +78,7 @@ type ServerInfo struct {
 }
 
 func NewManager(cfg *config.Config) *Manager {
-	impl := &mcpsdk.Implementation{Name: "tether", Version: "0.2"}
+	impl := &mcpsdk.Implementation{Name: "tether", Version: "0.4"}
 	c := mcpsdk.NewClient(impl, nil)
 	m := &Manager{cfg: cfg, client: c, servers: map[string]*serverState{}}
 	m.reloadServersLocked()

@@ -1,7 +1,40 @@
 # Changelog
 
-## v0.3 (2026-04-19)
+## v0.4 (2026-04-22)
 
+### Added
+- **Templated, per-user system prompts**
+  - New `internal/systemprompt` package renders chat and proactive system prompts from templates with `{{username}}`, `{{user_id}}`, `{{conversation_id}}`, `{{session_id}}`, and `{{mode}}` placeholders.
+  - Users can override the built-in templates by editing `config/prompts/chat_system.md` or `config/prompts/proactive_system.md` in their sandbox; missing files are auto-seeded with defaults.
+  - Replaces the two hardcoded prompt string constants that previously lived in `internal/agent/agent.go`.
+- **Session status and attached-context introspection**
+  - New `agent.SessionStatus` surface exposes session age, idle time, per-turn and cumulative token counts, cost, last model, and context-window percentage.
+  - New `AttachedContextStatus` reports which pieces (personality, summary, history, memory, skills index, invoked skills) are currently attached and an estimated token footprint.
+  - Rendered in both the TUI and Discord gateway via dedicated status renderers.
+- **Persisted LLM usage tracking**
+  - New `internal/store/llm_usage.go` reads `audit_events` of type `llm_usage` to produce per-conversation and cumulative token/cost rollups.
+  - Usage is used to drive the new status views and the context-percentage indicator.
+- **Model catalog and admin model picker**
+  - OpenRouter client now fetches the model catalog (`/models`) and per-model endpoint metadata.
+  - Admin setup screen gained an interactive model/endpoint picker with search and per-endpoint pricing/context info.
+- **Incremental conversation summary checkpoints**
+  - New migration `0017_conversation_summary_checkpoint.sql` adds `summarized_through_message_id` to `conversation_summaries`.
+  - Store helpers now expose `GetConversationSummaryState` / `UpsertConversationSummaryWithCheckpoint` so the agent can summarize only messages past the checkpoint instead of re-summarizing the whole tail.
+- **User-space prompt file helpers** in `internal/userspace` for resolving and ensuring system prompt template files under each user's sandbox.
+
+### Changed
+- **Adaptive conversation compaction replaces fixed thresholds**
+  - Summarization is now driven by the active model's context length (fetched via the new model catalog) instead of the old "40 messages / 30 minutes" rule.
+  - The agent compacts when estimated input exceeds ~66% of the model's context and keeps a ~22% raw tail budget for recent turns.
+  - Summary prompts now also ask for unresolved blockers and allow up to 250 words / 450 output tokens.
+- **`ReplyStream` builds context lazily from the store**
+  - Callers no longer pre-fetch the last 25 messages; `buildContextInputItemsWithSession` now pulls history itself, respecting the summary checkpoint.
+  - Session activity is touched before forking so idle/age accounting stays accurate across streamed replies.
+- **Proactive prompts gained a per-user variant** (`RunProactivePromptForUser`) so proactive runs pick up the user's prompt template overrides and personality.
+- **Sandbox and tool-call plumbing hardened** alongside additional tests in `bash_tool_test.go`, `bwrap_test.go`, `toolcalling_test.go`, `admin_env_test.go`, `app_test.go`, `chat_test.go`, and new `status_test.go` / `systemprompt_test.go` / `prompt_files_test.go` suites.
+- **MCP manager, proactive engine, and self-schedule runner** updated to flow through the new per-user prompt and status paths.
+
+## v0.3 (2026-04-19)
 ### Added
 - **Constrained subagents**
   - `subagent.spawn` now accepts a caller-selected `allowed_tools` list and optional one-time skill preload.

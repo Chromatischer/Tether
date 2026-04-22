@@ -40,7 +40,7 @@ func RunOnce(ctx context.Context, db *sql.DB, llm LLM, userID int64, convID int6
 
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	text, err := llm.RunProactivePrompt(ctx2, prompt)
+	text, err := llm.RunProactivePromptForUser(ctx2, userID, prompt)
 	if err != nil {
 		return "", err
 	}

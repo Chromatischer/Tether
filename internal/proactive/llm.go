@@ -7,4 +7,5 @@ import "context"
 type LLM interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
+	RunProactivePromptForUser(ctx context.Context, userID int64, prompt string) (string, error)
 }

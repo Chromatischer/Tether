@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"tether/internal/config"
+	"tether/internal/llm/openrouter"
 	"tether/internal/secrets"
 	"tether/internal/store"
 )
@@ -42,14 +46,21 @@ type adminModel struct {
 	userList []store.User
 	userSel  int
 
-	setupPath       string
-	setupOpenRouter textinput.Model
-	setupDiscord    textinput.Model
-	setupSignal     textinput.Model
-	setupMasterKey  textinput.Model
-	setupFocus      int
-	setupStatus     string
-	setupStatusErr  bool
+	setupPath        string
+	setupOpenRouter  textinput.Model
+	setupModel       textinput.Model
+	setupDiscord     textinput.Model
+	setupSignal      textinput.Model
+	setupMasterKey   textinput.Model
+	setupFocus       int
+	setupStatus      string
+	setupStatusErr   bool
+	setupModels      []openrouter.Model
+	setupModelsErr   string
+	setupModelSel    int
+	setupEndpoints   []openrouter.ModelEndpoint
+	setupEndpointID  string
+	setupEndpointErr string
 }
 
 type adminLoadMsg struct {
@@ -63,6 +74,17 @@ type adminLoadMsg struct {
 type adminSetupSavedMsg struct {
 	err    error
 	status string
+}
+
+type adminModelsLoadedMsg struct {
+	models []openrouter.Model
+	err    error
+}
+
+type adminModelEndpointsLoadedMsg struct {
+	model     string
+	endpoints []openrouter.ModelEndpoint
+	err       error
 }
 
 func newAdminModel(ctx *SessionContext) adminModel {
@@ -96,6 +118,7 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		setup:           mk(),
 		setupPath:       config.AdminEnvPath(ctx.Config.Paths.DataDir),
 		setupOpenRouter: masked("OpenRouter API key: "),
+		setupModel:      plain("OpenRouter model: "),
 		setupDiscord:    masked("Discord bot token: "),
 		setupSignal:     plain("Signal account number: "),
 		setupMasterKey:  masked("Secrets master key: "),
@@ -122,6 +145,7 @@ func (m adminModel) withSize(w, h int) adminModel {
 	m.setup.SetHeight(ch)
 	inputW := max(24, w-6)
 	m.setupOpenRouter.SetWidth(inputW)
+	m.setupModel.SetWidth(inputW)
 	m.setupDiscord.SetWidth(inputW)
 	m.setupSignal.SetWidth(inputW)
 	m.setupMasterKey.SetWidth(inputW)
@@ -207,6 +231,9 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 			if env.OpenRouterAPIKey == "" {
 				env.OpenRouterAPIKey = ctx.Config.OpenRouter.APIKey
 			}
+			if env.OpenRouterModel == "" {
+				env.OpenRouterModel = ctx.Config.OpenRouter.Model
+			}
 			if env.DiscordBotToken == "" {
 				env.DiscordBotToken = ctx.Config.Discord.BotToken
 			}
@@ -241,12 +268,46 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			m.rebuildUsersViewport()
 		case adminTabSetup:
 			m.setupOpenRouter.SetValue(msg.env.OpenRouterAPIKey)
+			m.setupModel.SetValue(msg.env.OpenRouterModel)
 			m.setupDiscord.SetValue(msg.env.DiscordBotToken)
 			m.setupSignal.SetValue(msg.env.SignalNumber)
 			m.setupMasterKey.SetValue(msg.env.MasterKey)
+			m.syncSetupModelSelection()
+			return m, tea.Batch(m.loadSetupModelsCmd(), m.loadSetupModelEndpointsCmd(msg.env.OpenRouterModel))
 		default:
 			m.setTabContent(msg.tab, msg.content)
 		}
+		return m, nil
+
+	case adminModelsLoadedMsg:
+		if msg.err != nil {
+			m.setupModelsErr = msg.err.Error()
+			m.setupModels = nil
+			return m, nil
+		}
+		m.setupModelsErr = ""
+		m.setupModels = append([]openrouter.Model(nil), msg.models...)
+		sort.Slice(m.setupModels, func(i, j int) bool {
+			return m.setupModels[i].ID < m.setupModels[j].ID
+		})
+		m.syncSetupModelSelection()
+		if picked, ok := m.selectedSetupModel(); ok && strings.TrimSpace(m.setupModel.Value()) == "" {
+			m.setupModel.SetValue(picked.ID)
+		}
+		return m, nil
+
+	case adminModelEndpointsLoadedMsg:
+		if strings.TrimSpace(msg.model) != strings.TrimSpace(m.setupModel.Value()) {
+			return m, nil
+		}
+		m.setupEndpointID = strings.TrimSpace(msg.model)
+		if msg.err != nil {
+			m.setupEndpointErr = msg.err.Error()
+			m.setupEndpoints = nil
+			return m, nil
+		}
+		m.setupEndpointErr = ""
+		m.setupEndpoints = append([]openrouter.ModelEndpoint(nil), msg.endpoints...)
 		return m, nil
 
 	case adminSetupSavedMsg:
@@ -332,17 +393,30 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 
 func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 	switch msg.String() {
-	case "tab", "down":
-		m.setSetupFocus((m.setupFocus + 1) % 5)
+	case "tab":
+		m.setSetupFocus((m.setupFocus + 1) % 7)
 		return m, nil
-	case "shift+tab", "up":
-		m.setSetupFocus((m.setupFocus - 1 + 5) % 5)
+	case "shift+tab":
+		m.setSetupFocus((m.setupFocus - 1 + 7) % 7)
 		return m, nil
 	case "ctrl+s":
 		return m, m.saveSetupCmd()
 	case "enter":
-		if m.setupFocus == 4 {
+		if m.setupFocus == 2 {
+			return m.chooseSetupModel()
+		}
+		if m.setupFocus == 6 {
 			return m, m.saveSetupCmd()
+		}
+	case "up":
+		if m.setupFocus == 2 {
+			m.moveSetupModelSel(-1)
+			return m, nil
+		}
+	case "down":
+		if m.setupFocus == 2 {
+			m.moveSetupModelSel(1)
+			return m, nil
 		}
 	}
 
@@ -350,20 +424,28 @@ func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 }
 
 func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
-	if m.setupFocus == 4 {
+	if m.setupFocus == 2 || m.setupFocus == 6 {
 		return m, nil
 	}
 
 	var cmd tea.Cmd
+	var before string
 	switch m.setupFocus {
 	case 0:
 		m.setupOpenRouter, cmd = m.setupOpenRouter.Update(msg)
 	case 1:
-		m.setupDiscord, cmd = m.setupDiscord.Update(msg)
-	case 2:
-		m.setupSignal, cmd = m.setupSignal.Update(msg)
+		before = m.setupModel.Value()
+		m.setupModel, cmd = m.setupModel.Update(msg)
 	case 3:
+		m.setupDiscord, cmd = m.setupDiscord.Update(msg)
+	case 4:
+		m.setupSignal, cmd = m.setupSignal.Update(msg)
+	case 5:
 		m.setupMasterKey, cmd = m.setupMasterKey.Update(msg)
+	}
+	if m.setupFocus == 1 && before != m.setupModel.Value() {
+		m.syncSetupModelSelection()
+		return m, tea.Batch(cmd, m.loadSetupModelEndpointsCmd(m.setupModel.Value()))
 	}
 	return m, cmd
 }
@@ -372,6 +454,7 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 	ctx := m.ctx
 	env := config.AdminEnv{
 		OpenRouterAPIKey: m.setupOpenRouter.Value(),
+		OpenRouterModel:  m.setupModel.Value(),
 		DiscordBotToken:  m.setupDiscord.Value(),
 		SignalNumber:     m.setupSignal.Value(),
 		MasterKey:        m.setupMasterKey.Value(),
@@ -387,13 +470,16 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 		}
 
 		ctx.Config.OpenRouter.APIKey = strings.TrimSpace(env.OpenRouterAPIKey)
+		ctx.Config.OpenRouter.Model = strings.TrimSpace(env.OpenRouterModel)
 		ctx.Config.Discord.BotToken = strings.TrimSpace(env.DiscordBotToken)
 		ctx.Config.Signal.AccountNumber = strings.TrimSpace(env.SignalNumber)
 		ctx.Config.Secrets.MasterKey = strings.TrimSpace(env.MasterKey)
-		ctx.Agent.ReloadRuntimeConfig()
+		if ctx.Agent != nil {
+			ctx.Agent.ReloadRuntimeConfig()
+		}
 
 		return adminSetupSavedMsg{
-			status: "saved to " + config.AdminEnvPath(ctx.Config.Paths.DataDir) + "  OpenRouter/master key apply now; Discord/Signal need restart",
+			status: "saved to " + config.AdminEnvPath(ctx.Config.Paths.DataDir) + "  OpenRouter model/key and master key apply now; Discord/Signal need restart",
 		}
 	}
 }
@@ -442,29 +528,162 @@ func (m *adminModel) setSetupFocus(focus int) {
 	switch focus {
 	case 0:
 		m.setupOpenRouter.Focus()
+		m.setupModel.Blur()
 		m.setupDiscord.Blur()
 		m.setupSignal.Blur()
 		m.setupMasterKey.Blur()
 	case 1:
 		m.setupOpenRouter.Blur()
-		m.setupDiscord.Focus()
-		m.setupSignal.Blur()
-		m.setupMasterKey.Blur()
-	case 2:
-		m.setupOpenRouter.Blur()
+		m.setupModel.Focus()
 		m.setupDiscord.Blur()
-		m.setupSignal.Focus()
+		m.setupSignal.Blur()
 		m.setupMasterKey.Blur()
 	case 3:
 		m.setupOpenRouter.Blur()
+		m.setupModel.Blur()
+		m.setupDiscord.Focus()
+		m.setupSignal.Blur()
+		m.setupMasterKey.Blur()
+	case 4:
+		m.setupOpenRouter.Blur()
+		m.setupModel.Blur()
+		m.setupDiscord.Blur()
+		m.setupSignal.Focus()
+		m.setupMasterKey.Blur()
+	case 5:
+		m.setupOpenRouter.Blur()
+		m.setupModel.Blur()
 		m.setupDiscord.Blur()
 		m.setupSignal.Blur()
 		m.setupMasterKey.Focus()
 	default:
 		m.setupOpenRouter.Blur()
+		m.setupModel.Blur()
 		m.setupDiscord.Blur()
 		m.setupSignal.Blur()
 		m.setupMasterKey.Blur()
+	}
+}
+
+func (m adminModel) loadSetupModelsCmd() tea.Cmd {
+	baseURL := strings.TrimSpace(m.ctx.Config.OpenRouter.BaseURL)
+	apiKey := strings.TrimSpace(m.setupOpenRouter.Value())
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(m.ctx.Config.OpenRouter.APIKey)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		client := openrouter.New(baseURL, apiKey, "Tether")
+		models, err := client.Models(ctx)
+		return adminModelsLoadedMsg{models: models, err: err}
+	}
+}
+
+func (m adminModel) loadSetupModelEndpointsCmd(modelID string) tea.Cmd {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	baseURL := strings.TrimSpace(m.ctx.Config.OpenRouter.BaseURL)
+	apiKey := strings.TrimSpace(m.setupOpenRouter.Value())
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(m.ctx.Config.OpenRouter.APIKey)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		client := openrouter.New(baseURL, apiKey, "Tether")
+		endpoints, err := client.ModelEndpoints(ctx, modelID)
+		return adminModelEndpointsLoadedMsg{model: modelID, endpoints: endpoints, err: err}
+	}
+}
+
+func (m *adminModel) syncSetupModelSelection() {
+	filtered := m.filteredSetupModels()
+	if len(filtered) == 0 {
+		m.setupModelSel = 0
+		return
+	}
+	current := strings.TrimSpace(m.setupModel.Value())
+	for i, model := range filtered {
+		if model.ID == current {
+			m.setupModelSel = i
+			return
+		}
+	}
+	if m.setupModelSel >= len(filtered) {
+		m.setupModelSel = len(filtered) - 1
+	}
+	if m.setupModelSel < 0 {
+		m.setupModelSel = 0
+	}
+}
+
+func (m *adminModel) moveSetupModelSel(delta int) {
+	filtered := m.filteredSetupModels()
+	if len(filtered) == 0 {
+		m.setupModelSel = 0
+		return
+	}
+	m.setupModelSel += delta
+	if m.setupModelSel < 0 {
+		m.setupModelSel = 0
+	}
+	if m.setupModelSel >= len(filtered) {
+		m.setupModelSel = len(filtered) - 1
+	}
+}
+
+func (m adminModel) chooseSetupModel() (adminModel, tea.Cmd) {
+	picked, ok := m.selectedSetupModel()
+	if !ok {
+		return m, nil
+	}
+	if m.setupModel.Value() == picked.ID {
+		return m, nil
+	}
+	m.setupModel.SetValue(picked.ID)
+	m.syncSetupModelSelection()
+	return m, m.loadSetupModelEndpointsCmd(picked.ID)
+}
+
+func (m adminModel) selectedSetupModel() (openrouter.Model, bool) {
+	filtered := m.filteredSetupModels()
+	if len(filtered) == 0 || m.setupModelSel < 0 || m.setupModelSel >= len(filtered) {
+		return openrouter.Model{}, false
+	}
+	return filtered[m.setupModelSel], true
+}
+
+func (m adminModel) filteredSetupModels() []openrouter.Model {
+	query := strings.ToLower(strings.TrimSpace(m.setupModel.Value()))
+	models := make([]openrouter.Model, 0, len(m.setupModels))
+	for _, model := range m.setupModels {
+		if query == "" || strings.Contains(strings.ToLower(model.ID), query) || strings.Contains(strings.ToLower(model.Name), query) {
+			models = append(models, model)
+		}
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		return setupModelRank(models[i], query) < setupModelRank(models[j], query)
+	})
+	return models
+}
+
+func setupModelRank(model openrouter.Model, query string) string {
+	id := strings.ToLower(model.ID)
+	name := strings.ToLower(model.Name)
+	switch {
+	case query == "":
+		return "3:" + id
+	case id == query:
+		return "0:" + id
+	case strings.HasPrefix(id, query):
+		return "1:" + id
+	case strings.Contains(name, query):
+		return "2:" + id
+	default:
+		return "3:" + id
 	}
 }
 
@@ -492,9 +711,205 @@ func (m adminModel) hitTab(x int) (adminTab, bool) {
 	return adminTabAudit, false
 }
 
+func (m adminModel) renderSetupModelList() string {
+	if m.setupModelsErr != "" {
+		return styleErrorBg.Render("OpenRouter models: " + m.setupModelsErr)
+	}
+	filtered := m.filteredSetupModels()
+	if len(filtered) == 0 {
+		if len(m.setupModels) == 0 {
+			return styleDimBg.Render("loading OpenRouter model catalog…")
+		}
+		return styleDimBg.Render("no models match current filter")
+	}
+
+	start := max(0, min(m.setupModelSel-3, len(filtered)-6))
+	end := min(len(filtered), start+6)
+	var b strings.Builder
+	b.WriteString(styleMutedBg.Render(fmt.Sprintf("OpenRouter models (%d match)", len(filtered))) + "\n")
+	for i := start; i < end; i++ {
+		model := filtered[i]
+		line := "  " + model.ID
+		if i == m.setupModelSel {
+			line = "› " + model.ID
+			b.WriteString(styleTabActive.Render(line) + "\n")
+			continue
+		}
+		if model.ID == strings.TrimSpace(m.setupModel.Value()) {
+			b.WriteString(styleInfoBg.Render(line) + "\n")
+			continue
+		}
+		b.WriteString(styleMutedBg.Render(line) + "\n")
+	}
+	if end < len(filtered) {
+		b.WriteString(styleDimBg.Render(fmt.Sprintf("… %d more", len(filtered)-end)))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m adminModel) renderSetupModelDetails() string {
+	modelID := strings.TrimSpace(m.setupModel.Value())
+	if modelID == "" {
+		return styleDimBg.Render("Enter or pick an OpenRouter model ID.")
+	}
+
+	model, ok := m.lookupSetupModel(modelID)
+	if !ok {
+		return styleDimBg.Render("Model not in loaded catalog yet; save still accepts a raw OpenRouter model ID.")
+	}
+
+	var lines []string
+	lines = append(lines, styleTitleBg.Render("selected model"))
+	lines = append(lines, styleAccentBg.Render(model.ID))
+	if model.Name != "" && model.Name != model.ID {
+		lines = append(lines, styleMutedBg.Render(model.Name))
+	}
+	lines = append(lines, styleMutedBg.Render(
+		fmt.Sprintf(
+			"context %s  out %s  tokenizer %s",
+			formatTokenCount(model.ContextLength),
+			formatTokenCount(model.TopProvider.MaxCompletionTokens),
+			fallbackText(model.Architecture.Tokenizer, "n/a"),
+		),
+	))
+	lines = append(lines, styleMutedBg.Render(
+		fmt.Sprintf(
+			"I/O %s in  %s out  cache-read %s",
+			formatPricePerMillion(model.Pricing.Prompt),
+			formatPricePerMillion(model.Pricing.Completion),
+			formatPricePerMillion(model.Pricing.InputCacheRead),
+		),
+	))
+	if strings.TrimSpace(model.Pricing.WebSearch) != "" {
+		lines = append(lines, styleMutedBg.Render("web search "+formatFlatPrice(model.Pricing.WebSearch)+" / request"))
+	}
+	lines = append(lines, styleMutedBg.Render(
+		fmt.Sprintf(
+			"modalities %s  params %d  moderated %t",
+			fallbackText(model.Architecture.Modality, "n/a"),
+			len(model.SupportedParameters),
+			model.TopProvider.IsModerated,
+		),
+	))
+
+	if ep, ok := bestSetupEndpoint(m.setupEndpoints); ok && m.setupEndpointID == modelID {
+		speed := "speed n/a"
+		if ep.LatencyLast30M.Number != nil || ep.LatencyLast30M.Summary != "" || ep.ThroughputLast30M.Number != nil || ep.ThroughputLast30M.Summary != "" {
+			speed = fmt.Sprintf("lat %s  thr %s", formatMetricValue(ep.LatencyLast30M), formatMetricValue(ep.ThroughputLast30M))
+		}
+		lines = append(lines, styleMutedBg.Render(
+			fmt.Sprintf(
+				"provider %s  endpoints %d  uptime30m %s  cache %t  %s",
+				fallbackText(ep.ProviderName, "n/a"),
+				len(m.setupEndpoints),
+				formatPercent(ep.UptimeLast30M),
+				ep.SupportsImplicitCaching,
+				speed,
+			),
+		))
+	} else if m.setupEndpointErr != "" && m.setupEndpointID == modelID {
+		lines = append(lines, styleErrorBg.Render("provider stats: "+m.setupEndpointErr))
+	} else {
+		lines = append(lines, styleDimBg.Render("loading provider stats…"))
+	}
+
+	if desc := strings.TrimSpace(model.Description); desc != "" {
+		lines = append(lines, "")
+		lines = append(lines, styleDimBg.Render(trimRunes(desc, 220)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m adminModel) lookupSetupModel(modelID string) (openrouter.Model, bool) {
+	modelID = strings.TrimSpace(modelID)
+	for _, model := range m.setupModels {
+		if model.ID == modelID {
+			return model, true
+		}
+	}
+	return openrouter.Model{}, false
+}
+
+func bestSetupEndpoint(endpoints []openrouter.ModelEndpoint) (openrouter.ModelEndpoint, bool) {
+	if len(endpoints) == 0 {
+		return openrouter.ModelEndpoint{}, false
+	}
+	best := endpoints[0]
+	for _, ep := range endpoints[1:] {
+		if ep.UptimeLast30M > best.UptimeLast30M {
+			best = ep
+		}
+	}
+	return best, true
+}
+
+func formatTokenCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1_000)
+	case n > 0:
+		return strconv.Itoa(n)
+	default:
+		return "n/a"
+	}
+}
+
+func formatPricePerMillion(raw string) string {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("$%.3f/M", v*1_000_000)
+}
+
+func formatFlatPrice(raw string) string {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("$%.4f", v)
+}
+
+func formatPercent(v float64) string {
+	if v <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%%", v)
+}
+
+func formatMetricValue(v openrouter.MetricValue) string {
+	if v.Number != nil {
+		if v.Summary != "" {
+			return fmt.Sprintf("%.1f (%s)", *v.Number, v.Summary)
+		}
+		return fmt.Sprintf("%.1f", *v.Number)
+	}
+	if strings.TrimSpace(v.Summary) == "" {
+		return "n/a"
+	}
+	return trimRunes(v.Summary, 32)
+}
+
+func fallbackText(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+func trimRunes(s string, maxLen int) string {
+	rs := []rune(strings.TrimSpace(s))
+	if len(rs) <= maxLen {
+		return string(rs)
+	}
+	return string(rs[:maxLen]) + "…"
+}
+
 func (m adminModel) renderSetup() string {
 	saveLabel := styleTab.Render(" save ")
-	if m.setupFocus == 4 {
+	if m.setupFocus == 6 {
 		saveLabel = styleTabActive.Render(" save ")
 	}
 
@@ -503,11 +918,15 @@ func (m adminModel) renderSetup() string {
 	b.WriteString(styleMutedBg.Render("persistent host-side env store") + "\n")
 	b.WriteString(styleDimBg.Render("  "+m.setupPath) + "\n\n")
 	b.WriteString(m.setupOpenRouter.View() + "\n\n")
+	b.WriteString(m.setupModel.View() + "\n\n")
+	b.WriteString(m.renderSetupModelList() + "\n\n")
+	b.WriteString(m.renderSetupModelDetails() + "\n\n")
 	b.WriteString(m.setupDiscord.View() + "\n\n")
 	b.WriteString(m.setupSignal.View() + "\n\n")
 	b.WriteString(m.setupMasterKey.View() + "\n\n")
 	b.WriteString(saveLabel + "\n\n")
-	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ctrl+s · save   OpenRouter/master key update live; Discord/Signal require restart"))
+	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ↑↓ · model list   enter · choose model   ctrl+s · save"))
+	b.WriteString("\n" + styleDimBg.Render("OpenRouter model/key and master key update live; Discord/Signal require restart"))
 	if !m.ctx.Config.Discord.Enabled || !m.ctx.Config.Signal.Enabled {
 		b.WriteString("\n" + styleDimBg.Render("Discord/Signal still require enabled=true in server config."))
 	}

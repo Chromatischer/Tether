@@ -865,6 +865,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		return true, strings.TrimSpace(
 			"Commands:\n" +
 				"  /help\n" +
+				"  /status\n" +
 				"  /clear\n" +
 				"  /resume <code>\n" +
 				"  /confirm <token>\n" +
@@ -891,6 +892,10 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 				"  /proactive action <name>\n" +
 				"  /proactive agent <id>",
 		), conv
+
+	case "/status":
+		recordUser(text)
+		return true, renderSessionStatusDiscord(g.ag.SessionStatus(userID, conv.ID)), conv
 
 	case "/clear":
 		recordUser(text)

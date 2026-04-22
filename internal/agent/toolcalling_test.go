@@ -73,8 +73,51 @@ func TestExecuteFunctionCalls_UnknownAndInactive(t *testing.T) {
 	if !strings.Contains(outs[0].Output, "unknown tool") {
 		t.Fatalf("expected unknown tool error, got %q", outs[0].Output)
 	}
+	if !strings.Contains(outs[0].Output, "tool.search") {
+		t.Fatalf("expected unknown tool recovery hint, got %q", outs[0].Output)
+	}
 	if !strings.Contains(outs[1].Output, "tool not enabled") {
 		t.Fatalf("expected not enabled error, got %q", outs[1].Output)
+	}
+	if !strings.Contains(outs[1].Output, "tool.enable") {
+		t.Fatalf("expected tool-enable recovery hint, got %q", outs[1].Output)
+	}
+}
+
+func TestExecuteFunctionCalls_InvalidJSONArgs(t *testing.T) {
+	ag := &Agent{toolImpl: map[string]toolset.Tool{"known": dummyTool{name: "known"}}}
+	s := toolset.NewSession(tools.NewRegistry())
+	s.Active = map[string]bool{"known": true}
+
+	nm := newToolNameMap(s.Registry)
+	outs, _, _ := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{
+		{Type: "function_call", CallID: "c1", Name: "known", Arguments: `{"x":`},
+	}, nm)
+	if len(outs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(outs))
+	}
+	if !strings.Contains(outs[0].Output, "invalid tool arguments JSON") {
+		t.Fatalf("expected invalid-json error, got %q", outs[0].Output)
+	}
+	if !strings.Contains(outs[0].Output, "complete JSON object") {
+		t.Fatalf("expected recovery hint, got %q", outs[0].Output)
+	}
+}
+
+func TestExecuteFunctionCalls_NonObjectArgs(t *testing.T) {
+	ag := &Agent{toolImpl: map[string]toolset.Tool{"known": dummyTool{name: "known"}}}
+	s := toolset.NewSession(tools.NewRegistry())
+	s.Active = map[string]bool{"known": true}
+
+	nm := newToolNameMap(s.Registry)
+	outs, _, _ := ag.executeFunctionCalls(context.Background(), s, []openrouter.ResponseItem{
+		{Type: "function_call", CallID: "c1", Name: "known", Arguments: `[]`},
+	}, nm)
+	if len(outs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(outs))
+	}
+	if !strings.Contains(outs[0].Output, "expected a JSON object") {
+		t.Fatalf("expected non-object error, got %q", outs[0].Output)
 	}
 }
 
@@ -265,6 +308,21 @@ func TestNewSubagentSession_WiresMCP(t *testing.T) {
 	}
 	if sess.Dirs != userspace.ForUser(cfg.Paths.DataDir, 7) {
 		t.Fatalf("unexpected user dirs: %+v", sess.Dirs)
+	}
+}
+
+func TestMergeSessionFor_PersistsBashNetworkEnabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Paths.DataDir = t.TempDir()
+	ag := newAgent(cfg, (*sql.DB)(nil))
+
+	sess := ag.sessionFor(7, 11)
+	sess.BashNetworkEnabled = true
+	ag.mergeSessionFor(11, sess)
+
+	got := ag.sessionFor(7, 11)
+	if !got.BashNetworkEnabled {
+		t.Fatal("expected bash network enablement to persist across session merge")
 	}
 }
 

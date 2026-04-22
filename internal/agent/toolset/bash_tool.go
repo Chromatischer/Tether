@@ -23,9 +23,10 @@ type bashArgs struct {
 func (t Bash) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "bash",
-		Summary: "Run a shell command inside the user sandbox (no network; /work is the sandbox root).",
+		Summary: "Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.",
 		WhenToUse: "Use this for project introspection (ls/rg/go test), formatting, and other local automation. " +
-			"The sandbox has no network access. Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...).",
+			"Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...). " +
+			"Network access remains disabled unless the user explicitly approved enabling bash network access for the current session.",
 		Safety: "Commands that look destructive (rm/mv/chmod/...) require a confirm_token. Prefer non-destructive commands.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -90,7 +91,7 @@ func (t Bash) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) 
 
 	// Mount the whole per-user root so the agent can work with workspace/config/skills.
 	// Commands start in /work (sandbox root). For repo commands: cd workspace && ...
-	res, err := sandbox.RunNoNet(ctx, s.Dirs.Root, []string{"bash", "-lc", cmd})
+	res, err := sandbox.Run(ctx, s.Dirs.Root, []string{"bash", "-lc", cmd}, !s.BashNetworkEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +106,10 @@ func (t Bash) Execute(ctx context.Context, s *Session, rawArgs json.RawMessage) 
 		"stdout_max_bytes": res.StdoutMaxBytes,
 		"stderr_max_bytes": res.StderrMaxBytes,
 	}, nil
+}
+
+func bashEnableNetworkScope() string {
+	return "tool.enable:bash:network"
 }
 
 func looksDestructive(cmd string) bool {

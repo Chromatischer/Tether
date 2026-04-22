@@ -119,9 +119,10 @@ type ContentPart struct {
 }
 
 type ResponsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	TotalTokens  int     `json:"total_tokens"`
+	Cost         float64 `json:"cost,omitempty"`
 }
 
 type ResponsesResponse struct {

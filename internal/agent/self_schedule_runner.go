@@ -50,7 +50,7 @@ func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule, act
 		return "", err
 	}
 
-	baseItems, err := a.buildContextInputItemsWithSessionAndSystemPrompt(sess, job.UserID, job.ConversationID, history, proactiveSystemPrompt)
+	baseItems, err := a.buildContextInputItemsWithSessionAndSystemPrompt(ctx, sess, job.UserID, job.ConversationID, history, a.proactiveSystemPromptText(job.UserID, job.ConversationID))
 	if err != nil {
 		return "", err
 	}

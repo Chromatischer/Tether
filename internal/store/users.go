@@ -64,3 +64,15 @@ func Authenticate(db *sql.DB, username, password string) (*User, error) {
 	_, _ = db.Exec(`UPDATE users SET last_login_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id = ?`, u.ID)
 	return &u, nil
 }
+
+func GetUserByID(db *sql.DB, userID int64) (*User, bool, error) {
+	var u User
+	if err := db.QueryRow(`SELECT id, username, role FROM users WHERE id = ?`, userID).
+		Scan(&u.ID, &u.Username, &u.Role); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &u, true, nil
+}

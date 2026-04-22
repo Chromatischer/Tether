@@ -15,6 +15,8 @@ type confirmScopeArgs struct {
 	Tool    string `json:"tool"`
 	Path    string `json:"path"`
 	Command string `json:"command"`
+	Name    string `json:"name"`
+	Network bool   `json:"network"`
 }
 
 func (t ConfirmScope) Spec() tools.ToolSpec {
@@ -28,9 +30,11 @@ func (t ConfirmScope) Spec() tools.ToolSpec {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"tool":    map[string]any{"type": "string", "minLength": 1, "description": "target tool name (currently: write, bash)"},
+				"tool":    map[string]any{"type": "string", "minLength": 1, "description": "target tool name (currently: write, bash, tool.enable)"},
 				"path":    map[string]any{"type": "string", "description": "file path (for tool=write overwrite scope)"},
 				"command": map[string]any{"type": "string", "description": "shell command (for tool=bash destructive scope)"},
+				"name":    map[string]any{"type": "string", "description": "tool name (for tool=tool.enable)"},
+				"network": map[string]any{"type": "boolean", "description": "for tool=tool.enable and name=bash: whether network access is requested"},
 			},
 			"required": []string{"tool"},
 		},
@@ -83,7 +87,16 @@ func (t ConfirmScope) Execute(ctx context.Context, s *Session, rawArgs json.RawM
 			return nil, errors.New("command required for tool=bash")
 		}
 		return map[string]any{"scope": bashConfirmScope(cmd)}, nil
+	case "tool.enable":
+		name := strings.TrimSpace(args.Name)
+		if name == "" {
+			return nil, errors.New("name required for tool=tool.enable")
+		}
+		if strings.EqualFold(name, "bash") && args.Network {
+			return map[string]any{"scope": bashEnableNetworkScope()}, nil
+		}
+		return nil, errors.New("no confirmation scope required for this tool.enable request")
 	default:
-		return nil, errors.New("unsupported tool (supported: write, bash)")
+		return nil, errors.New("unsupported tool (supported: write, bash, tool.enable)")
 	}
 }

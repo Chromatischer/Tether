@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestBuildContextInputItems_SkipsToolCallMessages(t *testing.T) {
 		{ID: 3, Role: "assistant", Content: "done"},
 	}
 
-	items, err := ag.buildContextInputItems(1, 1, history)
+	items, err := ag.buildContextInputItems(context.Background(), 1, 1, history)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func TestBuildContextInputItems_TreatsConversationSummaryAsUntrustedReference(t 
 		t.Fatal(err)
 	}
 
-	items, err := ag.buildContextInputItems(1, 17, nil)
+	items, err := ag.buildContextInputItems(context.Background(), 1, 17, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

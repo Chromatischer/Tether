@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -564,6 +565,17 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 	}
 
 	switch fields[0] {
+	case "/status":
+		if m.conv == nil || m.user == nil {
+			return m, true, nil
+		}
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+		m.chat = m.chat.appendLocal("You", text)
+		resp := renderSessionStatusTUI(m.ag.SessionStatus(m.user.ID, m.conv.ID))
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
+
 	case "/clear":
 		if m.conv == nil || m.user == nil {
 			return m, true, nil
@@ -914,6 +926,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 			m.chat = m.chat.appendLocal("You", text)
 			resp := "Commands:\n" +
+				"  /status\n" +
 				"  /clear\n" +
 				"  /resume <code>\n" +
 				"  /help\n" +
@@ -1799,8 +1812,7 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 	ch := make(chan tea.Msg, 64)
 	go func() {
 		defer close(ch)
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
+		ctx := context.Background()
 
 		released := false
 		var reasoning strings.Builder
@@ -1846,8 +1858,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 	ch := make(chan tea.Msg, 64)
 	go func() {
 		defer close(ch)
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
+		ctx := context.Background()
 
 		released := false
 		convID := m.conv.ID
@@ -1947,6 +1958,187 @@ func waitAgentAsyncCmd(ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
+func renderSessionStatusTUI(st agent.SessionStatus) string {
+	var b strings.Builder
+	b.WriteString("```text\n")
+	b.WriteString("Session status\n")
+	b.WriteString("session_id: ")
+	b.WriteString(emptyDash(st.SessionID))
+	b.WriteString("\nconversation_id: ")
+	b.WriteString(strconv.FormatInt(st.ConversationID, 10))
+	b.WriteString("\nuser_id: ")
+	b.WriteString(strconv.FormatInt(st.UserID, 10))
+	b.WriteString("\nstarted: ")
+	b.WriteString(formatStatusTimeLocal(st.StartedAt))
+	b.WriteString("\nlast_activity: ")
+	b.WriteString(formatStatusTimeLocal(st.LastActivityAt))
+	b.WriteString("\nage: ")
+	b.WriteString(formatStatusDuration(st.Age))
+	b.WriteString("\nidle: ")
+	b.WriteString(formatStatusDuration(st.Idle))
+	b.WriteString("\nruntime_session: ")
+	if st.HasRuntimeSession {
+		b.WriteString("active")
+	} else {
+		b.WriteString("none")
+	}
+	b.WriteString("\ntool_calls: ")
+	if st.HasRuntimeSession {
+		b.WriteString(strconv.Itoa(st.TotalToolCalls))
+	} else {
+		b.WriteString("unknown")
+	}
+	b.WriteString("\nusage_source: ")
+	b.WriteString(st.UsageSource)
+	if !st.LastUsageAt.IsZero() {
+		b.WriteString("\nlast_usage_at: ")
+		b.WriteString(formatStatusTimeLocal(st.LastUsageAt))
+	}
+	b.WriteString("\ncost_usd: ")
+	if st.UsageSource == "none" {
+		b.WriteString("unknown")
+	} else {
+		b.WriteString(fmt.Sprintf("%.6f", st.TotalCost))
+	}
+	b.WriteString("\nmodel: ")
+	if st.UsageSource == "none" {
+		b.WriteString("unknown")
+	} else {
+		b.WriteString(emptyDash(st.LastModel))
+	}
+	b.WriteString("\nlast_request_context: ")
+	if st.LastContextLimit > 0 {
+		b.WriteString(fmt.Sprintf("%d / %d (%.1f%%)", st.LastInputTokens, st.LastContextLimit, st.LastContextPct))
+	} else {
+		if st.UsageSource == "none" {
+			b.WriteString("unknown")
+		} else {
+			b.WriteString("context limit unknown")
+		}
+	}
+	b.WriteString("\n\nAttached context\n")
+	if st.AttachedContext.Available {
+		b.WriteString("personality: ")
+		b.WriteString(formatYesNo(st.AttachedContext.PersonalityAttached))
+		b.WriteString("\nsummary: ")
+		if st.AttachedContext.SummaryAttached {
+			b.WriteString("yes")
+			if st.AttachedContext.SummaryThroughID > 0 {
+				b.WriteString(" (through message ")
+				b.WriteString(strconv.FormatInt(st.AttachedContext.SummaryThroughID, 10))
+				b.WriteString(")")
+			}
+		} else {
+			b.WriteString("no")
+		}
+		b.WriteString("\nhistory_messages: ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryMessages))
+		b.WriteString(" (user ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryUserMessages))
+		b.WriteString(", assistant ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryAssistMessages))
+		b.WriteString(")")
+		b.WriteString("\nmemory: facts ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryFacts))
+		b.WriteString(", prefs ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryPrefs))
+		b.WriteString(", tasks ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryTasks))
+		b.WriteString("\nskills_index: ")
+		b.WriteString(formatYesNo(st.AttachedContext.SkillsIndexAttached))
+		b.WriteString("\ninvoked_skills: ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.InvokedSkills))
+		b.WriteString("\nestimated_attached_tokens: ")
+		b.WriteString(strconv.Itoa(st.AttachedContext.EstimatedTokens))
+		if st.AttachedContext.ContextLimit > 0 {
+			b.WriteString(" / ")
+			b.WriteString(strconv.Itoa(st.AttachedContext.ContextLimit))
+			b.WriteString(fmt.Sprintf(" (%.1f%%)", st.AttachedContext.ContextPct))
+		}
+	} else {
+		b.WriteString("unavailable")
+	}
+	b.WriteString("\n\nRecorded usage\n")
+	if st.LastContextLimit > 0 {
+		b.WriteString(statusBarLine("context", st.LastInputTokens, st.LastContextLimit))
+		b.WriteString("\n")
+	} else {
+		b.WriteString("context  [")
+		b.WriteString(strings.Repeat("░", 24))
+		if st.UsageSource == "none" {
+			b.WriteString("] unknown\n")
+		} else {
+			b.WriteString("] no limit\n")
+		}
+	}
+	if st.UsageSource != "none" && st.TotalTokens > 0 {
+		b.WriteString(statusBarLine("input", st.TotalInputTokens, st.TotalTokens))
+		b.WriteString("\n")
+		b.WriteString(statusBarLine("output", st.TotalOutputTokens, st.TotalTokens))
+		b.WriteString("\n")
+		b.WriteString(statusBarLine("total", st.TotalTokens, st.TotalTokens))
+	} else {
+		b.WriteString("input   [")
+		b.WriteString(strings.Repeat("░", 24))
+		b.WriteString("] no data\n")
+		b.WriteString("output  [")
+		b.WriteString(strings.Repeat("░", 24))
+		b.WriteString("] no data\n")
+		b.WriteString("total   [")
+		b.WriteString(strings.Repeat("░", 24))
+		if st.UsageSource == "none" {
+			b.WriteString("] unknown")
+		} else {
+			b.WriteString("] no data")
+		}
+	}
+	b.WriteString("\n```")
+	return b.String()
+}
+
+func statusBarLine(label string, value, total int) string {
+	const width = 24
+	filled := 0
+	if total > 0 {
+		filled = int(math.Round(float64(value) / float64(total) * width))
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return fmt.Sprintf("%-6s [%s%s] %d", label, strings.Repeat("█", filled), strings.Repeat("░", width-filled), value)
+}
+
+func formatStatusTimeLocal(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Local().Format(time.RFC3339)
+}
+
+func formatStatusDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	return d.Round(time.Second).String()
+}
+
+func emptyDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+func formatYesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
+}
+
 func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 	if m.activeRuns > 0 {
 		m.activeRuns--
@@ -1959,22 +2151,20 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		targetConvID = m.conv.ID
 	}
 	renderInActiveChat := m.conv != nil && targetConvID != 0 && m.conv.ID == targetConvID
-	seen := map[string]bool{}
+	matchedStreamRows := map[int]bool{}
 	for _, tc := range msg.ToolCalls {
-		key := tc.Name + "\x00" + tc.Args
-		if seen[key] || !isValidToolName(tc.Name) {
+		if !isValidToolName(tc.Name) {
 			continue
 		}
-		seen[key] = true
 		content := formatToolCallContent(tc)
 		if targetConvID != 0 && !renderInActiveChat {
 			_ = store.AddMessage(m.ctx.DB, targetConvID, "tool_call", content)
 		}
 		if renderInActiveChat {
-			if m.chat.hasStreamingToolCall(msg.RequestID, tc.Name, tc.Args) {
-				m.chat = m.chat.upsertStreamingToolCall(msg.RequestID, tc)
+			if idx, ok := m.chat.findStreamingToolCallRowIncludingCompleted(msg.RequestID, tc, matchedStreamRows); ok {
+				matchedStreamRows[idx] = true
+				m.chat = m.chat.updateMessageContent(idx, formatToolCallContent(tc))
 			} else {
-				m.chat = m.chat.appendStreamingToolCall(msg.RequestID, tc.Name, tc.Args)
 				m.chat = m.chat.upsertStreamingToolCall(msg.RequestID, tc)
 			}
 		}

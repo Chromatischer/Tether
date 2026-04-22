@@ -84,7 +84,7 @@ func (e *Engine) runSelfSchedule(ctx context.Context, userID int64, it store.Sel
 	} else if e.llm != nil {
 		// Fallback: text-only proactive prompt (no tool loop).
 		prompt := e.buildSelfSchedulePrompt(userID, it)
-		text, err = e.llm.RunProactivePrompt(ctx2, prompt)
+		text, err = e.llm.RunProactivePromptForUser(ctx2, userID, prompt)
 	} else {
 		return
 	}

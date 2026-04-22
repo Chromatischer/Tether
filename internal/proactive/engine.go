@@ -394,7 +394,7 @@ func (e *Engine) runCustomAgentNow(ctx context.Context, userID int64, ar AgentRu
 
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	text, err := e.llm.RunProactivePrompt(ctx2, prompt)
+	text, err := e.llm.RunProactivePromptForUser(ctx2, userID, prompt)
 	if err != nil {
 		out = "(proactive error: " + err.Error() + ")"
 		_ = store.AddNotificationDelivered(e.db, userID, kind, out)
@@ -460,7 +460,7 @@ func (e *Engine) spawnIfNotPending(ctx context.Context, userID int64, kind strin
 		}
 		ctx2, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		text, err := e.llm.RunProactivePrompt(ctx2, prompt)
+		text, err := e.llm.RunProactivePromptForUser(ctx2, userID, prompt)
 		if err != nil {
 			_ = store.AddNotification(e.db, userID, kind, "(proactive error)")
 			return

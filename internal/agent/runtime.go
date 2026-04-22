@@ -286,6 +286,9 @@ func (a *Agent) mergeSessionFor(convID int64, s *toolset.Session) {
 			base.Active[name] = true
 		}
 	}
+	if s.BashNetworkEnabled {
+		base.BashNetworkEnabled = true
+	}
 	for _, inv := range s.InvokedSkills {
 		base.AddInvokedSkill(inv.Name, inv.Content)
 	}

@@ -120,10 +120,22 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		var execErr error
 		var result any
 		if impl == nil {
-			execErr = fmt.Errorf("unknown tool: %s", name)
+			execErr = fmt.Errorf("unknown tool: %s. Use tool.search to find the right tool name, then tool.describe before calling it", name)
 		} else if !s.IsActive(name) {
-			execErr = fmt.Errorf("tool not enabled: %s", name)
+			execErr = fmt.Errorf("tool not enabled: %s. Enable it with tool.enable before calling it", name)
 		} else {
+			if rawArgsExec == nil || len(bytes.TrimSpace(rawArgsExec)) == 0 {
+				execErr = fmt.Errorf("invalid tool arguments for %s: missing JSON object; retry with a complete JSON object that matches the tool schema", name)
+			} else {
+				var parsed any
+				if err := json.Unmarshal(rawArgsExec, &parsed); err != nil {
+					execErr = fmt.Errorf("invalid tool arguments JSON for %s: %v. Retry with a complete JSON object that matches the tool schema exactly", name, err)
+				} else if _, ok := parsed.(map[string]any); !ok {
+					execErr = fmt.Errorf("invalid tool arguments for %s: expected a JSON object. Retry with an object matching the tool schema exactly", name)
+				}
+			}
+		}
+		if execErr == nil {
 			v, err := impl.Execute(ctx, s, rawArgsExec)
 			execErr = err
 			if err == nil {
@@ -350,6 +362,22 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		}
 
 		// Usage audit (best-effort)
+		if s != nil && final.Usage != nil {
+			s.TouchActivity()
+			s.TotalInputTokens += final.Usage.InputTokens
+			s.TotalOutputTokens += final.Usage.OutputTokens
+			s.TotalTokens += final.Usage.TotalTokens
+			s.TotalCost += final.Usage.Cost
+			modelName := strings.TrimSpace(final.Model)
+			if modelName == "" {
+				modelName = strings.TrimSpace(req.Model)
+			}
+			s.LastModel = modelName
+			s.LastInputTokens = final.Usage.InputTokens
+			if info := a.modelInfo(modelName); info.ContextLength > 0 {
+				s.LastContextLimit = info.ContextLength
+			}
+		}
 		if s != nil && s.DB != nil && final.Usage != nil {
 			payload := map[string]any{
 				"model":           req.Model,
@@ -358,6 +386,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 				"input_tokens":    final.Usage.InputTokens,
 				"output_tokens":   final.Usage.OutputTokens,
 				"total_tokens":    final.Usage.TotalTokens,
+				"cost":            final.Usage.Cost,
 				"tools_n":         len(req.Tools),
 			}
 			pb, _ := json.Marshal(payload)
@@ -428,6 +457,10 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		}
 		items = append(items, toolOutputs...)
 		totalToolCalls += len(calls)
+		if s != nil && len(calls) > 0 {
+			s.TouchActivity()
+			s.TotalToolCalls += len(calls)
+		}
 		if totalToolCalls >= nextJustifyAt {
 			items = append(items, justificationRequestItem(totalToolCalls))
 			nextJustifyAt = nextJustificationThreshold(totalToolCalls)

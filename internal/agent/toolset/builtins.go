@@ -85,7 +85,9 @@ func (t ToolSearch) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 type ToolEnable struct{}
 
 type toolEnableArgs struct {
-	Name string `json:"name"`
+	Name         string `json:"name"`
+	Network      bool   `json:"network"`
+	ConfirmToken string `json:"confirm_token"`
 }
 
 func (t ToolEnable) Spec() tools.ToolSpec {
@@ -98,7 +100,9 @@ func (t ToolEnable) Spec() tools.ToolSpec {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string", "minLength": 1, "description": "tool name (exact)"},
+				"name":          map[string]any{"type": "string", "minLength": 1, "description": "tool name (exact)"},
+				"network":       map[string]any{"type": "boolean", "description": "for tool=name bash only: request network access for this session; requires confirm_token"},
+				"confirm_token": map[string]any{"type": "string", "description": "required when enabling bash with network access"},
 			},
 			"required": []string{"name"},
 		},
@@ -112,6 +116,7 @@ func (t ToolEnable) Spec() tools.ToolSpec {
 		},
 		Examples: []tools.ToolExample{
 			{Title: "Enable bash", Args: map[string]any{"name": "bash"}, Result: map[string]any{"enabled": "bash"}},
+			{Title: "Enable bash with network access", Args: map[string]any{"name": "bash", "network": true, "confirm_token": "<confirmed-token>"}, Result: map[string]any{"enabled": "bash", "network": true}},
 		},
 		Tags: []string{"meta"},
 	}
@@ -128,10 +133,20 @@ func (t ToolEnable) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return nil, err
 	}
+	if args.Network {
+		if !strings.EqualFold(strings.TrimSpace(args.Name), "bash") {
+			return nil, fmt.Errorf("network=true is only supported for tool %q", "bash")
+		}
+		scope := bashEnableNetworkScope()
+		if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
+			return nil, fmt.Errorf("tool.enable requires confirmation; scope=%q", scope)
+		}
+		s.BashNetworkEnabled = true
+	}
 	if err := s.Enable(args.Name); err != nil {
 		return nil, err
 	}
-	return map[string]any{"enabled": args.Name}, nil
+	return map[string]any{"enabled": args.Name, "network": args.Network && s.BashNetworkEnabled}, nil
 }
 
 type ToolDescribe struct{}

@@ -10,14 +10,14 @@ import (
 	"tether/internal/store"
 )
 
-func TestChatModelStreamingToolCallIsDeduplicated(t *testing.T) {
+func TestChatModelStreamingToolCallKeepsRepeatedCallsSeparate(t *testing.T) {
 	m := newChatModel()
 
 	m = m.appendStreamingToolCall(7, "search", "{\"q\":\"tether\"}")
 	m = m.appendStreamingToolCall(7, "search", "{\"q\":\"tether\"}")
 
-	if len(m.messages) != 1 {
-		t.Fatalf("expected 1 tool-call row, got %d", len(m.messages))
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 tool-call rows, got %d", len(m.messages))
 	}
 	if !m.hasStreamingToolCall(7, "search", "{\"q\":\"tether\"}") {
 		t.Fatal("expected tool call to be tracked for the active stream")
@@ -28,6 +28,33 @@ func TestChatModelStreamingToolCallIsDeduplicated(t *testing.T) {
 
 	if m.hasStreamingToolCall(7, "search", "{\"q\":\"tether\"}") {
 		t.Fatal("expected tool-call tracking to be cleared after stream completion")
+	}
+}
+
+func TestStreamingRepeatedToolResultsAttachToDistinctRows(t *testing.T) {
+	m := newChatModel()
+
+	m = m.appendStreamingToolCall(7, "bash", "{\"command\":\"pwd\"}")
+	m = m.appendStreamingToolCall(7, "bash", "{\"command\":\"pwd\"}")
+	m = m.upsertStreamingToolCall(7, toolCallEntry{
+		Name:   "bash",
+		Args:   "{\"command\":\"pwd\"}",
+		Result: "{\n  \"exit_code\": 0,\n  \"stdout\": \"/work/one\\n\"\n}",
+	})
+	m = m.upsertStreamingToolCall(7, toolCallEntry{
+		Name:   "bash",
+		Args:   "{\"command\":\"pwd\"}",
+		Result: "{\n  \"exit_code\": 0,\n  \"stdout\": \"/work/two\\n\"\n}",
+	})
+
+	if len(m.messages) != 2 {
+		t.Fatalf("expected two tool rows, got %d", len(m.messages))
+	}
+	if !strings.Contains(m.messages[0].content, "/work/one") {
+		t.Fatalf("expected first result on first row, got %q", m.messages[0].content)
+	}
+	if !strings.Contains(m.messages[1].content, "/work/two") {
+		t.Fatalf("expected second result on second row, got %q", m.messages[1].content)
 	}
 }
 

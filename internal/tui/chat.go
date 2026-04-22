@@ -58,7 +58,7 @@ type chatModel struct {
 	messages              []chatMessage
 	streamFrame           int // drives streaming dot animation
 	pendingAssistantIdx   map[int]int
-	streamingToolCalls    map[int]map[string]int
+	streamingToolCalls    map[int][]int
 	streamStates          map[int]streamState
 	dataDir               string
 	isAdmin               bool
@@ -151,7 +151,7 @@ func newChatModel() chatModel {
 		textarea:            ta,
 		messages:            []chatMessage{},
 		pendingAssistantIdx: map[int]int{},
-		streamingToolCalls:  map[int]map[string]int{},
+		streamingToolCalls:  map[int][]int{},
 		streamStates:        map[int]streamState{},
 	}
 }
@@ -563,7 +563,13 @@ func (m chatMessage) isExpandable() bool {
 
 func (m chatModel) appendStreamingToolCall(requestID int, name, args string) chatModel {
 	m.ensureStreamState(requestID)
-	return m.upsertStreamingToolCall(requestID, toolCallEntry{Name: name, Args: args})
+	entry := toolCallEntry{Name: name, Args: args}
+	if !isValidToolName(entry.Name) {
+		return m
+	}
+	m = m.appendMessage(chatMessage{role: "tool_call", content: formatToolCallContent(entry), requestID: requestID})
+	m.streamingToolCalls[requestID] = append(m.streamingToolCalls[requestID], len(m.messages)-1)
+	return m
 }
 
 func (m chatModel) upsertStreamingToolCall(requestID int, entry toolCallEntry) chatModel {
@@ -571,34 +577,41 @@ func (m chatModel) upsertStreamingToolCall(requestID int, entry toolCallEntry) c
 	if !isValidToolName(entry.Name) {
 		return m
 	}
-	key := toolCallKey(entry.Name, entry.Args)
-	if m.streamingToolCalls[requestID] == nil {
-		m.streamingToolCalls[requestID] = map[string]int{}
-	}
-	if idx, ok := m.streamingToolCalls[requestID][key]; ok {
-		if idx >= 0 && idx < len(m.messages) {
-			m = m.updateMessageContent(idx, formatToolCallContent(entry))
-		}
-		return m
-	}
 	if idx, ok := m.findStreamingToolCallRow(requestID, entry); ok {
-		m.streamingToolCalls[requestID][key] = idx
 		m = m.updateMessageContent(idx, formatToolCallContent(entry))
 		return m
 	}
 	m = m.appendMessage(chatMessage{role: "tool_call", content: formatToolCallContent(entry), requestID: requestID})
-	m.streamingToolCalls[requestID][key] = len(m.messages) - 1
+	m.streamingToolCalls[requestID] = append(m.streamingToolCalls[requestID], len(m.messages)-1)
 	return m
 }
 
 func (m chatModel) hasStreamingToolCall(requestID int, name, args string) bool {
-	_, ok := m.streamingToolCalls[requestID][toolCallKey(name, args)]
-	return ok
+	for _, idx := range m.streamingToolCalls[requestID] {
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok {
+			continue
+		}
+		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(name, args) && strings.TrimSpace(parsed.Result) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) (int, bool) {
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		msg := m.messages[i]
+	for _, idx := range m.streamingToolCalls[requestID] {
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
 		if msg.requestID != requestID || msg.role != "tool_call" {
 			continue
 		}
@@ -606,14 +619,33 @@ func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) 
 		if !ok || parsed.Name != entry.Name {
 			continue
 		}
-		if strings.TrimSpace(entry.Result) != "" && strings.TrimSpace(parsed.Result) == "" {
-			return i, true
+		if strings.TrimSpace(entry.Result) != "" &&
+			toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) &&
+			strings.TrimSpace(parsed.Result) == "" {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+func (m chatModel) findStreamingToolCallRowIncludingCompleted(requestID int, entry toolCallEntry, used map[int]bool) (int, bool) {
+	for _, idx := range m.streamingToolCalls[requestID] {
+		if used != nil && used[idx] {
+			continue
+		}
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok {
+			continue
 		}
 		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
-			return i, true
-		}
-		if strings.TrimSpace(parsed.Result) == "" {
-			return i, true
+			return idx, true
 		}
 	}
 	return 0, false
@@ -1215,6 +1247,7 @@ func (m chatModel) matchSuggestions(text string) []chatSuggestion {
 func matchCommandSuggestions(text string, isAdmin bool) []chatSuggestion {
 	candidates := []chatSuggestion{
 		{Label: "/help", InsertValue: "/help", Detail: "show available commands"},
+		{Label: "/status", InsertValue: "/status", Detail: "show current session metrics"},
 		{Label: "/clear", InsertValue: "/clear", Detail: "start a fresh conversation"},
 		{Label: "/resume", InsertValue: "/resume ", Detail: "resume a previous conversation"},
 		{Label: "/logout", InsertValue: "/logout", Detail: "log out of the SSH portal"},

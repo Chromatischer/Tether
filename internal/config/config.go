@@ -147,6 +147,9 @@ func Load(path string) (*Config, error) {
 	if cfg.OpenRouter.Model == "" {
 		cfg.OpenRouter.Model = "z-ai/glm-5.1"
 	}
+	if adminEnv.OpenRouterModel != "" {
+		cfg.OpenRouter.Model = adminEnv.OpenRouterModel
+	}
 
 	// OpenRouter provider routing defaults.
 	//
