@@ -239,6 +239,57 @@ func formatToolResultPreview(raw []byte) string {
 	return text
 }
 
+func mergeFinalFunctionCallsWithPending(final []openrouter.ResponseItem, pending []*openrouter.ResponseItem) []openrouter.ResponseItem {
+	if len(final) == 0 || len(pending) == 0 {
+		return final
+	}
+
+	byCallID := make(map[string]openrouter.ResponseItem, len(pending))
+	ordered := make([]openrouter.ResponseItem, 0, len(pending))
+	for _, item := range pending {
+		if item == nil || item.Type != "function_call" {
+			continue
+		}
+		ordered = append(ordered, *item)
+		if callID := strings.TrimSpace(item.CallID); callID != "" {
+			byCallID[callID] = *item
+		}
+	}
+	if len(ordered) == 0 {
+		return final
+	}
+
+	nextOrdered := 0
+	for i := range final {
+		if final[i].Type != "function_call" {
+			continue
+		}
+		if callID := strings.TrimSpace(final[i].CallID); callID != "" {
+			if pendingItem, ok := byCallID[callID]; ok {
+				if len(strings.TrimSpace(pendingItem.Arguments)) > len(strings.TrimSpace(final[i].Arguments)) {
+					final[i].Arguments = pendingItem.Arguments
+				}
+				if final[i].Name == "" {
+					final[i].Name = pendingItem.Name
+				}
+				continue
+			}
+		}
+		for nextOrdered < len(ordered) {
+			pendingItem := ordered[nextOrdered]
+			nextOrdered++
+			if len(strings.TrimSpace(pendingItem.Arguments)) > len(strings.TrimSpace(final[i].Arguments)) {
+				final[i].Arguments = pendingItem.Arguments
+			}
+			if final[i].Name == "" {
+				final[i].Name = pendingItem.Name
+			}
+			break
+		}
+	}
+	return final
+}
+
 func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, userID, convID int64, baseItems []openrouter.ResponseItem, priorToolCalls []ToolCallInfo, emit func(StreamEvent)) (string, string, []ToolCallInfo, error) {
 	items := append([]openrouter.ResponseItem{}, baseItems...)
 	toolCalls := append([]ToolCallInfo{}, priorToolCalls...)
@@ -255,11 +306,9 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 	for i := 0; ; i++ {
 		tools := a.activeTools(s, nm)
 		toolChoice := any("auto")
-		maxOutputTokens := 700
 		if justificationPending {
 			tools = nil
 			toolChoice = "none"
-			maxOutputTokens = 220
 		} else if len(tools) == 0 {
 			toolChoice = "none"
 		}
@@ -267,7 +316,6 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			Model:           a.cfg.OpenRouter.Model,
 			Input:           items,
 			Temperature:     0.2,
-			MaxOutputTokens: maxOutputTokens,
 			Tools:           tools,
 			ToolChoice:      toolChoice,
 			Stream:          true,
@@ -313,19 +361,43 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 					emitReasoningSummaryDelta(&streamedReasoning, reasoningSummaryText(ev.Item.Summary), emit)
 				}
 			case "response.function_call_arguments.done":
-				if strings.TrimSpace(ev.Arguments) == "" {
+				args := ev.Arguments
+				if args == "" {
+					args = ev.Delta
+				}
+				if strings.TrimSpace(args) == "" {
 					return nil
 				}
 				// Attach args to the best candidate call.
 				if ev.OutputIndex != nil {
 					if c := pendingCallsByOutputIdx[*ev.OutputIndex]; c != nil {
-						c.Arguments = ev.Arguments
+						c.Arguments = args
 						return nil
 					}
 				}
 				for j := len(pendingCalls) - 1; j >= 0; j-- {
 					if strings.TrimSpace(pendingCalls[j].Arguments) == "" {
-						pendingCalls[j].Arguments = ev.Arguments
+						pendingCalls[j].Arguments = args
+						break
+					}
+				}
+			case "response.function_call_arguments.delta":
+				args := ev.Delta
+				if args == "" {
+					args = ev.Arguments
+				}
+				if strings.TrimSpace(args) == "" {
+					return nil
+				}
+				if ev.OutputIndex != nil {
+					if c := pendingCallsByOutputIdx[*ev.OutputIndex]; c != nil {
+						c.Arguments += args
+						return nil
+					}
+				}
+				for j := len(pendingCalls) - 1; j >= 0; j-- {
+					if pendingCalls[j] != nil {
+						pendingCalls[j].Arguments += args
 						break
 					}
 				}
@@ -393,6 +465,8 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			uid := userID
 			_ = store.AddAuditEvent(s.DB, &uid, "llm_usage", string(pb))
 		}
+
+		final.Output = mergeFinalFunctionCallsWithPending(final.Output, pendingCalls)
 
 		// Identify tool calls in the completed response.
 		calls := make([]openrouter.ResponseItem, 0, 4)

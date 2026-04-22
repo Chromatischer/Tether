@@ -240,6 +240,23 @@ func TestReplayableResponseItems_FiltersReasoning(t *testing.T) {
 	}
 }
 
+func TestMergeFinalFunctionCallsWithPending_PrefersReconstructedArguments(t *testing.T) {
+	final := []openrouter.ResponseItem{
+		{Type: "function_call", CallID: "call_1", Name: "bash", Arguments: `{"command":"cat `},
+	}
+	pending := []*openrouter.ResponseItem{
+		{Type: "function_call", CallID: "call_1", Name: "bash", Arguments: `{"command":"cat <<'EOF'\nhello\nEOF"}`},
+	}
+
+	got := mergeFinalFunctionCallsWithPending(final, pending)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 function call, got %+v", got)
+	}
+	if got[0].Arguments != `{"command":"cat <<'EOF'\nhello\nEOF"}` {
+		t.Fatalf("expected reconstructed arguments to win, got %q", got[0].Arguments)
+	}
+}
+
 func TestEmitReasoningSummaryDelta_AppendsOnlyNewSuffix(t *testing.T) {
 	var b strings.Builder
 	var deltas []string

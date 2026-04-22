@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -26,6 +27,13 @@ func openTUITestDB(t *testing.T) *sql.DB {
 	return d
 }
 
+func newTUITestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Paths.DataDir = t.TempDir()
+	return cfg
+}
+
 func TestHandleAgentReplyStoresToOriginConversationAndDoesNotTouchActiveChat(t *testing.T) {
 	d := openTUITestDB(t)
 	u, err := store.CreateUser(d, "alice", "pw")
@@ -42,7 +50,7 @@ func TestHandleAgentReplyStoresToOriginConversationAndDoesNotTouchActiveChat(t *
 	}
 
 	m := appModel{
-		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:          &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user:         u,
 		conv:         newConv,
 		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, newConv.ID),
@@ -94,7 +102,7 @@ func TestHandleAgentReplyDoesNotDuplicateStreamedToolCallsInActiveChat(t *testin
 	}
 
 	m := appModel{
-		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:          &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user:         u,
 		conv:         conv,
 		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -150,7 +158,7 @@ func TestHandleAgentReplyKeepsRepeatedToolCallsSeparateInActiveChat(t *testing.T
 	}
 
 	m := appModel{
-		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:          &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user:         u,
 		conv:         conv,
 		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -205,7 +213,7 @@ func TestHandleAgentReplyDoesNotAppendDuplicateCompletedRowsAfterStreamedResults
 	}
 
 	m := appModel{
-		ctx:          &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:          &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user:         u,
 		conv:         conv,
 		chat:         newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -247,9 +255,10 @@ func TestMaybeDispatchWaitlistStartsStreamingAssistantImmediately(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	cfg := newTUITestConfig(t)
 	m := appModel{
-		ctx:           &SessionContext{Config: &config.Config{}, DB: d},
-		ag:            agent.New(&config.Config{}, d),
+		ctx:           &SessionContext{Config: cfg, DB: d},
+		ag:            agent.New(cfg, d),
 		user:          u,
 		conv:          conv,
 		chat:          newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -284,9 +293,10 @@ func TestHandleCommandClearShowsFreshConversationMessageAsSystemNotice(t *testin
 		t.Fatal(err)
 	}
 
+	cfg := newTUITestConfig(t)
 	m := appModel{
-		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
-		ag:   agent.New(&config.Config{}, d),
+		ctx:  &SessionContext{Config: cfg, DB: d},
+		ag:   agent.New(cfg, d),
 		user: u,
 		conv: conv,
 		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -350,7 +360,7 @@ func TestHandleCommandGroupedUsageIsMultiLine(t *testing.T) {
 	}
 
 	m := appModel{
-		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:  &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user: u,
 		conv: conv,
 		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -456,7 +466,7 @@ func TestBackendSyncLoadsMessagesWrittenOutsideTUI(t *testing.T) {
 	}
 
 	m := appModel{
-		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:  &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user: u,
 		conv: conv,
 		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, conv.ID),
@@ -518,7 +528,7 @@ func TestBackendSyncFollowsActiveConversationSwitch(t *testing.T) {
 	}
 
 	m := appModel{
-		ctx:  &SessionContext{Config: &config.Config{}, DB: d},
+		ctx:  &SessionContext{Config: newTUITestConfig(t), DB: d},
 		user: u,
 		conv: convA,
 		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, convA.ID),
@@ -549,5 +559,90 @@ func TestBackendSyncFollowsActiveConversationSwitch(t *testing.T) {
 	}
 	if len(updated.chat.messages) != 1 || updated.chat.messages[0].content != "new active chat" {
 		t.Fatalf("expected reloaded new active conversation messages, got %+v", updated.chat.messages)
+	}
+}
+
+func TestBackendSyncFollowsActiveConversationSwitchToEmptyChat(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "gina_empty", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	convA, err := store.GetOrCreateActiveConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	convB, err := store.CreateConversation(d, u.ID, "empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(d, convA.ID, "assistant", "old chat"); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		ctx:  &SessionContext{Config: newTUITestConfig(t), DB: d},
+		user: u,
+		conv: convA,
+		chat: newChatModel().withComposerContext("", false).withConversation(d, u.ID, convA.ID),
+	}
+	loaded, ok := m.chat.loadCmd()().(chatLoadedMsg)
+	if !ok {
+		t.Fatal("expected initial chat load")
+	}
+	m.chat, _ = m.chat.Update(loaded)
+
+	if err := store.SetActiveConversation(d, u.ID, convB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := m.backendSyncNowCmd()
+	if cmd == nil {
+		t.Fatal("expected backend sync command")
+	}
+	msg, ok := cmd().(appBackendSyncMsg)
+	if !ok {
+		t.Fatalf("expected appBackendSyncMsg, got %T", cmd())
+	}
+	updatedModel, _ := m.Update(msg)
+	updated := updatedModel.(appModel)
+
+	if updated.conv == nil || updated.conv.ID != convB.ID {
+		t.Fatalf("expected synced active conversation %d, got %+v", convB.ID, updated.conv)
+	}
+	if len(updated.chat.messages) != 0 {
+		t.Fatalf("expected empty fresh chat after sync, got %+v", updated.chat.messages)
+	}
+}
+
+func TestNewTUIAgentStreamContextCancelsAfterIdle(t *testing.T) {
+	ctx, stop, _ := newTUIAgentStreamContextWithIdleTimeout(40 * time.Millisecond)
+	defer stop()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected idle stream context cancellation")
+	}
+}
+
+func TestNewTUIAgentStreamContextTouchExtendsIdleWindow(t *testing.T) {
+	ctx, stop, touch := newTUIAgentStreamContextWithIdleTimeout(40 * time.Millisecond)
+	defer stop()
+
+	time.Sleep(20 * time.Millisecond)
+	touch()
+	time.Sleep(25 * time.Millisecond)
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("expected touch to keep stream context alive")
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected stream context cancellation after later idle period")
 	}
 }

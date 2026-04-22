@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5 (unreleased)
+
+### Added
+
+### Changed
+- **Tool-call streaming now preserves large function arguments**
+  - OpenRouter `/responses` streaming now accumulates `response.function_call_arguments.delta` chunks and merges reconstructed arguments back into final `function_call` items before execution.
+  - Fixes sessions where short tool calls worked, but larger `bash`/`write` calls degraded into `invalid tool arguments JSON` failures once the model started emitting long code payloads.
+- **Removed app-level LLM output caps from agent prompt paths**
+  - The tool-calling loop no longer sets `max_output_tokens`, avoiding truncation of long tool arguments.
+  - Standalone prompt helpers and conversation summarization also no longer impose fixed `MaxOutputTokens` caps.
+- **TUI agent streaming uses an inactivity watchdog instead of a whole-turn deadline**
+  - Active streams stay alive as long as tokens or tool events continue arriving.
+  - Silent/stalled streams are canceled after an idle window instead of blocking the chat queue indefinitely.
+
 ## v0.4 (2026-04-22)
 
 ### Added

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -78,6 +79,8 @@ type agentAsyncMsg struct {
 	msg  tea.Msg
 	done bool
 }
+
+const tuiAgentIdleTimeout = 45 * time.Second
 
 type agentStreamDeltaMsg struct {
 	ConversationID int64
@@ -1805,6 +1808,55 @@ func (m appModel) askAgentCmd(text string) tea.Cmd {
 	return m.askAgentCmdWithID(m.nextRequestID, text)
 }
 
+func newTUIAgentStreamContext() (context.Context, context.CancelFunc, func()) {
+	return newTUIAgentStreamContextWithIdleTimeout(tuiAgentIdleTimeout)
+}
+
+func newTUIAgentStreamContextWithIdleTimeout(idleTimeout time.Duration) (context.Context, context.CancelFunc, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	activity := make(chan struct{}, 1)
+	done := make(chan struct{})
+	var once sync.Once
+
+	go func() {
+		timer := time.NewTimer(idleTimeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-timer.C:
+				cancel()
+				return
+			case <-activity:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idleTimeout)
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	stop := func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
+	touch := func() {
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
+	return ctx, stop, touch
+}
+
 func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 	userID := m.user.ID
 	convID := m.conv.ID
@@ -1812,11 +1864,13 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 	ch := make(chan tea.Msg, 64)
 	go func() {
 		defer close(ch)
-		ctx := context.Background()
+		ctx, stop, touch := newTUIAgentStreamContext()
+		defer stop()
 
 		released := false
 		var reasoning strings.Builder
 		reply, err := ag.ReplyStream(ctx, agent.ReplyParams{UserID: userID, ConversationID: convID, Text: text}, func(ev agent.StreamEvent) {
+			touch()
 			switch ev.Type {
 			case "assistant_delta":
 				ch <- agentStreamDeltaMsg{ConversationID: convID, RequestID: requestID, Text: ev.Text}
@@ -1858,7 +1912,8 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 	ch := make(chan tea.Msg, 64)
 	go func() {
 		defer close(ch)
-		ctx := context.Background()
+		ctx, stop, touch := newTUIAgentStreamContext()
+		defer stop()
 
 		released := false
 		convID := m.conv.ID
@@ -1881,6 +1936,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 		}
 
 		reply, convID, ok, err := ag.ResumeConfirmedStream(ctx, userID, token, func(ev agent.StreamEvent) {
+			touch()
 			switch ev.Type {
 			case "assistant_delta":
 				ch <- agentStreamDeltaMsg{ConversationID: convID, RequestID: requestID, Text: ev.Text}

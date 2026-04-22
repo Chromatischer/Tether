@@ -226,6 +226,7 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 
 	final := ResponsesResponse{}
 	outputsByIndex := map[int]ResponseItem{}
+	functionCallArgsByIndex := map[int]string{}
 	r := bufio.NewReader(resp.Body)
 	for {
 		line, err := r.ReadString('\n')
@@ -273,12 +274,56 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 		switch ev.Type {
 		case "response.output_item.added", "response.output_item.done":
 			if ev.Item != nil && ev.OutputIndex != nil {
-				outputsByIndex[*ev.OutputIndex] = *ev.Item
+				item := *ev.Item
+				if item.Type == "function_call" {
+					if args := strings.TrimSpace(functionCallArgsByIndex[*ev.OutputIndex]); len(args) >= len(strings.TrimSpace(item.Arguments)) {
+						item.Arguments = args
+					}
+				}
+				outputsByIndex[*ev.OutputIndex] = item
+			}
+		case "response.function_call_arguments.delta":
+			if ev.OutputIndex != nil {
+				delta := ev.Delta
+				if delta == "" {
+					delta = ev.Arguments
+				}
+				if delta != "" {
+					functionCallArgsByIndex[*ev.OutputIndex] += delta
+					if item, ok := outputsByIndex[*ev.OutputIndex]; ok && item.Type == "function_call" {
+						item.Arguments = functionCallArgsByIndex[*ev.OutputIndex]
+						outputsByIndex[*ev.OutputIndex] = item
+					}
+				}
+			}
+		case "response.function_call_arguments.done":
+			if ev.OutputIndex != nil {
+				args := ev.Arguments
+				if args == "" {
+					args = ev.Delta
+				}
+				if args == "" {
+					args = functionCallArgsByIndex[*ev.OutputIndex]
+				}
+				if args != "" {
+					functionCallArgsByIndex[*ev.OutputIndex] = args
+					if item, ok := outputsByIndex[*ev.OutputIndex]; ok && item.Type == "function_call" {
+						item.Arguments = args
+						outputsByIndex[*ev.OutputIndex] = item
+					}
+				}
 			}
 		}
 
 		if ev.Type == "response.done" && ev.Response != nil {
 			final = *ev.Response
+		}
+	}
+	if len(final.Output) > 0 && len(outputsByIndex) > 0 {
+		for i := range final.Output {
+			if cached, ok := outputsByIndex[i]; ok {
+				final.Output[i] = mergeResponseItem(final.Output[i], cached)
+			}
 		}
 	}
 	if len(final.Output) == 0 && len(outputsByIndex) > 0 {
@@ -293,4 +338,41 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 		}
 	}
 	return final, nil
+}
+
+func mergeResponseItem(current, cached ResponseItem) ResponseItem {
+	if current.Type == "" {
+		current.Type = cached.Type
+	}
+	if current.ID == "" {
+		current.ID = cached.ID
+	}
+	if current.Status == "" {
+		current.Status = cached.Status
+	}
+	if current.Role == "" {
+		current.Role = cached.Role
+	}
+	if len(current.Content) == 0 && len(cached.Content) > 0 {
+		current.Content = cached.Content
+	}
+	if current.CallID == "" {
+		current.CallID = cached.CallID
+	}
+	if current.Name == "" {
+		current.Name = cached.Name
+	}
+	if len(strings.TrimSpace(cached.Arguments)) > len(strings.TrimSpace(current.Arguments)) {
+		current.Arguments = cached.Arguments
+	}
+	if current.Output == "" {
+		current.Output = cached.Output
+	}
+	if current.EncryptedContent == "" {
+		current.EncryptedContent = cached.EncryptedContent
+	}
+	if len(current.Summary) == 0 && len(cached.Summary) > 0 {
+		current.Summary = cached.Summary
+	}
+	return current
 }

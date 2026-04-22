@@ -231,14 +231,13 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.defaultChatSystemPromptText()}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-	req := openrouter.ResponsesRequest{
-		Model:           a.cfg.OpenRouter.Model,
-		Input:           items,
-		Temperature:     0.2,
-		MaxOutputTokens: 700,
-		ToolChoice:      "none",
-		Provider:        a.openRouterProviderPrefs(),
-	}
+		req := openrouter.ResponsesRequest{
+			Model:           a.cfg.OpenRouter.Model,
+			Input:           items,
+			Temperature:     0.2,
+			ToolChoice:      "none",
+			Provider:        a.openRouterProviderPrefs(),
+		}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -265,14 +264,13 @@ func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt strin
 	}
 	items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}})
 
-	req := openrouter.ResponsesRequest{
-		Model:           a.cfg.OpenRouter.Model,
-		Input:           items,
-		Temperature:     0.2,
-		MaxOutputTokens: 700,
-		ToolChoice:      "none",
-		Provider:        a.openRouterProviderPrefs(),
-	}
+		req := openrouter.ResponsesRequest{
+			Model:           a.cfg.OpenRouter.Model,
+			Input:           items,
+			Temperature:     0.2,
+			ToolChoice:      "none",
+			Provider:        a.openRouterProviderPrefs(),
+		}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -291,14 +289,13 @@ func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, 
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.defaultProactiveSystemPromptText()}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-	req := openrouter.ResponsesRequest{
-		Model:           a.cfg.OpenRouter.Model,
-		Input:           items,
-		Temperature:     0.2,
-		MaxOutputTokens: 700,
-		ToolChoice:      "none",
-		Provider:        a.openRouterProviderPrefs(),
-	}
+		req := openrouter.ResponsesRequest{
+			Model:           a.cfg.OpenRouter.Model,
+			Input:           items,
+			Temperature:     0.2,
+			ToolChoice:      "none",
+			Provider:        a.openRouterProviderPrefs(),
+		}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -317,14 +314,13 @@ func (a *Agent) RunProactivePromptForUser(ctx context.Context, userID int64, pro
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.proactiveSystemPromptText(userID, 0)}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-	req := openrouter.ResponsesRequest{
-		Model:           a.cfg.OpenRouter.Model,
-		Input:           items,
-		Temperature:     0.2,
-		MaxOutputTokens: 700,
-		ToolChoice:      "none",
-		Provider:        a.openRouterProviderPrefs(),
-	}
+		req := openrouter.ResponsesRequest{
+			Model:           a.cfg.OpenRouter.Model,
+			Input:           items,
+			Temperature:     0.2,
+			ToolChoice:      "none",
+			Provider:        a.openRouterProviderPrefs(),
+		}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)

@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func sseDataLine(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "data: " + string(b)
+}
+
 func TestResponses_SendsHeadersAndParsesResponse(t *testing.T) {
 	var gotAuth string
 	var gotTitle string
@@ -240,6 +249,129 @@ func TestResponsesStream_PreservesReasoningSummaryItem(t *testing.T) {
 	}
 	if len(resp.Output[0].Summary) != 2 || resp.Output[0].Summary[0].Text != "first" || resp.Output[0].Summary[1].Text != "second" {
 		t.Fatalf("expected reasoning summary to survive reconstruction, got %+v", resp.Output[0])
+	}
+}
+
+func TestResponsesStream_ReconstructsFunctionCallArgumentsFromDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			sseDataLine(t, map[string]any{
+				"type":         "response.output_item.added",
+				"output_index": 0,
+				"item": map[string]any{
+					"type":      "function_call",
+					"id":        "fc_1",
+					"call_id":   "call_1",
+					"name":      "bash",
+					"arguments": "",
+				},
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"output_index": 0,
+				"delta":        `{"command":"echo \"`,
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"output_index": 0,
+				"delta":        `hi\""}`,
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type": "response.done",
+				"response": map[string]any{
+					"id":     "resp_fc_1",
+					"status": "completed",
+				},
+			}),
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "")
+	resp, err := c.ResponsesStream(context.Background(), ResponsesRequest{
+		Model: "m",
+		Input: []ResponseItem{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" {
+		t.Fatalf("expected reconstructed function_call output, got %+v", resp)
+	}
+	if resp.Output[0].Arguments != "{\"command\":\"echo \\\"hi\\\"\"}" {
+		t.Fatalf("expected reconstructed arguments, got %q", resp.Output[0].Arguments)
+	}
+}
+
+func TestResponsesStream_MergesFunctionCallArgumentsIntoResponseDoneOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			sseDataLine(t, map[string]any{
+				"type":         "response.output_item.added",
+				"output_index": 0,
+				"item": map[string]any{
+					"type":      "function_call",
+					"id":        "fc_2",
+					"call_id":   "call_2",
+					"name":      "write",
+					"arguments": "",
+				},
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"output_index": 0,
+				"delta":        `{"path":"todo.txt",`,
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"output_index": 0,
+				"delta":        `"content":"hello"}`,
+			}),
+			"",
+			sseDataLine(t, map[string]any{
+				"type": "response.done",
+				"response": map[string]any{
+					"id":     "resp_fc_2",
+					"status": "completed",
+					"output": []map[string]any{{
+						"type":      "function_call",
+						"id":        "fc_2",
+						"call_id":   "call_2",
+						"name":      "write",
+						"arguments": "",
+					}},
+				},
+			}),
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "")
+	resp, err := c.ResponsesStream(context.Background(), ResponsesRequest{
+		Model: "m",
+		Input: []ResponseItem{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" {
+		t.Fatalf("expected function_call output, got %+v", resp)
+	}
+	if resp.Output[0].Arguments != "{\"path\":\"todo.txt\",\"content\":\"hello\"}" {
+		t.Fatalf("expected merged arguments, got %q", resp.Output[0].Arguments)
 	}
 }
 

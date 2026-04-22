@@ -64,7 +64,6 @@ func (a *Agent) compactConversationSlice(ctx context.Context, history []store.Me
 		Model:           a.cfg.OpenRouter.Model,
 		Input:           items,
 		Temperature:     0.2,
-		MaxOutputTokens: 450,
 		ToolChoice:      "none",
 		Provider:        a.openRouterProviderPrefs(),
 	}
