@@ -103,6 +103,36 @@ func renderRichText(text string, width int, variant richTextVariant) string {
 	return strings.Join(blocks, "\n\n")
 }
 
+func RenderAssistantRichText(text string, width int) string {
+	return renderRichText(text, width, richTextAssistant)
+}
+
+func RenderSystemRichText(text string, width int) string {
+	return renderRichText(text, width, richTextSystem)
+}
+
+func RenderAssistantTable(headers []string, rows [][]string, width int, styleFunc func(row, col int, value string) lipgloss.Style) string {
+	if width <= 0 {
+		width = 40
+	}
+	t := liptable.New().
+		Headers(headers...).
+		Rows(rows...).
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(richTableBorderStyle(richTextAssistant)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == liptable.HeaderRow {
+				return richTableHeaderStyle(richTextAssistant)
+			}
+			if styleFunc != nil && row >= 0 && row < len(rows) && col >= 0 && col < len(rows[row]) {
+				return styleFunc(row, col, rows[row][col])
+			}
+			return richTableCellStyle(richTextAssistant)
+		})
+	return t.String()
+}
+
 func renderCodeFenceBlock(lines []string, start, width int, variant richTextVariant) (int, string, bool) {
 	if start >= len(lines) {
 		return start, "", false

@@ -27,5 +27,10 @@ func Open(path string) (*sql.DB, error) {
 	if _, err := db.Exec(`PRAGMA busy_timeout = 5000;`); err != nil {
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// Keep a single writer connection for SQLite-backed workloads.
+	// This avoids spurious SQLITE_BUSY errors when the benchmark runs many
+	// concurrent attempts against one shared database handle.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	return db, nil
 }

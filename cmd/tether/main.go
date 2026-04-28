@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,15 +22,36 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "benchmark" {
+		if err := runBenchmarkCommand(os.Args[2:]); err != nil {
+			log.Fatal("benchmark command failed", "error", err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		if err := runServeCommand(os.Args[2:]); err != nil {
+			log.Fatal("failed to run server", "error", err)
+		}
+		return
+	}
+	if err := runServeCommand(os.Args[1:]); err != nil {
+		log.Fatal("failed to run server", "error", err)
+	}
+}
+
+func runServeCommand(args []string) error {
 	var cfgPath string
 	var gradientTest bool
-	flag.StringVar(&cfgPath, "config", "./config/tether.yaml", "path to tether config")
-	flag.BoolVar(&gradientTest, "gradient-test", false, "run the SSH portal in gradient test mode")
-	flag.Parse()
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.StringVar(&cfgPath, "config", "./config/tether.yaml", "path to tether config")
+	fs.BoolVar(&gradientTest, "gradient-test", false, "run the SSH portal in gradient test mode")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatal("failed to load config", "error", err)
+		return err
 	}
 
 	logger := log.NewWithOptions(os.Stderr, log.Options{Level: cfg.LogLevelParsed})
@@ -37,18 +59,18 @@ func main() {
 
 	database, err := db.Open(cfg.DB.Path)
 	if err != nil {
-		log.Fatal("failed to open db", "error", err)
+		return err
 	}
 	defer database.Close()
 
 	if err := db.Migrate(database); err != nil {
-		log.Fatal("failed to run migrations", "error", err)
+		return err
 	}
 
 	ag := agent.New(cfg, database)
 	srv, err := portal.NewServer(cfg, database, ag, gradientTest)
 	if err != nil {
-		log.Fatal("failed to create ssh portal server", "error", err)
+		return err
 	}
 
 	sigGW := signalgw.NewGateway(cfg, database, ag)
@@ -87,4 +109,16 @@ func main() {
 			log.Error("failed to close ssh portal", "error", cerr)
 		}
 	}
+	return nil
+}
+
+func benchmarkUsage() string {
+	return "usage: tether benchmark <run|tui> [-config path] [-bench path]"
+}
+
+func errUsage(msg string) error {
+	if msg == "" {
+		return fmt.Errorf("%s", benchmarkUsage())
+	}
+	return fmt.Errorf("%s\n%s", msg, benchmarkUsage())
 }

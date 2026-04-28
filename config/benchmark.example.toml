@@ -1,0 +1,231 @@
+name = "real-world-harness"
+description = "Real-life adjacent benchmark tasks for the Tether harness."
+results_dir = "benchmarks"
+# 0 runs one full task wave across all configured models at the same time.
+max_parallel = 0
+judge_parallel = 2
+judge_group_size = 5
+task_timeout = "3m"
+
+[scoring]
+objective_weight = 0.35
+subjective_weight = 0.65
+completion_weight = 0.25
+duration_weight = 0.25
+latency_weight = 0.10
+token_weight = 0.20
+cost_weight = 0.15
+efficiency_weight = 0.10
+judge_rank_weight = 0.45
+judge_rubric_weight = 0.55
+
+[scoring.rubric]
+correctness = 0.40
+completeness = 0.20
+usefulness = 0.25
+style = 0.15
+
+[[models]]
+id = "deepseek-v4-flash"
+label = "DeepSeek V4 Flash"
+model = "deepseek/deepseek-v4-flash"
+
+[[models]]
+id = "kimi-k2.6"
+label = "Kimi K2.6"
+model = "moonshotai/kimi-k2.6"
+
+[[models]]
+id = "glm-5.1"
+label = "GLM 5.1"
+model = "z-ai/glm-5.1"
+
+[[models]]
+id = "minimax-m2.7"
+label = "MiniMax M2.7"
+model = "minimax/minimax-m2.7"
+
+[[models]]
+id = "gpt-5.4-mini"
+label = "GPT-5.4 Mini"
+model = "openai/gpt-5.4-mini"
+
+[[models]]
+id = "glm-5-turbo"
+label = "GLM 5 Turbo"
+model = "z-ai/glm-5-turbo"
+
+[[models]]
+id = "gemini-3.1-flash-lite"
+label = "Gemini 3.1 Flash Lite Preview"
+model = "google/gemini-3.1-flash-lite-preview"
+
+[[judges]]
+id = "gpt-5.4"
+label = "GPT-5.4"
+model = "openai/gpt-5.4"
+weight = 1.0
+
+[[judges]]
+id = "gemini-3.1"
+label = "Gemini 3.1 Pro Preview"
+model = "google/gemini-3.1-pro-preview"
+weight = 1.0
+
+[[judges]]
+id = "opus-4.6"
+label = "Claude Opus 4.6"
+model = "anthropic/claude-opus-4.6"
+weight = 1.0
+
+[[judges]]
+id = "sonnet-4.6"
+label = "Claude Sonnet 4.6"
+model = "anthropic/claude-sonnet-4.6"
+weight = 1.0
+
+[[tasks]]
+id = "robust-shell-script"
+title = "Robust Shell Script"
+category = "code"
+judge_focus = "Prefer scripts that are portable, careful with quoting and edge cases, and explain tradeoffs without overexplaining."
+
+[[tasks.turns]]
+prompt = """Write a POSIX sh script named largest-files.sh that scans a supplied directory, ignores unreadable paths without failing the whole run, handles filenames with spaces/newlines as safely as POSIX allows, and prints the 10 largest regular files with byte counts plus human-readable sizes. Include a compact explanation of the portability limits."""
+
+[[tasks]]
+id = "current-research-brief"
+title = "Current Research Brief"
+category = "research"
+judge_focus = "Prefer answers that verify recency, cite concrete sources, distinguish facts from uncertainty, and stay useful to a senior engineer."
+
+[[tasks.turns]]
+prompt = """Find the latest major changes in the Go toolchain from the last 90 days and summarize them for a senior backend engineer. Include release or announcement dates, direct source links, and a short "what to change in our repos" section."""
+
+[[tasks]]
+id = "product-usability-review"
+title = "Product Usability Review"
+category = "web"
+judge_focus = "Prefer concrete observations, calibrated confidence, and practical next steps over generic UX commentary."
+
+[[tasks.turns]]
+prompt = """Inspect https://go.dev/ as if you were a first-time visitor choosing a backend language. Give me a compact usability review: what is immediately clear, what is missing or ambiguous, and the top 3 improvements you would make. Use today's page, not memory."""
+
+[[tasks]]
+id = "burnout-sensitive-chat"
+title = "Burnout-Sensitive Chat"
+category = "chat"
+judge_focus = "Prefer warmth without therapy-speak, concrete options, respectful boundaries, and no false certainty."
+
+[[tasks.turns]]
+prompt = """I have two hours tonight and I want to learn something useful for backend engineering, but I'm fried and a little discouraged because work has been rough. What should I do?"""
+
+[[tasks]]
+id = "emotional-general-chat"
+title = "Emotional General Chat"
+category = "chat"
+judge_focus = "Prefer emotionally intelligent but grounded conversation: acknowledge the feeling, avoid diagnosis, ask at most one useful question, and offer small next steps."
+
+[[tasks.turns]]
+prompt = """I keep comparing myself to people who seem to ship faster and know more. I know it's not productive, but it makes me want to avoid coding tonight. Can you talk me through it like a normal person?"""
+
+[[tasks.turns]]
+prompt = """That helps. Give me a tiny plan for the next 30 minutes that doesn't turn into a whole productivity system."""
+
+[[tasks]]
+id = "migration-plan-review"
+title = "Migration Plan Review"
+category = "chat"
+judge_focus = "Prefer models that keep context, expose risk clearly, show enough work to be trusted, and avoid burying the answer in process."
+
+[[tasks.turns]]
+prompt = "Help me plan a low-risk migration from a single SQLite file to Postgres for a small production app."
+
+[[tasks.turns]]
+prompt = "Tighten that into a checklist with rollback points and the first three things I should verify before touching prod."
+
+[[tasks]]
+id = "ambiguous-debugging"
+title = "Ambiguous Debugging"
+category = "code"
+judge_focus = "Prefer careful triage, explicit assumptions, useful commands or instrumentation, and no invented facts."
+
+[[tasks.turns]]
+prompt = """A Go service started returning intermittent 502s after we added Redis caching. Logs only say "context deadline exceeded" from a handler. Give me a debugging plan that separates app bugs, Redis latency, upstream timeout mismatches, and deploy/config mistakes. Keep it actionable."""
+
+[[tasks.turns]]
+prompt = """Now turn that into the first 8 commands or checks you would run during an incident, with what each result would imply."""
+
+[[tasks]]
+id = "trustworthy-uncertainty"
+title = "Trustworthy Uncertainty"
+category = "reasoning"
+judge_focus = "Prefer calibrated uncertainty, direct answers, compact reasoning, and clear refusal to guess when facts are missing."
+
+[[tasks.turns]]
+prompt = """A teammate says "our p95 latency doubled because the new ORM is slow." We have only this: deploy at 10:05, p95 rose at 10:20, DB CPU flat, app CPU up 35%, request volume up 40%, cache hit rate down from 92% to 71%. Write a response that is useful in Slack: what is likely, what is not proven, and what should we check next."""
+
+[[tasks]]
+id = "long-context-random-history"
+title = "Long Context Random History"
+category = "long-context"
+prefill_history_tokens = 100000
+timeout = "5m"
+judge_focus = "Prefer answers that ignore irrelevant long-history noise, follow the latest user request, stay concise, and do not claim unsupported details from the random history."
+
+[[tasks.turns]]
+prompt = """Ignore the old random chat history unless it is directly relevant. I need a concise, trustworthy plan for deciding whether to postpone a risky Friday deploy. Include the signals you would check, who to involve, and how to communicate the decision."""
+
+[[tasks]]
+id = "concise-work-disclosure"
+title = "Concise Work Disclosure"
+category = "interaction"
+judge_focus = "Prefer a response that shows enough reasoning to earn trust, avoids hidden assumptions, and does not drown the user in internal chain-of-thought."
+
+[[tasks.turns]]
+prompt = """I want help choosing between three approaches: quick patch, partial refactor, or full rewrite. The code is messy, revenue impact is real, and we have two days. Explain how you would decide, but keep the answer short enough that I can paste it into a team thread."""
+
+[[tasks]]
+id = "wrong-premise-request"
+title = "Wrong Premise Request"
+category = "interaction"
+judge_focus = "Prefer answers that catch the bad premise, explain the correction briefly, and still give a practical path forward."
+
+[[tasks.turns]]
+prompt = """Set up a Kubernetes CronJob that runs every 20 seconds to drain our webhook queue. It needs to be reliable and not overlap, just do the YAML and whatever else is obvious."""
+
+[[tasks]]
+id = "implicit-user-intent"
+title = "Implicit User Intent"
+category = "interaction"
+judge_focus = "Prefer useful inference from context, minimal clarifying questions, and a ready-to-use result with stated assumptions."
+
+[[tasks.turns]]
+prompt = """Can you write the message for Alex about the Friday thing? Not too corporate. Basically we probably shouldn't do it, but I don't want it to sound like I'm blocking the team."""
+
+[[tasks]]
+id = "convoluted-product-request"
+title = "Convoluted Product Request"
+category = "planning"
+judge_focus = "Prefer answers that untangle the request, name contradictions, propose a coherent spec, and avoid pretending ambiguous details are known."
+
+[[tasks.turns]]
+prompt = """We need the user thing to stop being annoying: if they already did it don't ask again, unless it's stale, but stale depends on the thing; and also admins need to override it except not really override because audit, and it should work offline-ish. Give me the plan, the edge cases, and what you'd build first."""
+
+[[tasks]]
+id = "assumed-shared-context"
+title = "Assumed Shared Context"
+category = "chat"
+judge_focus = "Prefer graceful handling of missing shared context: infer what can be inferred, ask one targeted question only if needed, and provide a useful draft anyway."
+
+[[tasks.turns]]
+prompt = """Do the version of the status update we talked about, the one that is honest but doesn't make it sound like we're behind because of me."""
+
+[[tasks]]
+id = "underspecified-data-task"
+title = "Underspecified Data Task"
+category = "reasoning"
+judge_focus = "Prefer robust assumptions, a clear data contract, validation checks, and a usable first-pass solution despite underspecification."
+
+[[tasks.turns]]
+prompt = """I have a CSV from finance and need the monthly churn number. You know, the normal one. Columns are probably customer, date, amount, status, maybe plan. Tell me exactly how you'd calculate it and what you'd ask finance to confirm."""
