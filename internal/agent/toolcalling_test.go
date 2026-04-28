@@ -224,19 +224,22 @@ func TestTruncateAuditErr(t *testing.T) {
 	}
 }
 
-func TestReplayableResponseItems_FiltersReasoning(t *testing.T) {
+func TestReplayableResponseItems_PreservesReasoningForProviderContinuation(t *testing.T) {
 	in := []openrouter.ResponseItem{
-		{Type: "reasoning", ID: "rs_1"},
+		{Type: "reasoning", ID: "rs_1", EncryptedContent: "opaque"},
 		{Type: "message", ID: "msg_1"},
 		{Type: "function_call", ID: "fc_1"},
 		{Type: "function_call_output", ID: "fco_1"},
 	}
 	got := replayableResponseItems(in)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 replayable items, got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("expected 3 replayable items, got %d", len(got))
 	}
-	if got[0].Type != "message" || got[1].Type != "function_call" {
+	if got[0].Type != "reasoning" || got[1].Type != "message" || got[2].Type != "function_call" {
 		t.Fatalf("unexpected replayable items: %+v", got)
+	}
+	if got[0].EncryptedContent != "opaque" {
+		t.Fatalf("expected reasoning encrypted content to survive, got %+v", got[0])
 	}
 }
 

@@ -127,6 +127,50 @@ func TestResponsesStream_ParsesDoneResponse(t *testing.T) {
 	}
 }
 
+func TestResponsesStream_ReturnsTopLevelErrorMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"data: {\"type\":\"error\",\"error\":{\"message\":\"upstream overloaded\"}}",
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "")
+	_, err := c.ResponsesStream(context.Background(), ResponsesRequest{
+		Model: "m",
+		Input: []ResponseItem{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "upstream overloaded") {
+		t.Fatalf("expected stream error message, got %v", err)
+	}
+}
+
+func TestResponsesStream_ReturnsReasonWhenErrorMessageMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"data: {\"type\":\"error\",\"reason\":\"error\"}",
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "")
+	_, err := c.ResponsesStream(context.Background(), ResponsesRequest{
+		Model: "m",
+		Input: []ResponseItem{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "stream closed with reason: error") {
+		t.Fatalf("expected reason fallback, got %v", err)
+	}
+}
+
 func TestResponsesStream_ParsesReasoningDelta(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

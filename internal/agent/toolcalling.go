@@ -313,14 +313,14 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			toolChoice = "none"
 		}
 		req := openrouter.ResponsesRequest{
-			Model:           a.cfg.OpenRouter.Model,
-			Input:           items,
-			Temperature:     0.2,
-			Tools:           tools,
-			ToolChoice:      toolChoice,
-			Stream:          true,
-			Reasoning:       &openrouter.ResponsesReasoning{Effort: "medium"},
-			Provider:        a.openRouterProviderPrefs(),
+			Model:       a.cfg.OpenRouter.Model,
+			Input:       items,
+			Temperature: 0.2,
+			Tools:       tools,
+			ToolChoice:  toolChoice,
+			Stream:      true,
+			Reasoning:   &openrouter.ResponsesReasoning{Effort: "medium"},
+			Provider:    a.openRouterProviderPrefs(),
 		}
 
 		// Accumulate tool calls as they arrive.
@@ -630,7 +630,7 @@ func replayableResponseItems(items []openrouter.ResponseItem) []openrouter.Respo
 	out := make([]openrouter.ResponseItem, 0, len(items))
 	for _, it := range items {
 		switch it.Type {
-		case "message", "function_call":
+		case "reasoning", "message", "function_call":
 			out = append(out, it)
 		}
 	}

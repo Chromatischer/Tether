@@ -160,6 +160,17 @@ type ResponsesStreamEvent struct {
 	Item     *ResponseItem      `json:"item,omitempty"`
 	Part     *ContentPart       `json:"part,omitempty"`
 	Response *ResponsesResponse `json:"response,omitempty"`
+	Error    *StreamError       `json:"error,omitempty"`
+	Message  string             `json:"message,omitempty"`
+	Reason   string             `json:"reason,omitempty"`
+	Code     any                `json:"code,omitempty"`
+}
+
+type StreamError struct {
+	Code     any            `json:"code,omitempty"`
+	Message  string         `json:"message,omitempty"`
+	Reason   string         `json:"reason,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 func (c *Client) Responses(ctx context.Context, req ResponsesRequest) (ResponsesResponse, error) {
@@ -261,8 +272,8 @@ func (c *Client) ResponsesStream(ctx context.Context, req ResponsesRequest, onEv
 			continue
 		}
 
-		if ev.Response != nil && ev.Response.Error != nil {
-			return final, fmt.Errorf("openrouter stream error: %s", strings.TrimSpace(ev.Response.Error.Message))
+		if msg := streamErrorMessage(ev); msg != "" {
+			return final, fmt.Errorf("openrouter stream error: %s", msg)
 		}
 
 		if onEvent != nil {
@@ -375,4 +386,30 @@ func mergeResponseItem(current, cached ResponseItem) ResponseItem {
 		current.Summary = cached.Summary
 	}
 	return current
+}
+
+func streamErrorMessage(ev ResponsesStreamEvent) string {
+	if ev.Response != nil && ev.Response.Error != nil {
+		if msg := strings.TrimSpace(ev.Response.Error.Message); msg != "" {
+			return msg
+		}
+	}
+	if ev.Error != nil {
+		if msg := strings.TrimSpace(ev.Error.Message); msg != "" {
+			return msg
+		}
+		if reason := strings.TrimSpace(ev.Error.Reason); reason != "" {
+			return reason
+		}
+	}
+	if msg := strings.TrimSpace(ev.Message); msg != "" {
+		return msg
+	}
+	if reason := strings.TrimSpace(ev.Reason); reason != "" {
+		return "stream closed with reason: " + reason
+	}
+	if ev.Type == "error" || strings.HasSuffix(ev.Type, ".error") {
+		return "stream closed with reason: error"
+	}
+	return ""
 }
