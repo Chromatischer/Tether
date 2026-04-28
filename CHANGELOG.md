@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.7 (2026-04-28)
+
+### Added
+- **Clickable approve / decline workflow**
+  - Confirmation prompts now render four clickable options directly in the chat: Allow this, Allow all requests, Decline, Decline all.
+  - "Allow all requests" sets `confirm_strictness = always`; "Decline all" sets it to `never`.
+  - Confirmation prompt is displayed in red with the tool name, arguments, and agent's stated reason.
+- **`/help [command]` sub-command detail**
+  - `/help` now shows a compact grouped list (`/tools <list|search|describe>` etc.).
+  - `/help tools`, `/help memory`, `/help task`, etc. expand the sub-commands for that group.
+- **Auto-compact threshold raised and surfaced**
+  - Context auto-compaction now triggers at `min(80% of model context, 200 000 tokens)` instead of 66%.
+  - `/status` shows a second context bar indicating fill level relative to the auto-compact threshold.
+- **Session status redesign**
+  - `/status` renders a structured panel (Session, Context window, Usage, Attached context) instead of a raw key-value dump.
+  - Context window bar falls back to attached-context estimates when last-request limit is unavailable.
+  - Status messages use a dedicated `status` role so they render correctly on reload instead of flipping to the Tether assistant label.
+
+### Changed
+- **Confirmation pause message no longer instructs the agent**
+  - The pause text previously told the agent "Copy this into the chat to continue: `/confirm TOKEN`", causing the agent to attempt compliance by injecting stale tokens into subsequent tool calls and looping.
+  - Now emits a passive "Paused — waiting for user to approve. Do not retry, do not call any tools." message with no token in the text.
+- **`/help` and `/status` stored as `system` role**
+  - Both commands now write `system` to the database instead of `assistant`, preventing them from reloading as Tether messages.
+- **`/help` list items use markdown list format**
+  - Help output now uses `- /command` syntax so `renderRichText` keeps each entry on its own line.
+
 ## v0.6 (2026-04-28)
 
 ### Added

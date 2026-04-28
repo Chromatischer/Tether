@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	_ "modernc.org/sqlite"
 
 	"tether/internal/agent"
@@ -32,6 +33,75 @@ func newTUITestConfig(t *testing.T) *config.Config {
 	cfg := &config.Config{}
 	cfg.Paths.DataDir = t.TempDir()
 	return cfg
+}
+
+func TestMaybeOpenLoginChangelogShowsNewerVersionsAndMarksSeenOnClose(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserLastSeenChangelogVersion(d, u.ID, "v0.4"); err != nil {
+		t.Fatal(err)
+	}
+	u.LastSeenChangelogVersion = "v0.4"
+
+	m := appModel{
+		ctx:       &SessionContext{Config: newTUITestConfig(t), DB: d},
+		user:      u,
+		changelog: newChangelogModalModel().withSize(100, 30),
+	}
+	m = m.maybeOpenLoginChangelog()
+	if !m.changelog.open {
+		t.Fatal("expected changelog modal to open")
+	}
+	if !strings.Contains(m.changelog.body, "## v0.5") || strings.Contains(m.changelog.body, "## v0.4") {
+		t.Fatalf("unexpected changelog body:\n%s", m.changelog.body)
+	}
+
+	var markSeen bool
+	m.changelog, _, markSeen = m.changelog.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !markSeen {
+		t.Fatal("expected login changelog close to mark version seen")
+	}
+	m = m.markCurrentChangelogSeen()
+	got, err := store.GetUserLastSeenChangelogVersion(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "v0.5" {
+		t.Fatalf("expected v0.5 marker, got %q", got)
+	}
+}
+
+func TestHandleCommandChangelogOpensModal(t *testing.T) {
+	d := openTUITestDB(t)
+	u, err := store.CreateUser(d, "alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := store.GetOrCreateActiveConversation(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := appModel{
+		ctx:       &SessionContext{Config: newTUITestConfig(t), DB: d},
+		user:      u,
+		conv:      conv,
+		chat:      newChatModel().withConversation(d, u.ID, conv.ID),
+		changelog: newChangelogModalModel().withSize(100, 30),
+	}
+
+	updated, handled, _ := m.handleCommand("/changelog v0.4")
+	if !handled {
+		t.Fatal("expected /changelog to be handled")
+	}
+	if !updated.changelog.open {
+		t.Fatal("expected changelog modal to open")
+	}
+	if !strings.Contains(updated.changelog.body, "## v0.4") {
+		t.Fatalf("expected v0.4 changelog body, got:\n%s", updated.changelog.body)
+	}
 }
 
 func TestHandleAgentReplyStoresToOriginConversationAndDoesNotTouchActiveChat(t *testing.T) {

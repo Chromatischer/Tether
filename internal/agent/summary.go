@@ -19,7 +19,7 @@ func (a *Agent) maybeUpdateSummary(conversationID int64) {
 	if modelLimit <= 0 {
 		modelLimit = 128000
 	}
-	compactThreshold := int(float64(modelLimit) * 0.66)
+	compactThreshold := min(int(float64(modelLimit)*0.80), 200_000)
 	rawTailBudget := int(float64(modelLimit) * 0.22)
 	if err := a.compactConversationIfNeeded(ctx, conversationID, compactThreshold, rawTailBudget); err != nil {
 		log.Debug("summary update failed", "error", err)

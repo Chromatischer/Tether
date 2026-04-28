@@ -40,10 +40,11 @@ type StreamEvent struct {
 }
 
 type toolExecutionPause struct {
-	Token string
-	Scope string
-	Text  string
-	Call  openrouter.ResponseItem
+	Token  string
+	Scope  string
+	Text   string
+	Reason string
+	Call   openrouter.ResponseItem
 }
 
 var confirmScopePattern = regexp.MustCompile(`scope="([^"]+)"`)
@@ -160,15 +161,16 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 				}
 
 				token := s.Confirm.Request(s.UserID, scope, reason)
-				text := "Confirmation required. Copy this into the chat to continue: `/confirm " + token + "`. Send any other reply to reject it."
+				text := "Paused — waiting for user to approve this action. Do not retry this command and do not call any other tools. The user will approve or decline."
 				if name == "confirm.request" && reasonArg != "" {
-					text = "Confirmation required: " + truncateString(reasonArg, 200) + "\nType `/confirm " + token + "` to approve. Send any other reply to reject it."
+					text = "Paused — waiting for user confirmation: " + truncateString(reasonArg, 200) + ". Do not call any tools until the user responds."
 				}
 				pause = &toolExecutionPause{
-					Token: token,
-					Scope: scope,
-					Text:  text,
-					Call:  c,
+					Token:  token,
+					Scope:  scope,
+					Text:   text,
+					Call:   c,
+					Reason: reason,
 				}
 			}
 			if nm != nil {
@@ -518,6 +520,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 				ConversationID: convID,
 				Token:          pause.Token,
 				Scope:          pause.Scope,
+				Reason:         pause.Reason,
 				Session:        cloneSession(s),
 				Items:          append([]openrouter.ResponseItem{}, items...),
 				Call:           pause.Call,

@@ -443,6 +443,23 @@ func (g *Gateway) clearPendingReaction(channelID string, messageID string) {
 	}
 }
 
+func discordHelpSubcommand(sub string) string {
+	subHelp := map[string][]string{
+		"tools":     {"/tools list", "/tools search <query>", "/tools describe <name>"},
+		"subagent":  {"/subagent spawn <prompt>", "/subagent status <id>"},
+		"proactive": {"/proactive action <name>", "/proactive agent <id>"},
+		"signal":    {"/signal status"},
+		"discord":   {"/discord status", "/discord unlink"},
+		"memory":    {"/memory list [kind]", "/memory add <kind> <content>", "/memory update <id> <content>", "/memory delete <id>"},
+		"task":      {"/task list", "/task add <text>", "/task edit <id> <text>", "/task done <id>"},
+		"secret":    {"/secret add <label> <secret>", "/secret list", "/secret delete <label>", "/secret clear"},
+	}
+	if lines, ok := subHelp[sub]; ok {
+		return strings.Join(lines, "\n")
+	}
+	return "unknown command: " + sub
+}
+
 func detectDiscordChoiceCount(text string) int {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -862,36 +879,28 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 	switch fields[0] {
 	case "/help":
 		recordUser(text)
-		return true, strings.TrimSpace(
-			"Commands:\n" +
-				"  /help\n" +
-				"  /status\n" +
-				"  /clear\n" +
-				"  /resume <code>\n" +
-				"  /confirm <token>\n" +
-				"  /tools list\n" +
-				"  /tools search <query>\n" +
-				"  /tools describe <name>\n" +
-				"  /signal status\n" +
-				"  /discord status\n" +
-				"  /discord unlink\n" +
-				"  /memory list [kind]\n" +
-				"  /memory add <kind> <content>\n" +
-				"  /memory update <id> <content>\n" +
-				"  /memory delete <id>\n" +
-				"  /task list\n" +
-				"  /task add <text>\n" +
-				"  /task edit <id> <text>\n" +
-				"  /task done <id>\n" +
-				"  /secret add <label> <secret>\n" +
-				"  /secret list\n" +
-				"  /secret delete <label>\n" +
-				"  /secret clear\n" +
-				"  /subagent spawn <prompt>\n" +
-				"  /subagent status <id>\n" +
-				"  /proactive action <name>\n" +
-				"  /proactive agent <id>",
-		), conv
+		var resp string
+		if len(fields) >= 2 {
+			resp = discordHelpSubcommand(fields[1])
+		} else {
+			resp = strings.TrimSpace(
+				"Commands:\n" +
+					"  /status\n" +
+					"  /clear\n" +
+					"  /resume <code>\n" +
+					"  /confirm <token>\n" +
+					"  /help [command]\n" +
+					"  /tools <list|search|describe>\n" +
+					"  /subagent <spawn|status>\n" +
+					"  /proactive <action|agent>\n" +
+					"  /signal <status>\n" +
+					"  /discord <status|unlink>\n" +
+					"  /memory <list|add|update|delete>\n" +
+					"  /task <list|add|edit|done>\n" +
+					"  /secret <add|list|delete|clear>",
+			)
+		}
+		return true, resp, conv
 
 	case "/status":
 		recordUser(text)

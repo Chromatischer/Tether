@@ -54,6 +54,21 @@ func (a *Agent) PendingConfirmationToken(userID, convID int64) (string, bool) {
 	return "", false
 }
 
+// PendingConfirmationDetails returns the token, tool name, tool args, and reason
+// for the pending confirmation associated with the given user/conversation.
+func (a *Agent) PendingConfirmationDetails(userID, convID int64) (token, toolName, toolArgs, reason string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.prunePendingLocked(time.Now())
+	for tok, p := range a.pendingRuns {
+		if p == nil || p.UserID != userID || p.ConversationID != convID {
+			continue
+		}
+		return tok, strings.TrimSpace(p.Call.Name), strings.TrimSpace(p.Call.Arguments), p.Reason, true
+	}
+	return "", "", "", "", false
+}
+
 // HasPendingConfirmationToken reports whether the given confirmation token is currently
 // associated with a suspended tool execution (i.e. a /confirm should RESUME work).
 //

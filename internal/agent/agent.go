@@ -47,6 +47,7 @@ type pendingConfirmation struct {
 	ConversationID int64
 	Token          string
 	Scope          string
+	Reason         string
 	Session        *toolset.Session
 	Items          []openrouter.ResponseItem
 	Call           openrouter.ResponseItem

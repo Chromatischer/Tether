@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +46,7 @@ func TestRenderSessionStatusTUI(t *testing.T) {
 			ContextPct:            0.7,
 		},
 	})
-	for _, want := range []string{"```text", "Session status", "runtime_session: active", "usage_source: runtime", "Attached context", "history_messages: 12", "estimated_attached_tokens: 900 / 128000", "Recorded usage", "sess-1", "tool_calls: 4", "cost_usd: 0.012345", "openai/gpt-4o", "last_request_context: 64 / 128000", "context", "input", "output", "total", "```"} {
+	for _, want := range []string{"Session", "openai/gpt-4o", "tool calls", "Context window", "Usage", "$0.0123", "120 in", "30 out", "150 total", "Attached context", "12 msgs", "summary", "3 facts", "skills", "est. 900"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in %q", want, got)
 		}
@@ -79,10 +78,10 @@ func TestHandleCommandStatus(t *testing.T) {
 		t.Fatal("expected /status to be handled")
 	}
 	got := updated.chat.messages[len(updated.chat.messages)-1].content
-	if !strings.Contains(got, "Session status") {
+	if !strings.Contains(got, "Session") {
 		t.Fatalf("expected status output, got %q", got)
 	}
-	if !strings.Contains(got, "conversation_id: "+strconv.FormatInt(conv.ID, 10)) {
-		t.Fatalf("expected conversation id in status output, got %q", got)
+	if !strings.Contains(got, "Context window") {
+		t.Fatalf("expected context window in status output, got %q", got)
 	}
 }

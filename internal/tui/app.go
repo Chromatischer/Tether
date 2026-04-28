@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	appmeta "tether"
 	"tether/internal/agent"
 	"tether/internal/appupdate"
 	"tether/internal/personality"
@@ -55,11 +56,12 @@ type appModel struct {
 
 	view viewMode
 
-	auth     authModel
-	chat     chatModel
-	memory   memoryModel
-	settings settingsModel
-	admin    adminModel
+	auth      authModel
+	chat      chatModel
+	memory    memoryModel
+	settings  settingsModel
+	admin     adminModel
+	changelog changelogModalModel
 
 	user *store.User
 	conv *store.Conversation
@@ -125,6 +127,28 @@ func usageBlock(lines ...string) string {
 	return "usage:\n  " + strings.Join(lines, "\n  ")
 }
 
+func helpSubcommand(sub string) string {
+	subHelp := map[string][]string{
+		"tools":     {"/tools list", "/tools search <query>", "/tools describe <name>"},
+		"subagent":  {"/subagent spawn <prompt>", "/subagent status <id>"},
+		"proactive": {"/proactive action <name>", "/proactive agent <id>"},
+		"signal":    {"/signal link", "/signal status", "/signal unlink"},
+		"discord":   {"/discord status", "/discord link <code>", "/discord unlink"},
+		"memory":    {"/memory list [kind]", "/memory add <kind> <content>", "/memory update <id> <content>", "/memory delete <id>"},
+		"task":      {"/task list", "/task add <text>", "/task edit <id> <text>", "/task done <id>"},
+		"secret":    {"/secret add <label> <secret>", "/secret list", "/secret delete <label>", "/secret clear"},
+		"admin":     {"/admin users list", "/admin audit tail [n]", "/admin signal status", "/admin jobs status"},
+	}
+	if lines, ok := subHelp[sub]; ok {
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			out[i] = "- " + l
+		}
+		return strings.Join(out, "\n")
+	}
+	return "unknown command: " + sub
+}
+
 func NewAppModel(ctx *SessionContext) tea.Model {
 	ag := ctx.Agent
 	m := appModel{
@@ -142,6 +166,7 @@ func NewAppModel(ctx *SessionContext) tea.Model {
 	m.memory = newMemoryModel()
 	m.settings = newSettingsModel(ctx)
 	m.admin = newAdminModel(ctx)
+	m.changelog = newChangelogModalModel()
 	return m
 }
 
@@ -180,6 +205,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auth = m.auth.withSize(m.w, m.h-1)
 		m.settings = m.settings.withSize(m.w, m.h-1)
 		m.admin = m.admin.withSize(m.w, m.h-1)
+		m.changelog = m.changelog.withSize(m.w, m.h-1)
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -187,8 +213,20 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		}
+		if m.changelog.open {
+			var cmd tea.Cmd
+			var markSeen bool
+			m.changelog, cmd, markSeen = m.changelog.Update(msg)
+			if markSeen {
+				m = m.markCurrentChangelogSeen()
+			}
+			return m, cmd
+		}
 
 	case tea.MouseClickMsg:
+		if m.changelog.open {
+			return m, nil
+		}
 		if msg.Button == tea.MouseLeft && msg.Y == 0 {
 			if b, ok := m.hitHeader(msg.X); ok {
 				switch b.ID {
@@ -214,6 +252,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		}
+
+	case tea.MouseWheelMsg:
+		if m.changelog.open {
+			var cmd tea.Cmd
+			m.changelog, cmd, _ = m.changelog.Update(msg)
+			return m, cmd
 		}
 
 	case authSwitchModeMsg:
@@ -292,6 +337,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.activateConversation(conv)
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+		m = m.maybeOpenLoginChangelog()
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
@@ -303,6 +349,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.activateConversation(msg.Conv)
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+		m = m.maybeOpenLoginChangelog()
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
@@ -354,6 +401,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			note := "Pending tool confirmation rejected by the user."
 			_ = m.ag.RejectPendingConfirmation(m.user.ID, m.conv.ID)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "system", note)
+			m.chat = m.chat.clearConfirmPending()
 			m.chat = m.chat.appendLocal("System", note)
 		}
 
@@ -403,6 +451,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentReplyMsg:
 		return m.handleAgentReply(msg)
 
+	case confirmActionMsg:
+		return m.handleConfirmAction(msg)
+
 	case cursor.BlinkMsg:
 		// pass through to submodels that care (textarea).
 	}
@@ -444,6 +495,9 @@ func (m appModel) View() tea.View {
 	default:
 		body = tea.NewView(styleDim.Render("unknown view"))
 	}
+	if m.changelog.open {
+		body = m.changelog.View()
+	}
 
 	v := tea.NewView(header + "\n" + body.Content)
 	v.AltScreen = true
@@ -451,7 +505,7 @@ func (m appModel) View() tea.View {
 
 	// Maintain cursor from the focused sub-view.
 	// Body starts at row 1 (after the header), so add 1 to all cursor Y values.
-	if m.view == viewChat {
+	if m.view == viewChat && !m.changelog.open {
 		c := m.chat.cursor()
 		if c != nil {
 			c.Y++ // offset for the header row
@@ -582,6 +636,45 @@ func (m appModel) hitHeader(x int) (headerButton, bool) {
 	return headerButton{}, false
 }
 
+func (m appModel) maybeOpenLoginChangelog() appModel {
+	if m.ctx == nil || m.ctx.DB == nil || m.user == nil {
+		return m
+	}
+	current := appmeta.CurrentVersion()
+	last := strings.TrimSpace(m.user.LastSeenChangelogVersion)
+	if last == "" {
+		if dbLast, err := store.GetUserLastSeenChangelogVersion(m.ctx.DB, m.user.ID); err == nil {
+			last = strings.TrimSpace(dbLast)
+		}
+	}
+	if last == "" {
+		_ = store.SetUserLastSeenChangelogVersion(m.ctx.DB, m.user.ID, current)
+		m.user.LastSeenChangelogVersion = current
+		return m
+	}
+	body, ok, err := appmeta.RenderChangelogAfter(last)
+	if err != nil || !ok {
+		if err != nil {
+			_ = store.SetUserLastSeenChangelogVersion(m.ctx.DB, m.user.ID, current)
+			m.user.LastSeenChangelogVersion = current
+		}
+		return m
+	}
+	title := "Changelog " + appmeta.NormalizeVersion(last) + " to " + current
+	m.changelog = m.changelog.openModal(title, body, true)
+	return m
+}
+
+func (m appModel) markCurrentChangelogSeen() appModel {
+	if m.ctx == nil || m.ctx.DB == nil || m.user == nil {
+		return m
+	}
+	current := appmeta.CurrentVersion()
+	_ = store.SetUserLastSeenChangelogVersion(m.ctx.DB, m.user.ID, current)
+	m.user.LastSeenChangelogVersion = current
+	return m
+}
+
 func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
@@ -589,6 +682,32 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 	}
 
 	switch fields[0] {
+	case "/changelog":
+		if m.conv == nil || m.user == nil {
+			return m, true, nil
+		}
+		if len(fields) > 2 {
+			resp := "usage: /changelog [version]"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+		m.chat = m.chat.appendLocal("You", text)
+		version := appmeta.CurrentVersion()
+		if len(fields) == 2 {
+			version = fields[1]
+		}
+		body, err := appmeta.RenderChangelogFrom(version)
+		if err != nil {
+			resp := err.Error()
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		m.changelog = m.changelog.openModal("Changelog", body, false)
+		return m, true, nil
+
 	case "/status":
 		if m.conv == nil || m.user == nil {
 			return m, true, nil
@@ -596,8 +715,8 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 		m.chat = m.chat.appendLocal("You", text)
 		resp := renderSessionStatusTUI(m.ag.SessionStatus(m.user.ID, m.conv.ID))
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "status", resp)
+		m.chat = m.chat.appendLocal("Status", resp)
 		return m, true, nil
 
 	case "/clear":
@@ -964,46 +1083,31 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		if m.conv != nil {
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
 			m.chat = m.chat.appendLocal("You", text)
-			resp := "Commands:\n" +
-				"  /status\n" +
-				"  /clear\n" +
-				"  /resume <code>\n" +
-				"  /help\n" +
-				"  /logout\n" +
-				"  /tools list\n" +
-				"  /tools search <query>\n" +
-				"  /tools describe <name>\n" +
-				"  /subagent spawn <prompt>\n" +
-				"  /subagent status <id>\n" +
-				"  /proactive action <name>\n" +
-				"  /proactive agent <id>\n" +
-				"  /signal link\n" +
-				"  /signal status\n" +
-				"  /signal unlink\n" +
-				"  /discord status\n" +
-				"  /discord link <code>\n" +
-				"  /discord unlink\n" +
-				"  /confirm <token>\n" +
-				"  /memory list [kind]\n" +
-				"  /memory add <kind> <content>\n" +
-				"  /memory delete <id>\n" +
-				"  /memory update <id> <content>\n" +
-				"  /task list\n" +
-				"  /task add <text>\n" +
-				"  /task edit <id> <text>\n" +
-				"  /task done <id>\n" +
-				"  /secret add <label> <secret>\n" +
-				"  /secret list\n" +
-				"  /secret delete <label>\n" +
-				"  /secret clear\n"
-			if m.user != nil && m.user.Role == "admin" {
-				resp +=
-					"  /admin users list (admin)\n" +
-						"  /admin audit tail [n] (admin)\n" +
-						"  /admin signal status (admin)\n" +
-						"  /admin jobs status (admin)\n"
+			var resp string
+			if len(fields) >= 2 {
+				resp = helpSubcommand(fields[1])
+			} else {
+				resp = "Commands:\n" +
+					"- /status\n" +
+					"- /changelog [version]\n" +
+					"- /clear\n" +
+					"- /resume <code>\n" +
+					"- /confirm <token>\n" +
+					"- /logout\n" +
+					"- /help [command]\n" +
+					"- /tools <list|search|describe>\n" +
+					"- /subagent <spawn|status>\n" +
+					"- /proactive <action|agent>\n" +
+					"- /signal <link|status|unlink>\n" +
+					"- /discord <status|link|unlink>\n" +
+					"- /memory <list|add|update|delete>\n" +
+					"- /task <list|add|edit|done>\n" +
+					"- /secret <add|list|delete|clear>\n"
+				if m.user != nil && m.user.Role == "admin" {
+					resp += "- /admin <users|audit|signal|jobs>\n"
+				}
 			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "system", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 		}
 		return m, true, nil
@@ -2273,148 +2377,142 @@ func waitAgentAsyncCmd(ch <-chan tea.Msg) tea.Cmd {
 }
 
 func renderSessionStatusTUI(st agent.SessionStatus) string {
-	var b strings.Builder
-	b.WriteString("```text\n")
-	b.WriteString("Session status\n")
-	b.WriteString("session_id: ")
-	b.WriteString(emptyDash(st.SessionID))
-	b.WriteString("\nconversation_id: ")
-	b.WriteString(strconv.FormatInt(st.ConversationID, 10))
-	b.WriteString("\nuser_id: ")
-	b.WriteString(strconv.FormatInt(st.UserID, 10))
-	b.WriteString("\nstarted: ")
-	b.WriteString(formatStatusTimeLocal(st.StartedAt))
-	b.WriteString("\nlast_activity: ")
-	b.WriteString(formatStatusTimeLocal(st.LastActivityAt))
-	b.WriteString("\nage: ")
-	b.WriteString(formatStatusDuration(st.Age))
-	b.WriteString("\nidle: ")
-	b.WriteString(formatStatusDuration(st.Idle))
-	b.WriteString("\nruntime_session: ")
+	kv := func(key, val string) string {
+		return fmt.Sprintf("  %-14s %s", key, val)
+	}
+
+	var lines []string
+
+	// Session
+	lines = append(lines, "Session")
+	if st.UsageSource != "none" {
+		lines = append(lines, kv("model", emptyDash(st.LastModel)))
+	} else {
+		lines = append(lines, kv("model", "unknown"))
+	}
+	if !st.StartedAt.IsZero() {
+		timeStr := st.StartedAt.Local().Format("3:04 PM")
+		lines = append(lines, kv("started", timeStr+"  ·  age "+formatStatusDuration(st.Age)+"  ·  idle "+formatStatusDuration(st.Idle)))
+	}
 	if st.HasRuntimeSession {
-		b.WriteString("active")
-	} else {
-		b.WriteString("none")
+		lines = append(lines, kv("tool calls", strconv.Itoa(st.TotalToolCalls)))
 	}
-	b.WriteString("\ntool_calls: ")
-	if st.HasRuntimeSession {
-		b.WriteString(strconv.Itoa(st.TotalToolCalls))
-	} else {
-		b.WriteString("unknown")
-	}
-	b.WriteString("\nusage_source: ")
-	b.WriteString(st.UsageSource)
-	if !st.LastUsageAt.IsZero() {
-		b.WriteString("\nlast_usage_at: ")
-		b.WriteString(formatStatusTimeLocal(st.LastUsageAt))
-	}
-	b.WriteString("\ncost_usd: ")
-	if st.UsageSource == "none" {
-		b.WriteString("unknown")
-	} else {
-		b.WriteString(fmt.Sprintf("%.6f", st.TotalCost))
-	}
-	b.WriteString("\nmodel: ")
-	if st.UsageSource == "none" {
-		b.WriteString("unknown")
-	} else {
-		b.WriteString(emptyDash(st.LastModel))
-	}
-	b.WriteString("\nlast_request_context: ")
-	if st.LastContextLimit > 0 {
-		b.WriteString(fmt.Sprintf("%d / %d (%.1f%%)", st.LastInputTokens, st.LastContextLimit, st.LastContextPct))
-	} else {
-		if st.UsageSource == "none" {
-			b.WriteString("unknown")
-		} else {
-			b.WriteString("context limit unknown")
+	lines = append(lines, "")
+
+	// Context window — prefer last-request data, fall back to attached context estimate
+	ctxTokens := st.LastInputTokens
+	ctxLimit := st.LastContextLimit
+	ctxPct := st.LastContextPct
+	if ctxLimit == 0 && st.AttachedContext.ContextLimit > 0 {
+		ctxLimit = st.AttachedContext.ContextLimit
+		if ctxTokens == 0 {
+			ctxTokens = st.AttachedContext.EstimatedTokens
+		}
+		if ctxLimit > 0 {
+			ctxPct = float64(ctxTokens) / float64(ctxLimit) * 100
 		}
 	}
-	b.WriteString("\n\nAttached context\n")
+	lines = append(lines, "Context window")
+	if ctxLimit > 0 {
+		bar := statusBarOnly(ctxTokens, ctxLimit, 24)
+		lines = append(lines, fmt.Sprintf("  %s  %.1f%%  %s / %s",
+			bar, ctxPct,
+			formatTokenCount(ctxTokens),
+			formatTokenCount(ctxLimit),
+		))
+	} else {
+		bar := "[" + strings.Repeat("░", 24) + "]"
+		if st.UsageSource == "none" {
+			lines = append(lines, "  "+bar+"  unknown")
+		} else {
+			lines = append(lines, "  "+bar+"  no limit data")
+		}
+	}
+	if st.CompactThreshold > 0 {
+		compactPct := float64(ctxTokens) / float64(st.CompactThreshold) * 100
+		if compactPct > 100 {
+			compactPct = 100
+		}
+		bar := statusBarOnly(ctxTokens, st.CompactThreshold, 24)
+		lines = append(lines, fmt.Sprintf("  %s  %.1f%%  %s / %s  (auto-compact)",
+			bar, compactPct,
+			formatTokenCount(ctxTokens),
+			formatTokenCount(st.CompactThreshold),
+		))
+	}
+	lines = append(lines, "")
+
+	// Cost + token totals
+	if st.UsageSource != "none" {
+		lines = append(lines, "Usage")
+		costStr := fmt.Sprintf("$%.4f", st.TotalCost)
+		if st.TotalTokens > 0 {
+			costStr += fmt.Sprintf("  (%s in  ·  %s out  ·  %s total)",
+				formatTokenCount(st.TotalInputTokens),
+				formatTokenCount(st.TotalOutputTokens),
+				formatTokenCount(st.TotalTokens),
+			)
+		}
+		lines = append(lines, "  "+costStr)
+		lines = append(lines, "")
+	}
+
+	// Attached context
+	lines = append(lines, "Attached context")
 	if st.AttachedContext.Available {
-		b.WriteString("personality: ")
-		b.WriteString(formatYesNo(st.AttachedContext.PersonalityAttached))
-		b.WriteString("\nsummary: ")
+		lines = append(lines, kv("history", fmt.Sprintf("%d msgs  (%d user, %d assistant)",
+			st.AttachedContext.HistoryMessages,
+			st.AttachedContext.HistoryUserMessages,
+			st.AttachedContext.HistoryAssistMessages,
+		)))
 		if st.AttachedContext.SummaryAttached {
-			b.WriteString("yes")
+			sumStr := "yes"
 			if st.AttachedContext.SummaryThroughID > 0 {
-				b.WriteString(" (through message ")
-				b.WriteString(strconv.FormatInt(st.AttachedContext.SummaryThroughID, 10))
-				b.WriteString(")")
+				sumStr += fmt.Sprintf(" (through msg %d)", st.AttachedContext.SummaryThroughID)
 			}
-		} else {
-			b.WriteString("no")
+			lines = append(lines, kv("summary", sumStr))
 		}
-		b.WriteString("\nhistory_messages: ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryMessages))
-		b.WriteString(" (user ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryUserMessages))
-		b.WriteString(", assistant ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.HistoryAssistMessages))
-		b.WriteString(")")
-		b.WriteString("\nmemory: facts ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryFacts))
-		b.WriteString(", prefs ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryPrefs))
-		b.WriteString(", tasks ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.MemoryTasks))
-		b.WriteString("\nskills_index: ")
-		b.WriteString(formatYesNo(st.AttachedContext.SkillsIndexAttached))
-		b.WriteString("\ninvoked_skills: ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.InvokedSkills))
-		b.WriteString("\nestimated_attached_tokens: ")
-		b.WriteString(strconv.Itoa(st.AttachedContext.EstimatedTokens))
-		if st.AttachedContext.ContextLimit > 0 {
-			b.WriteString(" / ")
-			b.WriteString(strconv.Itoa(st.AttachedContext.ContextLimit))
-			b.WriteString(fmt.Sprintf(" (%.1f%%)", st.AttachedContext.ContextPct))
+		memTotal := st.AttachedContext.MemoryFacts + st.AttachedContext.MemoryPrefs + st.AttachedContext.MemoryTasks
+		if memTotal > 0 {
+			lines = append(lines, kv("memory", fmt.Sprintf("%d facts  ·  %d prefs  ·  %d tasks",
+				st.AttachedContext.MemoryFacts,
+				st.AttachedContext.MemoryPrefs,
+				st.AttachedContext.MemoryTasks,
+			)))
+		}
+		if st.AttachedContext.SkillsIndexAttached {
+			skillsStr := "index"
+			if st.AttachedContext.InvokedSkills > 0 {
+				skillsStr += fmt.Sprintf("  ·  %d invoked", st.AttachedContext.InvokedSkills)
+			}
+			lines = append(lines, kv("skills", skillsStr))
+		}
+		if st.AttachedContext.EstimatedTokens > 0 {
+			tokStr := fmt.Sprintf("est. %s", formatTokenCount(st.AttachedContext.EstimatedTokens))
+			if st.AttachedContext.ContextLimit > 0 {
+				tokStr += fmt.Sprintf(" / %s  (%.1f%%)",
+					formatTokenCount(st.AttachedContext.ContextLimit),
+					st.AttachedContext.ContextPct,
+				)
+			}
+			lines = append(lines, kv("tokens", tokStr))
 		}
 	} else {
-		b.WriteString("unavailable")
+		lines = append(lines, "  unavailable")
 	}
-	b.WriteString("\n\nRecorded usage\n")
-	if st.LastContextLimit > 0 {
-		b.WriteString(statusBarLine("context", st.LastInputTokens, st.LastContextLimit))
-		b.WriteString("\n")
-	} else {
-		b.WriteString("context  [")
-		b.WriteString(strings.Repeat("░", 24))
-		if st.UsageSource == "none" {
-			b.WriteString("] unknown\n")
-		} else {
-			b.WriteString("] no limit\n")
-		}
-	}
-	if st.UsageSource != "none" && st.TotalTokens > 0 {
-		b.WriteString(statusBarLine("input", st.TotalInputTokens, st.TotalTokens))
-		b.WriteString("\n")
-		b.WriteString(statusBarLine("output", st.TotalOutputTokens, st.TotalTokens))
-		b.WriteString("\n")
-		b.WriteString(statusBarLine("total", st.TotalTokens, st.TotalTokens))
-	} else {
-		b.WriteString("input   [")
-		b.WriteString(strings.Repeat("░", 24))
-		b.WriteString("] no data\n")
-		b.WriteString("output  [")
-		b.WriteString(strings.Repeat("░", 24))
-		b.WriteString("] no data\n")
-		b.WriteString("total   [")
-		b.WriteString(strings.Repeat("░", 24))
-		if st.UsageSource == "none" {
-			b.WriteString("] unknown")
-		} else {
-			b.WriteString("] no data")
-		}
-	}
-	b.WriteString("\n```")
-	return b.String()
+
+	return strings.Join(lines, "\n")
 }
 
 func statusBarLine(label string, value, total int) string {
 	const width = 24
+	return fmt.Sprintf("%-6s %s %d", label, statusBarOnly(value, total, width), value)
+}
+
+func statusBarOnly(value, total, width int) string {
 	filled := 0
 	if total > 0 {
-		filled = int(math.Round(float64(value) / float64(total) * width))
+		filled = int(math.Round(float64(value) / float64(total) * float64(width)))
 	}
 	if filled < 0 {
 		filled = 0
@@ -2422,8 +2520,9 @@ func statusBarLine(label string, value, total int) string {
 	if filled > width {
 		filled = width
 	}
-	return fmt.Sprintf("%-6s [%s%s] %d", label, strings.Repeat("█", filled), strings.Repeat("░", width-filled), value)
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
 }
+
 
 func formatStatusTimeLocal(t time.Time) string {
 	if t.IsZero() {
@@ -2497,6 +2596,7 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 	if strings.TrimSpace(clean) == "" {
 		if renderInActiveChat {
 			m.chat = m.chat.finishStreamingAssistant(msg.RequestID, "", msg.Reasoning)
+			m = m.maybeShowConfirmPrompt(targetConvID)
 		}
 		return m, m.maybeDispatchWaitlist()
 	}
@@ -2505,8 +2605,19 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 	}
 	if renderInActiveChat {
 		m.chat = m.chat.finishStreamingAssistant(msg.RequestID, clean, msg.Reasoning)
+		m = m.maybeShowConfirmPrompt(targetConvID)
 	}
 	return m, m.maybeDispatchWaitlist()
+}
+
+func (m appModel) maybeShowConfirmPrompt(convID int64) appModel {
+	if m.user == nil || m.ag == nil {
+		return m
+	}
+	if token, toolName, toolArgs, reason, ok := m.ag.PendingConfirmationDetails(m.user.ID, convID); ok {
+		m.chat = m.chat.setConfirmPending(token, toolName, toolArgs, reason)
+	}
+	return m
 }
 
 func (m *appModel) maybeDispatchWaitlist() tea.Cmd {
@@ -2520,6 +2631,35 @@ func (m *appModel) maybeDispatchWaitlist() tea.Cmd {
 		return nil
 	}
 	return m.dispatchNextWaitlist()
+}
+
+func (m appModel) handleConfirmAction(msg confirmActionMsg) (appModel, tea.Cmd) {
+	if m.user == nil || m.conv == nil {
+		return m, nil
+	}
+	m.chat = m.chat.clearConfirmPending()
+	switch msg.Action {
+	case "allow", "allow_all":
+		if msg.Action == "allow_all" {
+			_ = store.SetUserSetting(m.ctx.DB, m.user.ID, "confirm_strictness", "always")
+		}
+		requestID := m.nextRequestID
+		m.nextRequestID++
+		m.activeRuns++
+		m.releasedRuns[requestID] = false
+		m.chat = m.chat.startStreamingAssistant(requestID)
+		return m, tea.Batch(m.resumeConfirmationCmd(requestID, msg.Token), m.chat.streamTickCmd())
+	case "decline", "decline_all":
+		if msg.Action == "decline_all" {
+			_ = store.SetUserSetting(m.ctx.DB, m.user.ID, "confirm_strictness", "never")
+		}
+		note := "Pending tool confirmation declined."
+		_ = m.ag.RejectPendingConfirmation(m.user.ID, m.conv.ID)
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "system", note)
+		m.chat = m.chat.appendLocal("System", note)
+		return m, m.maybeDispatchWaitlist()
+	}
+	return m, nil
 }
 
 func (m *appModel) dispatchNextWaitlist() tea.Cmd {
