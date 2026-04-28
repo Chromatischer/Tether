@@ -9,8 +9,7 @@ import (
 // ProviderPreferences are OpenRouter provider routing preferences.
 // This is intentionally a small subset; extend as needed.
 //
-// Docs: https://openrouter.ai/docs/guides/routing/provider-selection
-// Schema: https://openrouter.ai/docs/api/api-reference/responses/create-responses
+// OpenRouter provider routing and responses request schema.
 //
 // Note: OpenRouter expects provider slugs (e.g. "together", "deepinfra", "morph").
 type ProviderPreferences struct {
@@ -21,7 +20,7 @@ type ProviderPreferences struct {
 }
 
 // ErrorResponse is the standard OpenRouter error envelope.
-// Docs: https://openrouter.ai/docs/api/reference/errors-and-debugging
+// OpenRouter error response payload.
 type ErrorResponse struct {
 	Error struct {
 		Code     any            `json:"code"`

@@ -1,6 +1,7 @@
 # Runtime state / local data
 data/
 backups/
+docs/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

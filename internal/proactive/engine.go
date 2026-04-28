@@ -14,6 +14,7 @@ import (
 	"charm.land/log/v2"
 	"gopkg.in/yaml.v3"
 
+	"tether/internal/appupdate"
 	"tether/internal/personality"
 	"tether/internal/store"
 	"tether/internal/subagents"
@@ -54,6 +55,10 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 	}
 	now = now.UTC()
 	_ = store.AddAuditEvent(e.db, nil, "proactive_tick", fmt.Sprintf(`{"ts":"%s"}`, now.Format(time.RFC3339)))
+
+	if err := e.tickAppUpdate(ctx, now); err != nil {
+		log.Warn("app update tick error", "error", err)
+	}
 
 	userIDs, err := store.ListUserIDs(e.db)
 	if err != nil {
@@ -141,6 +146,25 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 		e.tickSelfSchedules(ctx, uid, now)
 	}
 
+	return nil
+}
+
+func (e *Engine) tickAppUpdate(ctx context.Context, now time.Time) error {
+	settings, err := store.GetAppUpdateSettings(e.db)
+	if err != nil {
+		return err
+	}
+	if !appupdate.AutoDue(settings, now) {
+		return nil
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	_ = store.AddAuditEvent(e.db, nil, "app_update_auto_due", fmt.Sprintf(`{"source_mode":"%s","branch":"%s","schedule_utc":"%s"}`, settings.SourceMode, settings.Branch, settings.ScheduleUTC))
+	if err := appupdate.Run(updateCtx, e.db, false); err != nil {
+		_ = store.AddAuditEvent(e.db, nil, "app_update_auto_failed", fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return err
+	}
+	_ = store.AddAuditEvent(e.db, nil, "app_update_auto_success", fmt.Sprintf(`{"source_mode":"%s"}`, settings.SourceMode))
 	return nil
 }
 

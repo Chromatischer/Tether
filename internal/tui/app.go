@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"tether/internal/agent"
+	"tether/internal/appupdate"
 	"tether/internal/personality"
 	"tether/internal/proactive"
 	"tether/internal/redact"
@@ -110,6 +111,11 @@ type appBackendSyncPollMsg struct{}
 type appBackendSyncMsg struct {
 	Conversation *store.Conversation
 	Messages     []chatMessage
+}
+
+type appAdminUpdateMsg struct {
+	Text string
+	Err  error
 }
 
 func usageBlock(lines ...string) string {
@@ -314,6 +320,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.activateConversation(msg.Conversation)
 		}
 		m.chat, _ = m.chat.Update(chatLoadedMsg{Messages: msg.Messages})
+		return m, nil
+
+	case appAdminUpdateMsg:
+		if m.conv == nil {
+			return m, nil
+		}
+		resp := msg.Text
+		if msg.Err != nil {
+			resp = "update failed: " + msg.Err.Error()
+			if msg.Text != "" {
+				resp += "\n" + msg.Text
+			}
+		}
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
 		return m, nil
 
 	case chatSendMsg:
@@ -686,6 +707,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				"/admin audit tail [n]",
 				"/admin signal status",
 				"/admin jobs status",
+				"/admin update status",
+				"/admin update check",
+				"/admin update run",
+				"/admin update auto <on|off>",
+				"/admin update source <release|branch> [branch]",
+				"/admin update time <HH:MM>",
 			)
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
@@ -910,6 +937,9 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
 			return m, true, nil
+
+		case "update":
+			return m.handleAdminUpdateCommand(text, fields)
 		}
 
 		resp := usageBlock(
@@ -919,6 +949,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			"/admin audit tail [n]",
 			"/admin signal status",
 			"/admin jobs status",
+			"/admin update status",
+			"/admin update check",
+			"/admin update run",
+			"/admin update auto <on|off>",
+			"/admin update source <release|branch> [branch]",
+			"/admin update time <HH:MM>",
 		)
 		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 		m.chat = m.chat.appendLocal("System", resp)
@@ -1781,6 +1817,228 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 	}
 
 	return m, false, nil
+}
+
+func (m appModel) handleAdminUpdateCommand(text string, fields []string) (appModel, bool, tea.Cmd) {
+	usage := usageBlock(
+		"/admin update status",
+		"/admin update check",
+		"/admin update run",
+		"/admin update auto <on|off>",
+		"/admin update source <release|branch> [branch]",
+		"/admin update time <HH:MM>",
+		"/admin update command <path>",
+	)
+	if len(fields) < 3 {
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", usage)
+		m.chat = m.chat.appendLocal("System", usage)
+		return m, true, nil
+	}
+
+	_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
+	m.chat = m.chat.appendLocal("You", text)
+
+	settings, err := store.GetAppUpdateSettings(m.ctx.DB)
+	if err != nil {
+		resp := "failed: " + err.Error()
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
+	}
+
+	switch fields[2] {
+	case "status":
+		resp := m.appUpdateStatus(settings)
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
+
+	case "check":
+		resp := "checking for available update..."
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, m.appUpdateCheckCmd()
+
+	case "run":
+		resp := "starting application update..."
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		_ = store.AddAuditEvent(m.ctx.DB, &m.user.ID, "app_update_manual_start", fmt.Sprintf(`{"source_mode":"%s","branch":"%s"}`, settings.SourceMode, settings.Branch))
+		return m, true, m.appUpdateRunCmd()
+
+	case "auto":
+		if len(fields) < 4 || (fields[3] != "on" && fields[3] != "off") {
+			resp := "usage: /admin update auto <on|off>"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		settings.AutoEnabled = fields[3] == "on"
+		return m.saveAppUpdateSettings(settings)
+
+	case "source":
+		if len(fields) < 4 {
+			resp := "usage: /admin update source <release|branch> [branch]"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		switch fields[3] {
+		case "release":
+			settings.SourceMode = "release"
+		case "branch":
+			settings.SourceMode = "branch"
+			if len(fields) >= 5 {
+				settings.Branch = fields[4]
+			}
+		default:
+			resp := "usage: /admin update source <release|branch> [branch]"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		return m.saveAppUpdateSettings(settings)
+
+	case "time":
+		if len(fields) < 4 || !validHHMM(fields[3]) {
+			resp := "usage: /admin update time <HH:MM>  (UTC, 24-hour)"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		settings.ScheduleUTC = fields[3]
+		return m.saveAppUpdateSettings(settings)
+
+	case "command":
+		if len(fields) < 4 {
+			resp := "usage: /admin update command <path>"
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+		settings.Command = fields[3]
+		return m.saveAppUpdateSettings(settings)
+	}
+
+	_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", usage)
+	m.chat = m.chat.appendLocal("System", usage)
+	return m, true, nil
+}
+
+func (m appModel) saveAppUpdateSettings(settings store.AppUpdateSettings) (appModel, bool, tea.Cmd) {
+	if err := store.SaveAppUpdateSettings(m.ctx.DB, settings); err != nil {
+		resp := "failed: " + err.Error()
+		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+		m.chat = m.chat.appendLocal("System", resp)
+		return m, true, nil
+	}
+	resp := "update settings saved\n\n" + m.appUpdateStatus(store.NormalizeAppUpdateSettings(settings))
+	_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+	m.chat = m.chat.appendLocal("System", resp)
+	return m, true, nil
+}
+
+func (m appModel) appUpdateStatus(settings store.AppUpdateSettings) string {
+	settings = store.NormalizeAppUpdateSettings(settings)
+	var b strings.Builder
+	b.WriteString("Update settings:\n")
+	b.WriteString("- auto_enabled: ")
+	b.WriteString(fmt.Sprintf("%t\n", settings.AutoEnabled))
+	b.WriteString("- source_mode: ")
+	b.WriteString(settings.SourceMode)
+	b.WriteString("\n- branch: ")
+	b.WriteString(settings.Branch)
+	b.WriteString("\n- schedule_utc: ")
+	b.WriteString(settings.ScheduleUTC)
+	b.WriteString("\n- command: ")
+	b.WriteString(settings.Command)
+	b.WriteString("\n- last_checked_utc: ")
+	b.WriteString(formatUnixUTC(settings.LastCheckedAt))
+	b.WriteString("\n- last_available_ref: ")
+	b.WriteString(updateEmptyDash(settings.LastAvailableRef))
+	b.WriteString("\n- last_successful_ref: ")
+	b.WriteString(updateEmptyDash(settings.LastSuccessfulRef))
+	b.WriteString("\n- last_run_utc: ")
+	b.WriteString(formatUnixUTC(settings.LastRunAt))
+	runs, err := store.ListAppUpdateRuns(m.ctx.DB, 3)
+	if err == nil && len(runs) > 0 {
+		b.WriteString("\n\nRecent update runs:")
+		for _, r := range runs {
+			b.WriteString("\n- ")
+			b.WriteString(formatUnixUTC(r.StartedAt))
+			b.WriteString(" ")
+			b.WriteString(r.SourceMode)
+			if r.SourceRef != "" {
+				b.WriteString(" ")
+				b.WriteString(shortRef(r.SourceRef))
+			}
+			b.WriteString(" ")
+			b.WriteString(r.Status)
+		}
+	}
+	return b.String()
+}
+
+func (m appModel) appUpdateCheckCmd() tea.Cmd {
+	db := m.ctx.DB
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		avail, settings, err := appupdate.CheckAndRecord(ctx, db)
+		if err != nil {
+			return appAdminUpdateMsg{Err: err}
+		}
+		msg := fmt.Sprintf("Available update source:\n- source_mode: %s\n- ref: %s\n- last_successful_ref: %s", avail.Mode, avail.Ref, updateEmptyDash(settings.LastSuccessfulRef))
+		if settings.LastSuccessfulRef == avail.Ref {
+			msg += "\n- status: already applied by last successful update"
+		}
+		return appAdminUpdateMsg{Text: msg}
+	}
+}
+
+func (m appModel) appUpdateRunCmd() tea.Cmd {
+	db := m.ctx.DB
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if err := appupdate.Run(ctx, db, true); err != nil {
+			return appAdminUpdateMsg{Err: err}
+		}
+		return appAdminUpdateMsg{Text: "update completed successfully"}
+	}
+}
+
+func validHHMM(s string) bool {
+	if len(s) != 5 || s[2] != ':' {
+		return false
+	}
+	hh, err := strconv.Atoi(s[:2])
+	if err != nil || hh < 0 || hh > 23 {
+		return false
+	}
+	mm, err := strconv.Atoi(s[3:])
+	return err == nil && mm >= 0 && mm <= 59
+}
+
+func formatUnixUTC(ts int64) string {
+	if ts == 0 {
+		return "(never)"
+	}
+	return time.Unix(ts, 0).UTC().Format(time.RFC3339)
+}
+
+func updateEmptyDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+func shortRef(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 func (m appModel) handleSkillCommand(text string) (appModel, bool, tea.Cmd) {

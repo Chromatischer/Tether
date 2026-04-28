@@ -30,7 +30,7 @@ type Config struct {
 		Model   string `yaml:"model"`
 
 		// Provider routing preferences passed through to OpenRouter.
-		// See: https://openrouter.ai/docs/guides/routing/provider-selection
+		// See OpenRouter provider routing documentation.
 		Provider struct {
 			AllowFallbacks *bool    `yaml:"allow_fallbacks,omitempty"`
 			Ignore         []string `yaml:"ignore,omitempty"`

@@ -193,9 +193,20 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 				lt = lastTick.UTC().Format(time.RFC3339)
 			}
 			undelivered, _ := store.CountUndeliveredNotifications(ctx.DB)
+			updates, _ := store.GetAppUpdateSettings(ctx.DB)
+			updateAuto := "false"
+			if updates.AutoEnabled {
+				updateAuto = "true"
+			}
 			content := styleTitleBg.Render("jobs") + "\n\n" +
 				styleMutedBg.Render("proactive_tick last run") + "\n" + styleMutedBg.Render("  "+lt) + "\n\n" +
 				styleMutedBg.Render("undelivered notifications") + "\n" + styleMutedBg.Render(fmt.Sprintf("  %d", undelivered)) + "\n\n" +
+				styleMutedBg.Render("app updates") + "\n" +
+				styleMutedBg.Render("  auto: "+updateAuto) + "\n" +
+				styleMutedBg.Render("  source: "+updates.SourceMode) + "\n" +
+				styleMutedBg.Render("  schedule_utc: "+updates.ScheduleUTC) + "\n" +
+				styleMutedBg.Render("  last_available: "+updates.LastAvailableRef) + "\n" +
+				styleMutedBg.Render("  last_success: "+updates.LastSuccessfulRef) + "\n\n" +
 				styleDimBg.Render("r · refresh")
 			return adminLoadMsg{tab: tab, content: content}
 

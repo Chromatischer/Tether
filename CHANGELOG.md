@@ -1,8 +1,28 @@
 # Changelog
 
-## v0.5 (unreleased)
+## v0.6 (2026-04-28)
 
 ### Added
+- **Linux installer and updater**
+  - Added root-oriented Linux install and update scripts.
+  - Installs Tether binaries, systemd service files, runtime directories, and narrow sudo rules for in-app updates.
+- **In-app admin updates**
+  - Admins can check, run, and configure application updates from Tether.
+  - Supports latest GitHub release or latest commit from a selected branch.
+  - Auto-updates can be scheduled at a configured UTC time.
+
+### Changed
+- **Database migration baselines**
+  - Collapsed historical migrations into the v0.6 baseline snapshot.
+  - Added a generic release baseline guard so future versions can keep compact migration sets.
+- **Repository housekeeping**
+  - Added local agent/tooling ignores and removed project references to the ignored documentation tree.
+
+## v0.5 (2026-04-28)
+
+### Added
+- **OpenRouter streamed error handling**
+  - Streaming responses now surface top-level OpenRouter stream errors and reason fallbacks.
 
 ### Changed
 - **Tool-call streaming now preserves large function arguments**
@@ -14,6 +34,8 @@
 - **TUI agent streaming uses an inactivity watchdog instead of a whole-turn deadline**
   - Active streams stay alive as long as tokens or tool events continue arriving.
   - Silent/stalled streams are canceled after an idle window instead of blocking the chat queue indefinitely.
+- **Responses continuation preserves reasoning items**
+  - Replayable response items now keep provider reasoning payloads needed for continuation.
 
 ## v0.4 (2026-04-22)
 
@@ -63,9 +85,9 @@
 - **Bundled `onboarding` skill** for capturing stable user preferences, writing `config/agents/chat/PERSONALITY.md`, and storing a small set of high-value memory items.
 - **TUI rich-text rendering** for assistant/system output, including headings, lists, code fences, links, rules, and Markdown tables.
 - **Chat composer autocomplete** for slash commands and user-invocable skills.
-- **Autonomy and product vision docs**
-  - Added `docs/VISION.md` for the long-horizon product direction.
-  - Added `docs/AUTONOMY.md` defining Tether’s autonomy ladder and confirmation policy.
+- **Autonomy and product vision notes**
+  - Added the long-horizon product direction.
+  - Added Tether’s autonomy ladder and confirmation policy.
 - **`confirm.scope` tool** to compute the exact confirmation scope string needed before destructive tool calls.
 
 ### Changed
@@ -114,8 +136,8 @@
   - Bundled `skill-creator` skill.
 - **Per-user agent personality files** under `config/agents/<agent_key>/PERSONALITY.md` (auto-created with defaults; used by chat + proactive agents).
 - **Canonical tool metadata** (`internal/tools.ToolSpec` + registry) powering discovery (`tool.search`) and the new `tool.describe`.
-- **Tool documentation generator**: `go run ./cmd/tether-tooldocs` → `docs/tools.md`.
-- `docs/skills.md` describing skills layout + frontmatter.
+- **Tool documentation generator** for the tool reference.
+- Added skills layout and frontmatter notes.
 
 ### Changed
 - **Filesystem tools hardened**

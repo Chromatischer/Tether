@@ -1,4 +1,4 @@
-# Tether (v0.2)
+# Tether (v0.6)
 
 Go-based personal AI assistant with:
 - SSH portal (custom server) exposing a Bubble Tea TUI (alt screen + mouse)
@@ -43,6 +43,39 @@ go run ./cmd/tether -config ./config/tether.yaml
 
 This will start an SSH server on `:2222`.
 
+## Install (Linux)
+
+From a source checkout:
+
+```bash
+sudo scripts/install-linux.sh --openrouter-api-key "$OPENROUTER_API_KEY"
+```
+
+This builds Tether, installs runtime dependencies, creates `/etc/tether` and
+`/var/lib/tether`, and installs a `tether.service` systemd unit.
+
+Update an installed system from the latest GitHub release:
+
+```bash
+sudo tether-update
+```
+
+Or update from a branch:
+
+```bash
+sudo tether-update --branch main
+```
+
+Admins can also manage manual and scheduled updates in-app:
+
+```text
+/admin update status
+/admin update run
+/admin update auto on
+/admin update source branch main
+/admin update time 03:00
+```
+
 ### Connect
 
 ```bash
@@ -69,8 +102,6 @@ go run ./cmd/tether-backup -db ./data/tether.sqlite -out ./backups
 
 Also back up your `TETHER_MASTER_KEY` (and Signal data dir if you use Signal).
 
-More details (restore notes, optional config copying): see [`docs/backup.md`](docs/backup.md).
-
 ## Status
 
 Implemented:
@@ -79,7 +110,7 @@ Implemented:
 - Chat view storing messages in SQLite
 - OpenRouter client (chat/completions) + basic LLM response cache (SQLite)
 - OpenRouter **tool calling loop** (OpenAI-style `tools` / `tool_calls`)
-- Tools implemented: `bash` (bubblewrap/no-net, output limits + redaction), `read`, `write`, `web-search`, `web-fetch`, `fetch.summarize`, `tool.search`, `tool.enable`, `tool.describe`, `confirm.request`, `subagent.spawn`, `subagent.status`, `proactive.run` (full reference: [`docs/tools.md`](docs/tools.md))
+- Tools implemented: `bash` (bubblewrap/no-net, output limits + redaction), `read`, `write`, `web-search`, `web-fetch`, `fetch.summarize`, `tool.search`, `tool.enable`, `tool.describe`, `confirm.request`, `subagent.spawn`, `subagent.status`, `proactive.run`
 - Proactive engine: built-in rules (daily brief/open loops/inactivity) + configurable custom agents (`agents:` in proactive rules YAML) with schedule_times/events/actions triggers
 - Secrets vault (encrypted-at-rest) user commands: `/secret add|list|delete|clear`
 - Redaction monitor for obvious token/password patterns (stores redacted content + warns)

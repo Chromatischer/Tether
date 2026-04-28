@@ -17,12 +17,10 @@ import (
 // Endpoint: POST {BaseURL}/responses
 
 // ResponsesRequest is a subset of the OpenAI/OpenRouter Responses API request.
-// See: https://openrouter.ai/docs/api/reference/responses/overview
 type ResponsesRequest struct {
 	Model string `json:"model"`
 
 	// Models enables OpenRouter model fallbacks (try these in order if the primary fails).
-	// Docs: https://openrouter.ai/docs/guides/routing/model-fallbacks
 	Models []string `json:"models,omitempty"`
 
 	// Input can be a string or an array of items (messages, function_call, ...)
@@ -56,10 +54,6 @@ type ResponsesTool struct {
 // ResponseItem represents a Responses API input/output item.
 // It is intentionally permissive: different item types use different fields.
 // Known types we use: message, function_call, function_call_output.
-//
-// Docs: https://openrouter.ai/docs/api/reference/responses/basic-usage
-//
-//	https://openrouter.ai/docs/api/reference/responses/tool-calling
 type ResponseItem struct {
 	Type   string `json:"type"`
 	ID     string `json:"id,omitempty"`
@@ -144,9 +138,6 @@ type ResponsesResponse struct {
 
 // ResponsesStreamEvent is an SSE "data:" payload for /responses streaming.
 // We parse only the fields we need; everything else is ignored.
-// Example events are in the docs:
-// https://openrouter.ai/docs/api/reference/responses/basic-usage
-// https://openrouter.ai/docs/api/reference/responses/tool-calling
 type ResponsesStreamEvent struct {
 	Type string `json:"type"`
 

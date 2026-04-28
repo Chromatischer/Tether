@@ -13,7 +13,7 @@ openrouter:
   model: "z-ai/glm-5.1"
 
   # Provider routing preferences passed through to OpenRouter.
-  # See: https://openrouter.ai/docs/guides/routing/provider-selection
+  # See OpenRouter provider routing documentation.
   provider:
     # Morph has been observed to be unreliable for agent workloads.
     ignore: ["morph"]
