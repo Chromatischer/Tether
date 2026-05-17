@@ -91,6 +91,14 @@ func TestMigrate_IdempotentAndAppliesAll(t *testing.T) {
 	if notNull != 1 {
 		t.Fatalf("expected messages.is_notice column to exist and be NOT NULL, got count=%d", notNull)
 	}
+
+	var changelogColumn int
+	if err := d.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('users') WHERE name='last_seen_changelog_version'`).Scan(&changelogColumn); err != nil {
+		t.Fatal(err)
+	}
+	if changelogColumn != 1 {
+		t.Fatalf("expected users.last_seen_changelog_version column to exist, got count=%d", changelogColumn)
+	}
 }
 
 func TestMigrate_AllowsExistingDBAtBaseline(t *testing.T) {
@@ -102,6 +110,16 @@ func TestMigrate_AllowsExistingDBAtBaseline(t *testing.T) {
 	defer d.Close()
 
 	if _, err := d.Exec(bootstrapMigrationsTable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT NOT NULL UNIQUE,
+		pass_hash TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'user',
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		last_login_at TEXT
+	)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, currentSchemaBaseline.Version); err != nil {

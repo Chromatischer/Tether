@@ -61,3 +61,30 @@ func TestAuthenticate_SuccessAndInvalid(t *testing.T) {
 		t.Fatalf("expected last_login_at to be set")
 	}
 }
+
+func TestUserChangelogVersion(t *testing.T) {
+	d := openTestDB(t)
+	u, err := store.CreateUser(d, "alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetUserLastSeenChangelogVersion(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty initial changelog version, got %q", got)
+	}
+
+	if err := store.SetUserLastSeenChangelogVersion(d, u.ID, "v0.5"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetUserLastSeenChangelogVersion(d, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "v0.5" {
+		t.Fatalf("expected v0.5, got %q", got)
+	}
+}

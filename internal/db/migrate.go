@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 `
 
 var currentSchemaBaseline = schemaBaseline{
-	Release: "v0.6",
-	Version: 17,
+	Release: "v0.7",
+	Version: 20,
 }
 
 type schemaBaseline struct {

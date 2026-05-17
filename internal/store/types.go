@@ -1,9 +1,10 @@
 package store
 
 type User struct {
-	ID       int64
-	Username string
-	Role     string
+	ID                       int64
+	Username                 string
+	Role                     string
+	LastSeenChangelogVersion string
 }
 
 type Conversation struct {

@@ -1,7 +1,7 @@
--- v0.6 schema baseline.
+-- v0.7 schema baseline.
 --
--- Older historical migrations were collapsed into this snapshot. Existing
--- databases that already applied migration 0017 will skip this migration.
+-- Older historical migrations (0017–0019) were collapsed into this snapshot.
+-- Existing databases that already applied migration 0020 will skip this migration.
 -- Fresh databases apply this as the initial schema.
 
 PRAGMA foreign_keys = ON;
@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
   pass_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  last_login_at TEXT
+  last_login_at TEXT,
+  last_seen_changelog_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -216,3 +217,29 @@ CREATE TABLE IF NOT EXISTS self_schedules (
 
 CREATE INDEX IF NOT EXISTS idx_self_schedules_due ON self_schedules(user_id, run_at, done_at, canceled_at, claimed_at);
 CREATE INDEX IF NOT EXISTS idx_self_schedules_due2 ON self_schedules(user_id, run_at, claimed_at, done_at, canceled_at);
+
+CREATE TABLE IF NOT EXISTS app_update_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  auto_enabled INTEGER NOT NULL DEFAULT 0,
+  source_mode TEXT NOT NULL DEFAULT 'release',
+  branch TEXT NOT NULL DEFAULT 'main',
+  schedule_utc TEXT NOT NULL DEFAULT '03:00',
+  command TEXT NOT NULL DEFAULT 'sudo -n /usr/local/bin/tether-update',
+  last_checked_at INTEGER,
+  last_available_ref TEXT,
+  last_successful_ref TEXT,
+  last_run_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_update_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_mode TEXT NOT NULL,
+  source_ref TEXT,
+  status TEXT NOT NULL,
+  output TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_update_runs_started_at ON app_update_runs(started_at);
