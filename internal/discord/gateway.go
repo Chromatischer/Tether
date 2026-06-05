@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -238,6 +239,41 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 
 func (g *Gateway) sendChunks(s *discordgo.Session, channelID string, msg string) {
 	sendDiscordChunks(s, channelID, msg)
+}
+
+// introductionMessage is sent as a DM to a Discord user right after their
+// account is linked. Edit internal/discord/INTRODUCTION.md to change it.
+//
+//go:embed INTRODUCTION.md
+var introductionMessage string
+
+// SendIntroduction DMs the post-link welcome message to a freshly linked
+// Discord user. It is best-effort: a no-op when the gateway is disabled.
+func (g *Gateway) SendIntroduction(discordUserID string) error {
+	return g.SendDM(discordUserID, introductionMessage)
+}
+
+// SendDM opens (or reuses) a DM channel with the given Discord user and sends
+// content, chunking as needed. Returns nil without error when the gateway is
+// not running so callers can treat it as best-effort.
+func (g *Gateway) SendDM(discordUserID, content string) error {
+	if g == nil {
+		return nil
+	}
+	s := g.s
+	if s == nil {
+		return nil
+	}
+	discordUserID = strings.TrimSpace(discordUserID)
+	if discordUserID == "" {
+		return fmt.Errorf("empty discord user id")
+	}
+	ch, err := s.UserChannelCreate(discordUserID)
+	if err != nil {
+		return fmt.Errorf("create dm channel: %w", err)
+	}
+	g.sendChunks(s, ch.ID, content)
+	return nil
 }
 
 func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *discordgo.MessageReactionAdd) {

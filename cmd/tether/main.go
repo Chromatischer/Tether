@@ -46,13 +46,14 @@ func main() {
 	}
 
 	ag := agent.New(cfg, database)
-	srv, err := portal.NewServer(cfg, database, ag, gradientTest)
-	if err != nil {
-		log.Fatal("failed to create ssh portal server", "error", err)
-	}
 
 	sigGW := signalgw.NewGateway(cfg, database, ag)
 	discGW := discordgw.NewGateway(cfg, database, ag)
+
+	srv, err := portal.NewServer(cfg, database, ag, discGW, gradientTest)
+	if err != nil {
+		log.Fatal("failed to create ssh portal server", "error", err)
+	}
 	pro := proactive.NewScheduler(database, ag, ag, ag.Subagents(), cfg.Paths.DataDir, 1*time.Minute)
 
 	done := make(chan os.Signal, 1)
