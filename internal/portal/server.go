@@ -28,7 +28,7 @@ type Server struct {
 	s *ssh.Server
 }
 
-func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, gradientTest bool) (*Server, error) {
+func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, discord tui.DiscordNotifier, gradientTest bool) (*Server, error) {
 	passwordHandler := func(_ ssh.Context, password string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(cfg.SSH.PortalPasswordHash), []byte(password)) == nil
 	}
@@ -44,7 +44,7 @@ func NewServer(cfg *config.Config, db *sql.DB, ag *agent.Agent, gradientTest boo
 				if gradientTest {
 					return tui.NewGradientTestModel(s), nil
 				}
-				ctx := tui.NewSessionContext(s, cfg, db, ag)
+				ctx := tui.NewSessionContext(s, cfg, db, ag, discord)
 				return tui.NewAppModel(ctx), nil
 			}),
 			activeterm.Middleware(),

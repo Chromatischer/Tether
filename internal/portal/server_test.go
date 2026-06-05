@@ -50,7 +50,7 @@ func TestNewServer_BindsAllInterfacesWhenHostEmpty(t *testing.T) {
 	cfg.SSH.PortalPasswordHash = string(h)
 	cfg.SSH.AuthorizedKeysPath = filepath.Join(dir, "missing_authorized_keys")
 
-	srv, err := NewServer(cfg, mustDB(t), nil, false)
+	srv, err := NewServer(cfg, mustDB(t), nil, nil, false)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestNewServer_LeavesExplicitHostAlone(t *testing.T) {
 	cfg.SSH.PortalPasswordHash = string(h)
 	cfg.SSH.AuthorizedKeysPath = filepath.Join(dir, "missing_authorized_keys")
 
-	srv, err := NewServer(cfg, mustDB(t), nil, false)
+	srv, err := NewServer(cfg, mustDB(t), nil, nil, false)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

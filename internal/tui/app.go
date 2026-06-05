@@ -1375,6 +1375,12 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 				return m, true, nil
 			}
 
+			// Best-effort: DM a welcome/introduction into the Discord chat.
+			// Runs in the background so the SSH UI isn't blocked on network I/O.
+			if n := m.ctx.Discord; n != nil {
+				go func() { _ = n.SendIntroduction(discordUID) }()
+			}
+
 			resp := "Discord linked."
 			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
 			m.chat = m.chat.appendLocal("System", resp)
