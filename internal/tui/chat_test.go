@@ -289,7 +289,7 @@ func TestToggleExpandableAtExpandsClickedCompletedReasoningRow(t *testing.T) {
 		t.Fatalf("expected one row hit, got %d", len(m.rowHits))
 	}
 	y := 1 + m.rowHits[0].startLine
-	m = m.toggleExpandableAt(y)
+	m, _ = m.handleClick(y)
 	if !m.messages[0].expanded {
 		t.Fatalf("expected clicked reasoning row to expand, got %+v", m.messages[0])
 	}

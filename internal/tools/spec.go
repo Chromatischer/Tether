@@ -2,7 +2,7 @@ package tools
 
 // ToolSpec is the canonical documentation for a tool.
 // It is used for:
-//   - human-facing docs (/tools describe, docs/tools.md)
+//   - human-facing tool descriptions (/tools describe)
 //   - model-facing tool definitions (ToolDef.Description + parameters JSON schema)
 //
 // InputSchema and OutputSchema are JSON-Schema-like objects represented as Go maps/slices

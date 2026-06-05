@@ -174,6 +174,22 @@ var (
 			Padding(0, 1).
 			Italic(true)
 
+	styleStatusMsg = lipgloss.NewStyle().
+			Background(colorBg).
+			Foreground(colorMuted).
+			BorderLeft(true).
+			BorderStyle(lipgloss.ThickBorder()).
+			BorderForeground(colorToolBorder).
+			Padding(0, 1)
+
+	styleConfirmMsg = lipgloss.NewStyle().
+			Background(colorBg).
+			Foreground(lipgloss.Color("217")).
+			BorderLeft(true).
+			BorderStyle(lipgloss.ThickBorder()).
+			BorderForeground(colorRed).
+			Padding(0, 1)
+
 	styleErrorMsg = lipgloss.NewStyle().
 			Background(colorBg).
 			Foreground(lipgloss.Color("217")).
@@ -254,6 +270,27 @@ var (
 
 	styleChatRow = lipgloss.NewStyle().
 			Background(colorHeaderBg)
+
+	styleChangelogModal = lipgloss.NewStyle().
+				Background(colorBotMsgBg).
+				Foreground(colorBody).
+				Border(lipgloss.RoundedBorder()).
+				BorderBackground(colorBg).
+				BorderForeground(colorAmber).
+				Padding(0, 1)
+
+	styleChangelogTitle = lipgloss.NewStyle().
+				Background(colorBotMsgBg).
+				Foreground(colorAmber).
+				Bold(true)
+
+	styleChangelogRule = lipgloss.NewStyle().
+				Background(colorBotMsgBg).
+				Foreground(colorBorder)
+
+	styleChangelogFooter = lipgloss.NewStyle().
+				Background(colorBotMsgBg).
+				Foreground(colorMuted)
 
 	// ── Autocomplete ─────────────────────────────────────────────────────
 	styleAutocompleteSuggestion = lipgloss.NewStyle().

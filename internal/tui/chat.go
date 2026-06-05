@@ -68,6 +68,8 @@ type chatModel struct {
 	selectedSuggestion    int
 	autocompleteDismissed bool
 	rowHits               []chatRowHit
+	confirmPending        bool
+	confirmToken          string
 
 	polling bool
 	err     error
@@ -117,9 +119,16 @@ type streamState struct {
 }
 
 type chatRowHit struct {
-	startLine int
-	endLine   int
-	msgIndex  int
+	startLine   int
+	endLine     int
+	msgIndex    int
+	confirmBtns map[int]string // relative line offset → action (confirm_prompt messages only)
+}
+
+// confirmActionMsg is returned as a command when the user clicks a confirm button.
+type confirmActionMsg struct {
+	Action string // "allow" | "allow_all" | "decline" | "decline_all"
+	Token  string
 }
 
 func newChatModel() chatModel {
@@ -361,8 +370,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
-			m = m.toggleExpandableAt(msg.Y)
-			return m, nil
+			var cmd tea.Cmd
+			m, cmd = m.handleClick(msg.Y)
+			return m, cmd
 		}
 	}
 
@@ -441,11 +451,15 @@ func (m *chatModel) reflow() {
 	for i, msg := range m.messages {
 		rendered := formatMessage(msg, w, m.streamFrame, m.term)
 		lines = append(lines, rendered)
-		hits = append(hits, chatRowHit{
+		hit := chatRowHit{
 			startLine: lineCursor,
 			endLine:   lineCursor + max(1, lipgloss.Height(rendered)),
 			msgIndex:  i,
-		})
+		}
+		if msg.role == "confirm_prompt" {
+			hit.confirmBtns = confirmButtonOffsets(msg.content, w)
+		}
+		hits = append(hits, hit)
 		lineCursor += max(1, lipgloss.Height(rendered)) + 1
 	}
 	m.rowHits = hits
@@ -461,6 +475,8 @@ func (m chatModel) appendLocal(sender, text string) chatModel {
 		role = "assistant"
 	case "tool_call":
 		role = "tool_call"
+	case "Status":
+		role = "status"
 	default:
 		role = "system"
 	}
@@ -528,9 +544,9 @@ func (m chatModel) updateMessageContent(idx int, content string) chatModel {
 	return m
 }
 
-func (m chatModel) toggleExpandableAt(y int) chatModel {
+func (m chatModel) handleClick(y int) (chatModel, tea.Cmd) {
 	if y <= 0 {
-		return m
+		return m, nil
 	}
 	bodyY := y - 1
 	line := m.viewport.YOffset() + bodyY
@@ -538,17 +554,89 @@ func (m chatModel) toggleExpandableAt(y int) chatModel {
 		if line < hit.startLine || line >= hit.endLine {
 			continue
 		}
+		// Confirm button click
+		if hit.confirmBtns != nil {
+			relLine := line - hit.startLine
+			if action, ok := hit.confirmBtns[relLine]; ok {
+				token := m.confirmToken
+				return m, func() tea.Msg {
+					return confirmActionMsg{Action: action, Token: token}
+				}
+			}
+			return m, nil
+		}
+		// Expandable message toggle
 		if hit.msgIndex < 0 || hit.msgIndex >= len(m.messages) {
-			return m
+			return m, nil
 		}
 		msg := &m.messages[hit.msgIndex]
 		if !msg.isExpandable() || msg.streaming {
-			return m
+			return m, nil
 		}
 		msg.expanded = !msg.expanded
 		m.reflow()
+		return m, nil
+	}
+	return m, nil
+}
+
+// setConfirmPending stores the confirmation details and appends the confirm_prompt message.
+// content is encoded as tab-separated: token\ttoolName\ttoolArgs\treason
+// confirmButtonOffsets computes the relative line offsets of the 4 confirm buttons
+// for a given confirm_prompt message content and viewport width.
+func confirmButtonOffsets(content string, viewW int) map[int]string {
+	bodyW := max(16, viewW-styleConfirmMsg.GetHorizontalFrameSize())
+	parts := strings.SplitN(content, "\t", 4)
+	var toolName, toolArgs, reason string
+	if len(parts) == 4 {
+		toolName, toolArgs, reason = parts[1], parts[2], parts[3]
+	}
+	// line 0 = label
+	offset := 1
+	if toolName != "" {
+		line := toolName
+		if toolArgs != "" && toolArgs != "{}" {
+			line += "  " + toolArgs
+		}
+		offset += lipgloss.Height(lipgloss.Wrap(line, bodyW, " "))
+	}
+	if reason != "" {
+		offset += lipgloss.Height(lipgloss.Wrap(reason, bodyW, " "))
+	}
+	offset++ // blank line
+	return map[int]string{
+		offset:     "allow",
+		offset + 1: "allow_all",
+		offset + 2: "decline",
+		offset + 3: "decline_all",
+	}
+}
+
+func (m chatModel) setConfirmPending(token, toolName, toolArgs, reason string) chatModel {
+	m = m.clearConfirmPending()
+	m.confirmPending = true
+	m.confirmToken = token
+	content := token + "\t" + toolName + "\t" + toolArgs + "\t" + reason
+	m.messages = append(m.messages, chatMessage{role: "confirm_prompt", content: content})
+	m.reflow()
+	m.viewport.GotoBottom()
+	return m
+}
+
+func (m chatModel) clearConfirmPending() chatModel {
+	if !m.confirmPending {
 		return m
 	}
+	m.confirmPending = false
+	m.confirmToken = ""
+	filtered := m.messages[:0]
+	for _, msg := range m.messages {
+		if msg.role != "confirm_prompt" {
+			filtered = append(filtered, msg)
+		}
+	}
+	m.messages = filtered
+	m.reflow()
 	return m
 }
 
@@ -890,6 +978,48 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 			return invRow + "\n" + styleToolResult.Width(width).Render("✓  "+result)
 		}
 		return invRow + "\n" + styleToolResult.Width(width).Render("·  running…")
+
+	case "confirm_prompt":
+		label := lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("● confirm")
+		parts := strings.SplitN(msg.content, "\t", 4)
+		var toolName, toolArgs, reason string
+		if len(parts) == 4 {
+			toolName, toolArgs, reason = parts[1], parts[2], parts[3]
+		}
+		bodyW := max(16, width-styleConfirmMsg.GetHorizontalFrameSize())
+		var lines []string
+		if toolName != "" {
+			line := toolName
+			if toolArgs != "" && toolArgs != "{}" {
+				line += "  " + toolArgs
+			}
+			lines = append(lines, lipgloss.Wrap(line, bodyW, " "))
+		}
+		if reason != "" {
+			lines = append(lines, lipgloss.Wrap(styleDim.Render(reason), bodyW, " "))
+		}
+		lines = append(lines, "")
+		lines = append(lines, "  [ ] Allow this")
+		lines = append(lines, "  [ ] Allow all requests")
+		lines = append(lines, "  [ ] Decline")
+		lines = append(lines, "  [ ] Decline all")
+		body := strings.Join(lines, "\n")
+		return styleConfirmMsg.Width(width).Render(label + "\n" + body)
+
+	case "status":
+		label := styleSenderSystem.Render("● status")
+		bodyW := max(16, width-styleStatusMsg.GetHorizontalFrameSize())
+		rawLines := strings.Split(strings.TrimSpace(msg.content), "\n")
+		wrappedLines := make([]string, len(rawLines))
+		for i, l := range rawLines {
+			if strings.TrimSpace(l) == "" {
+				wrappedLines[i] = ""
+			} else {
+				wrappedLines[i] = lipgloss.Wrap(l, bodyW, " ")
+			}
+		}
+		body := strings.Join(wrappedLines, "\n")
+		return styleStatusMsg.Width(width).Render(label + "\n" + body)
 
 	default: // system
 		senderLabel, s := systemMessageVariant(msg.content)
@@ -1248,6 +1378,7 @@ func matchCommandSuggestions(text string, isAdmin bool) []chatSuggestion {
 	candidates := []chatSuggestion{
 		{Label: "/help", InsertValue: "/help", Detail: "show available commands"},
 		{Label: "/status", InsertValue: "/status", Detail: "show current session metrics"},
+		{Label: "/changelog", InsertValue: "/changelog ", Detail: "show release notes"},
 		{Label: "/clear", InsertValue: "/clear", Detail: "start a fresh conversation"},
 		{Label: "/resume", InsertValue: "/resume ", Detail: "resume a previous conversation"},
 		{Label: "/logout", InsertValue: "/logout", Detail: "log out of the SSH portal"},

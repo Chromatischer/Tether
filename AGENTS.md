@@ -2,6 +2,57 @@
 
 Guidance for AI agents working in this repo.
 
+## DB migrations: release baseline policy
+
+The app embeds SQLite migrations from `internal/db/migrations/*.sql` and runs
+them at server startup. Applied versions are recorded in `schema_migrations`.
+
+This repo does **not** keep an unbounded migration history forever. Each
+supported release line has a compact active migration set:
+
+1. one baseline schema snapshot for that release line
+2. any forward migrations after that baseline
+
+The current baseline is declared in `internal/db/migrate.go`:
+
+```go
+var currentSchemaBaseline = schemaBaseline{
+	Release: "v0.6",
+	Version: 17,
+}
+```
+
+The baseline SQL file must use the same numeric version and release id, e.g.
+`internal/db/migrations/0017_v0_6_init.sql`.
+
+Important rules:
+
+- Migration numbers never reset. Existing databases may already have older
+  version numbers recorded, so future files must keep increasing.
+- Always pick the next migration number by looking at the highest existing file
+  in `internal/db/migrations` and adding one.
+- Fresh databases apply the baseline snapshot first, then later migrations.
+- Existing databases at or above the baseline skip the baseline and apply only
+  later migrations.
+- Existing databases below the active baseline are intentionally rejected by
+  the migration runner. They must first upgrade through a compatible earlier
+  release that can bring them to the baseline.
+- Do not edit a shipped migration in place. Add a new forward migration unless
+  the file truly has not shipped anywhere.
+
+When creating a new baseline for any release id:
+
+1. Start from a fully migrated database for the previous release line.
+2. Dump or hand-write the full current schema as one snapshot migration.
+3. Name it with the latest migration number and release id, such as
+   `0024_v0_7_init.sql`.
+4. Delete older migration files from the active set.
+5. Update `currentSchemaBaseline.Release` and `currentSchemaBaseline.Version`
+   to match the new snapshot file.
+6. Add future migrations above that number, e.g. `0025_*.sql`.
+
+Keep this section in sync with any migration policy change.
+
 ## TUI: lipgloss background rules
 
 The TUI uses `charm.land/lipgloss/v2`. Background colors in lipgloss are easy

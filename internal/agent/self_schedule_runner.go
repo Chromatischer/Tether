@@ -21,8 +21,8 @@ func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule, act
 	if a.db == nil {
 		return "", errors.New("db not available")
 	}
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return "", errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", errors.New(a.cfg.LLMAPIKeyEnvName() + " not configured")
 	}
 	if job.UserID == 0 || job.ConversationID == 0 {
 		return "", errors.New("invalid schedule")

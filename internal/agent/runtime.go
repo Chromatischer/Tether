@@ -10,6 +10,7 @@ import (
 	"tether/internal/agent/toolset"
 	"tether/internal/cache"
 	"tether/internal/config"
+	"tether/internal/llm/deepseek"
 	"tether/internal/llm/openrouter"
 	"tether/internal/mcp"
 	"tether/internal/secrets"
@@ -107,9 +108,18 @@ func skillArgs(skill *toolset.SubagentSkill) string {
 	return skill.Arguments
 }
 
+func newLLMClient(cfg *config.Config) llmClient {
+	switch cfg.LLMProvider() {
+	case "deepseek":
+		return deepseek.New(cfg.DeepSeek.BaseURL, cfg.DeepSeek.APIKey, "Tether")
+	default:
+		return openrouter.New(cfg.OpenRouter.BaseURL, cfg.OpenRouter.APIKey, "Tether")
+	}
+}
+
 // newAgent initializes the agent runtime fields.
 func newAgent(cfg *config.Config, db *sql.DB) *Agent {
-	llm := openrouter.New(cfg.OpenRouter.BaseURL, cfg.OpenRouter.APIKey, "Tether")
+	llm := newLLMClient(cfg)
 	a := &Agent{
 		cfg:         cfg,
 		db:          db,

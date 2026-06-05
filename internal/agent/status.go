@@ -23,6 +23,7 @@ type SessionStatus struct {
 	LastInputTokens   int
 	LastContextLimit  int
 	LastContextPct    float64
+	CompactThreshold  int
 	UsageSource       string
 	LastUsageAt       time.Time
 	HasRuntimeSession bool
@@ -69,6 +70,12 @@ func (a *Agent) SessionStatus(userID, convID int64) SessionStatus {
 		}
 	}
 	a.mu.Unlock()
+
+	modelLimit := a.modelInfo(a.cfg.LLMModel()).ContextLength
+	if modelLimit <= 0 {
+		modelLimit = 128000
+	}
+	st.CompactThreshold = min(int(float64(modelLimit)*0.80), 200_000)
 
 	if st.UsageSource == "runtime" || a == nil || a.db == nil {
 		st.AttachedContext = a.attachedContextStatus(userID, convID)

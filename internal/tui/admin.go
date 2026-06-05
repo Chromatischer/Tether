@@ -50,6 +50,7 @@ type adminModel struct {
 	setupOpenRouter  textinput.Model
 	setupModel       textinput.Model
 	setupDiscord     textinput.Model
+	setupDiscordOn   bool
 	setupSignal      textinput.Model
 	setupMasterKey   textinput.Model
 	setupFocus       int
@@ -193,9 +194,20 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 				lt = lastTick.UTC().Format(time.RFC3339)
 			}
 			undelivered, _ := store.CountUndeliveredNotifications(ctx.DB)
+			updates, _ := store.GetAppUpdateSettings(ctx.DB)
+			updateAuto := "false"
+			if updates.AutoEnabled {
+				updateAuto = "true"
+			}
 			content := styleTitleBg.Render("jobs") + "\n\n" +
 				styleMutedBg.Render("proactive_tick last run") + "\n" + styleMutedBg.Render("  "+lt) + "\n\n" +
 				styleMutedBg.Render("undelivered notifications") + "\n" + styleMutedBg.Render(fmt.Sprintf("  %d", undelivered)) + "\n\n" +
+				styleMutedBg.Render("app updates") + "\n" +
+				styleMutedBg.Render("  auto: "+updateAuto) + "\n" +
+				styleMutedBg.Render("  source: "+updates.SourceMode) + "\n" +
+				styleMutedBg.Render("  schedule_utc: "+updates.ScheduleUTC) + "\n" +
+				styleMutedBg.Render("  last_available: "+updates.LastAvailableRef) + "\n" +
+				styleMutedBg.Render("  last_success: "+updates.LastSuccessfulRef) + "\n\n" +
 				styleDimBg.Render("r · refresh")
 			return adminLoadMsg{tab: tab, content: content}
 
@@ -237,6 +249,10 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 			if env.DiscordBotToken == "" {
 				env.DiscordBotToken = ctx.Config.Discord.BotToken
 			}
+			if env.DiscordEnabled == nil {
+				v := ctx.Config.Discord.Enabled
+				env.DiscordEnabled = &v
+			}
 			if env.SignalNumber == "" {
 				env.SignalNumber = ctx.Config.Signal.AccountNumber
 			}
@@ -270,6 +286,9 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			m.setupOpenRouter.SetValue(msg.env.OpenRouterAPIKey)
 			m.setupModel.SetValue(msg.env.OpenRouterModel)
 			m.setupDiscord.SetValue(msg.env.DiscordBotToken)
+			if msg.env.DiscordEnabled != nil {
+				m.setupDiscordOn = *msg.env.DiscordEnabled
+			}
 			m.setupSignal.SetValue(msg.env.SignalNumber)
 			m.setupMasterKey.SetValue(msg.env.MasterKey)
 			m.syncSetupModelSelection()
@@ -394,18 +413,27 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
-		m.setSetupFocus((m.setupFocus + 1) % 7)
+		m.setSetupFocus((m.setupFocus + 1) % 8)
 		return m, nil
 	case "shift+tab":
-		m.setSetupFocus((m.setupFocus - 1 + 7) % 7)
+		m.setSetupFocus((m.setupFocus - 1 + 8) % 8)
 		return m, nil
 	case "ctrl+s":
 		return m, m.saveSetupCmd()
+	case " ":
+		if m.setupFocus == 4 {
+			m.setupDiscordOn = !m.setupDiscordOn
+			return m, nil
+		}
 	case "enter":
 		if m.setupFocus == 2 {
 			return m.chooseSetupModel()
 		}
-		if m.setupFocus == 6 {
+		if m.setupFocus == 4 {
+			m.setupDiscordOn = !m.setupDiscordOn
+			return m, nil
+		}
+		if m.setupFocus == 7 {
 			return m, m.saveSetupCmd()
 		}
 	case "up":
@@ -424,7 +452,7 @@ func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 }
 
 func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
-	if m.setupFocus == 2 || m.setupFocus == 6 {
+	if m.setupFocus == 2 || m.setupFocus == 4 || m.setupFocus == 7 {
 		return m, nil
 	}
 
@@ -438,9 +466,9 @@ func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
 		m.setupModel, cmd = m.setupModel.Update(msg)
 	case 3:
 		m.setupDiscord, cmd = m.setupDiscord.Update(msg)
-	case 4:
-		m.setupSignal, cmd = m.setupSignal.Update(msg)
 	case 5:
+		m.setupSignal, cmd = m.setupSignal.Update(msg)
+	case 6:
 		m.setupMasterKey, cmd = m.setupMasterKey.Update(msg)
 	}
 	if m.setupFocus == 1 && before != m.setupModel.Value() {
@@ -452,10 +480,12 @@ func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
 
 func (m adminModel) saveSetupCmd() tea.Cmd {
 	ctx := m.ctx
+	discordOn := m.setupDiscordOn
 	env := config.AdminEnv{
 		OpenRouterAPIKey: m.setupOpenRouter.Value(),
 		OpenRouterModel:  m.setupModel.Value(),
 		DiscordBotToken:  m.setupDiscord.Value(),
+		DiscordEnabled:   &discordOn,
 		SignalNumber:     m.setupSignal.Value(),
 		MasterKey:        m.setupMasterKey.Value(),
 	}
@@ -472,6 +502,7 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 		ctx.Config.OpenRouter.APIKey = strings.TrimSpace(env.OpenRouterAPIKey)
 		ctx.Config.OpenRouter.Model = strings.TrimSpace(env.OpenRouterModel)
 		ctx.Config.Discord.BotToken = strings.TrimSpace(env.DiscordBotToken)
+		ctx.Config.Discord.Enabled = discordOn
 		ctx.Config.Signal.AccountNumber = strings.TrimSpace(env.SignalNumber)
 		ctx.Config.Secrets.MasterKey = strings.TrimSpace(env.MasterKey)
 		if ctx.Agent != nil {
@@ -544,13 +575,13 @@ func (m *adminModel) setSetupFocus(focus int) {
 		m.setupDiscord.Focus()
 		m.setupSignal.Blur()
 		m.setupMasterKey.Blur()
-	case 4:
+	case 5:
 		m.setupOpenRouter.Blur()
 		m.setupModel.Blur()
 		m.setupDiscord.Blur()
 		m.setupSignal.Focus()
 		m.setupMasterKey.Blur()
-	case 5:
+	case 6:
 		m.setupOpenRouter.Blur()
 		m.setupModel.Blur()
 		m.setupDiscord.Blur()
@@ -909,8 +940,18 @@ func trimRunes(s string, maxLen int) string {
 
 func (m adminModel) renderSetup() string {
 	saveLabel := styleTab.Render(" save ")
-	if m.setupFocus == 6 {
+	if m.setupFocus == 7 {
 		saveLabel = styleTabActive.Render(" save ")
+	}
+
+	discordState := "off"
+	if m.setupDiscordOn {
+		discordState = "on"
+	}
+	discordToggle := styleMutedBg.Render("Discord gateway: " + discordState)
+	if m.setupFocus == 4 {
+		discordToggle = styleTabActive.Render(" Discord gateway: "+discordState+" ") +
+			styleDimBg.Render("  space · toggle")
 	}
 
 	var b strings.Builder
@@ -922,13 +963,14 @@ func (m adminModel) renderSetup() string {
 	b.WriteString(m.renderSetupModelList() + "\n\n")
 	b.WriteString(m.renderSetupModelDetails() + "\n\n")
 	b.WriteString(m.setupDiscord.View() + "\n\n")
+	b.WriteString(discordToggle + "\n\n")
 	b.WriteString(m.setupSignal.View() + "\n\n")
 	b.WriteString(m.setupMasterKey.View() + "\n\n")
 	b.WriteString(saveLabel + "\n\n")
-	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ↑↓ · model list   enter · choose model   ctrl+s · save"))
-	b.WriteString("\n" + styleDimBg.Render("OpenRouter model/key and master key update live; Discord/Signal require restart"))
-	if !m.ctx.Config.Discord.Enabled || !m.ctx.Config.Signal.Enabled {
-		b.WriteString("\n" + styleDimBg.Render("Discord/Signal still require enabled=true in server config."))
+	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ↑↓ · model list   enter · choose model   space · toggle Discord   ctrl+s · save"))
+	b.WriteString("\n" + styleDimBg.Render("OpenRouter model/key and master key update live; Discord/Signal gateways apply on restart"))
+	if !m.ctx.Config.Signal.Enabled {
+		b.WriteString("\n" + styleDimBg.Render("Signal still requires enabled=true in server config."))
 	}
 	if m.setupStatus != "" {
 		line := styleInfoBg.Render(m.setupStatus)

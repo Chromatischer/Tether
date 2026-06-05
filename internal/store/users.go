@@ -51,8 +51,8 @@ func Authenticate(db *sql.DB, username, password string) (*User, error) {
 	username = strings.TrimSpace(username)
 	var u User
 	var passHash string
-	if err := db.QueryRow(`SELECT id, username, pass_hash, role FROM users WHERE username = ?`, username).
-		Scan(&u.ID, &u.Username, &passHash, &u.Role); err != nil {
+	if err := db.QueryRow(`SELECT id, username, pass_hash, role, COALESCE(last_seen_changelog_version, '') FROM users WHERE username = ?`, username).
+		Scan(&u.ID, &u.Username, &passHash, &u.Role, &u.LastSeenChangelogVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInvalidCredentials
 		}
@@ -67,12 +67,25 @@ func Authenticate(db *sql.DB, username, password string) (*User, error) {
 
 func GetUserByID(db *sql.DB, userID int64) (*User, bool, error) {
 	var u User
-	if err := db.QueryRow(`SELECT id, username, role FROM users WHERE id = ?`, userID).
-		Scan(&u.ID, &u.Username, &u.Role); err != nil {
+	if err := db.QueryRow(`SELECT id, username, role, COALESCE(last_seen_changelog_version, '') FROM users WHERE id = ?`, userID).
+		Scan(&u.ID, &u.Username, &u.Role, &u.LastSeenChangelogVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
 		return nil, false, err
 	}
 	return &u, true, nil
+}
+
+func GetUserLastSeenChangelogVersion(db *sql.DB, userID int64) (string, error) {
+	var version string
+	if err := db.QueryRow(`SELECT COALESCE(last_seen_changelog_version, '') FROM users WHERE id = ?`, userID).Scan(&version); err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
+func SetUserLastSeenChangelogVersion(db *sql.DB, userID int64, version string) error {
+	_, err := db.Exec(`UPDATE users SET last_seen_changelog_version = ? WHERE id = ?`, strings.TrimSpace(version), userID)
+	return err
 }

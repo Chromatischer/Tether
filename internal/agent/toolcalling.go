@@ -40,10 +40,11 @@ type StreamEvent struct {
 }
 
 type toolExecutionPause struct {
-	Token string
-	Scope string
-	Text  string
-	Call  openrouter.ResponseItem
+	Token  string
+	Scope  string
+	Text   string
+	Reason string
+	Call   openrouter.ResponseItem
 }
 
 var confirmScopePattern = regexp.MustCompile(`scope="([^"]+)"`)
@@ -160,15 +161,16 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 				}
 
 				token := s.Confirm.Request(s.UserID, scope, reason)
-				text := "Confirmation required. Copy this into the chat to continue: `/confirm " + token + "`. Send any other reply to reject it."
+				text := "Paused — waiting for user to approve this action. Do not retry this command and do not call any other tools. The user will approve or decline."
 				if name == "confirm.request" && reasonArg != "" {
-					text = "Confirmation required: " + truncateString(reasonArg, 200) + "\nType `/confirm " + token + "` to approve. Send any other reply to reject it."
+					text = "Paused — waiting for user confirmation: " + truncateString(reasonArg, 200) + ". Do not call any tools until the user responds."
 				}
 				pause = &toolExecutionPause{
-					Token: token,
-					Scope: scope,
-					Text:  text,
-					Call:  c,
+					Token:  token,
+					Scope:  scope,
+					Text:   text,
+					Call:   c,
+					Reason: reason,
 				}
 			}
 			if nm != nil {
@@ -313,7 +315,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			toolChoice = "none"
 		}
 		req := openrouter.ResponsesRequest{
-			Model:       a.cfg.OpenRouter.Model,
+			Model:       a.cfg.LLMModel(),
 			Input:       items,
 			Temperature: 0.2,
 			Tools:       tools,
@@ -426,7 +428,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			return nil
 		})
 		if err != nil {
-			a.logLLMError("openrouter.responses_stream", req.Model, userID, convID, err)
+			a.logLLMError(a.cfg.LLMProvider()+".responses_stream", req.Model, userID, convID, err)
 			if emit != nil {
 				emit(StreamEvent{Type: "error", Err: err.Error()})
 			}
@@ -453,6 +455,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		if s != nil && s.DB != nil && final.Usage != nil {
 			payload := map[string]any{
 				"model":           req.Model,
+				"provider":        a.cfg.LLMProvider(),
 				"conversation_id": convID,
 				"iteration":       i,
 				"input_tokens":    final.Usage.InputTokens,
@@ -460,6 +463,13 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 				"total_tokens":    final.Usage.TotalTokens,
 				"cost":            final.Usage.Cost,
 				"tools_n":         len(req.Tools),
+			}
+			if final.Usage.PromptCacheHitTokens > 0 || final.Usage.PromptCacheMissTokens > 0 {
+				payload["prompt_cache_hit_tokens"] = final.Usage.PromptCacheHitTokens
+				payload["prompt_cache_miss_tokens"] = final.Usage.PromptCacheMissTokens
+			}
+			if final.Usage.ReasoningTokens > 0 {
+				payload["reasoning_tokens"] = final.Usage.ReasoningTokens
 			}
 			pb, _ := json.Marshal(payload)
 			uid := userID
@@ -518,6 +528,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 				ConversationID: convID,
 				Token:          pause.Token,
 				Scope:          pause.Scope,
+				Reason:         pause.Reason,
 				Session:        cloneSession(s),
 				Items:          append([]openrouter.ResponseItem{}, items...),
 				Call:           pause.Call,

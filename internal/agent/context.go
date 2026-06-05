@@ -183,13 +183,13 @@ func (a *Agent) prepareConversationHistoryForContext(ctx context.Context, conver
 	if a == nil || a.db == nil || conversationID == 0 {
 		return nil, nil
 	}
-	modelLimit := a.modelInfo(a.cfg.OpenRouter.Model).ContextLength
+	modelLimit := a.modelInfo(a.cfg.LLMModel()).ContextLength
 	if modelLimit <= 0 {
 		modelLimit = 128000
 	}
-	compactThreshold := int(float64(modelLimit) * 0.66)
+	compactThreshold := min(int(float64(modelLimit)*0.80), 200_000)
 	if compactThreshold <= 0 {
-		compactThreshold = 84000
+		compactThreshold = 100_000
 	}
 	rawTailBudget := int(float64(modelLimit) * 0.22)
 	if rawTailBudget <= 0 {

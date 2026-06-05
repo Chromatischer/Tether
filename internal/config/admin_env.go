@@ -12,6 +12,7 @@ type AdminEnv struct {
 	OpenRouterAPIKey string `yaml:"openrouter_api_key,omitempty"`
 	OpenRouterModel  string `yaml:"openrouter_model,omitempty"`
 	DiscordBotToken  string `yaml:"discord_bot_token,omitempty"`
+	DiscordEnabled   *bool  `yaml:"discord_enabled,omitempty"`
 	SignalNumber     string `yaml:"signal_number,omitempty"`
 	MasterKey        string `yaml:"master_key,omitempty"`
 }
@@ -68,6 +69,7 @@ func (e AdminEnv) empty() bool {
 	return e.OpenRouterAPIKey == "" &&
 		e.OpenRouterModel == "" &&
 		e.DiscordBotToken == "" &&
+		e.DiscordEnabled == nil &&
 		e.SignalNumber == "" &&
 		e.MasterKey == ""
 }

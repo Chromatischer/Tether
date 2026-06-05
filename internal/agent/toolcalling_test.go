@@ -167,8 +167,8 @@ func TestExecuteFunctionCalls_ConfirmRequestPausesAndUsesReason(t *testing.T) {
 	if !strings.Contains(pause.Text, "Overwriting config/proactive.yaml") {
 		t.Fatalf("expected pause text to include reason, got %q", pause.Text)
 	}
-	if !strings.Contains(pause.Text, "/confirm tok123") {
-		t.Fatalf("expected pause text to include token, got %q", pause.Text)
+	if strings.Contains(pause.Text, "/confirm") {
+		t.Fatalf("pause text should not contain /confirm instruction, got %q", pause.Text)
 	}
 
 	c := s.Confirm.(*stubConfirmer)

@@ -1,8 +1,78 @@
 # Changelog
 
-## v0.5 (unreleased)
+## v0.8 (2026-06-05)
 
 ### Added
+- **Configurable LLM provider selection**
+  - Added `llm.provider` with `openrouter` and `deepseek` support.
+  - Added DeepSeek config, environment fallback via `DEEPSEEK_API_KEY`, and provider-specific API key/model/base URL helpers.
+- **DeepSeek chat-completions backend**
+  - Added a DeepSeek LLM client that adapts Tether's Responses-style agent loop onto chat/completions.
+  - Added streaming support for text, reasoning deltas, tool-call argument deltas, and final usage mapping.
+  - Added fallback DeepSeek model metadata when the model catalog endpoint is unavailable.
+
+### Changed
+- **Agent runtime now uses provider-neutral LLM plumbing**
+  - Agent prompt, proactive, summary, context status, and tool-calling paths now read the active provider/model through shared config helpers.
+  - LLM response cache keys now include provider and base URL so OpenRouter and DeepSeek responses cannot collide.
+  - LLM usage audit events now record provider, prompt cache hit/miss tokens, and reasoning tokens when available.
+- **OpenRouter chat schema expanded**
+  - Chat request/response types now support streaming, tool-call indexes, strict tool schemas, reasoning content, top-p, prompt cache usage, and reasoning token details.
+- **Default chat system prompt adjusted**
+  - Updated the built-in chat system prompt to emphasize autonomous execution, natural chat behavior, and the new multiple-choice question tool path.
+- **Linux installer/updater cleanup fixed**
+  - Fixed Go installer temp-directory cleanup so install and update scripts do not exit with an unbound local variable after successful completion.
+
+## v0.7 (2026-04-28)
+
+### Added
+- **Clickable approve / decline workflow**
+  - Confirmation prompts now render four clickable options directly in the chat: Allow this, Allow all requests, Decline, Decline all.
+  - "Allow all requests" sets `confirm_strictness = always`; "Decline all" sets it to `never`.
+  - Confirmation prompt is displayed in red with the tool name, arguments, and agent's stated reason.
+- **`/help [command]` sub-command detail**
+  - `/help` now shows a compact grouped list (`/tools <list|search|describe>` etc.).
+  - `/help tools`, `/help memory`, `/help task`, etc. expand the sub-commands for that group.
+- **Auto-compact threshold raised and surfaced**
+  - Context auto-compaction now triggers at `min(80% of model context, 200 000 tokens)` instead of 66%.
+  - `/status` shows a second context bar indicating fill level relative to the auto-compact threshold.
+- **Session status redesign**
+  - `/status` renders a structured panel (Session, Context window, Usage, Attached context) instead of a raw key-value dump.
+  - Context window bar falls back to attached-context estimates when last-request limit is unavailable.
+  - Status messages use a dedicated `status` role so they render correctly on reload instead of flipping to the Tether assistant label.
+
+### Changed
+- **Confirmation pause message no longer instructs the agent**
+  - The pause text previously told the agent "Copy this into the chat to continue: `/confirm TOKEN`", causing the agent to attempt compliance by injecting stale tokens into subsequent tool calls and looping.
+  - Now emits a passive "Paused — waiting for user to approve. Do not retry, do not call any tools." message with no token in the text.
+- **`/help` and `/status` stored as `system` role**
+  - Both commands now write `system` to the database instead of `assistant`, preventing them from reloading as Tether messages.
+- **`/help` list items use markdown list format**
+  - Help output now uses `- /command` syntax so `renderRichText` keeps each entry on its own line.
+
+## v0.6 (2026-04-28)
+
+### Added
+- **Linux installer and updater**
+  - Added root-oriented Linux install and update scripts.
+  - Installs Tether binaries, systemd service files, runtime directories, and narrow sudo rules for in-app updates.
+- **In-app admin updates**
+  - Admins can check, run, and configure application updates from Tether.
+  - Supports latest GitHub release or latest commit from a selected branch.
+  - Auto-updates can be scheduled at a configured UTC time.
+
+### Changed
+- **Database migration baselines**
+  - Collapsed historical migrations into the v0.6 baseline snapshot.
+  - Added a generic release baseline guard so future versions can keep compact migration sets.
+- **Repository housekeeping**
+  - Added local agent/tooling ignores and removed project references to the ignored documentation tree.
+
+## v0.5 (2026-04-28)
+
+### Added
+- **OpenRouter streamed error handling**
+  - Streaming responses now surface top-level OpenRouter stream errors and reason fallbacks.
 
 ### Changed
 - **Tool-call streaming now preserves large function arguments**
@@ -14,6 +84,8 @@
 - **TUI agent streaming uses an inactivity watchdog instead of a whole-turn deadline**
   - Active streams stay alive as long as tokens or tool events continue arriving.
   - Silent/stalled streams are canceled after an idle window instead of blocking the chat queue indefinitely.
+- **Responses continuation preserves reasoning items**
+  - Replayable response items now keep provider reasoning payloads needed for continuation.
 
 ## v0.4 (2026-04-22)
 
@@ -63,9 +135,9 @@
 - **Bundled `onboarding` skill** for capturing stable user preferences, writing `config/agents/chat/PERSONALITY.md`, and storing a small set of high-value memory items.
 - **TUI rich-text rendering** for assistant/system output, including headings, lists, code fences, links, rules, and Markdown tables.
 - **Chat composer autocomplete** for slash commands and user-invocable skills.
-- **Autonomy and product vision docs**
-  - Added `docs/VISION.md` for the long-horizon product direction.
-  - Added `docs/AUTONOMY.md` defining Tether’s autonomy ladder and confirmation policy.
+- **Autonomy and product vision notes**
+  - Added the long-horizon product direction.
+  - Added Tether’s autonomy ladder and confirmation policy.
 - **`confirm.scope` tool** to compute the exact confirmation scope string needed before destructive tool calls.
 
 ### Changed
@@ -114,8 +186,8 @@
   - Bundled `skill-creator` skill.
 - **Per-user agent personality files** under `config/agents/<agent_key>/PERSONALITY.md` (auto-created with defaults; used by chat + proactive agents).
 - **Canonical tool metadata** (`internal/tools.ToolSpec` + registry) powering discovery (`tool.search`) and the new `tool.describe`.
-- **Tool documentation generator**: `go run ./cmd/tether-tooldocs` → `docs/tools.md`.
-- `docs/skills.md` describing skills layout + frontmatter.
+- **Tool documentation generator** for the tool reference.
+- Added skills layout and frontmatter notes.
 
 ### Changed
 - **Filesystem tools hardened**

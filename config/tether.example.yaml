@@ -6,6 +6,10 @@ log_level: info
 db:
   path: ./data/tether.sqlite
 
+llm:
+  # openrouter or deepseek. Can also be set with TETHER_LLM_PROVIDER.
+  provider: openrouter
+
 openrouter:
   # Prefer env var OPENROUTER_API_KEY; you can also set it here.
   api_key: ""
@@ -13,10 +17,16 @@ openrouter:
   model: "z-ai/glm-5.1"
 
   # Provider routing preferences passed through to OpenRouter.
-  # See: https://openrouter.ai/docs/guides/routing/provider-selection
+  # See OpenRouter provider routing documentation.
   provider:
     # Morph has been observed to be unreliable for agent workloads.
     ignore: ["morph"]
+
+deepseek:
+  # Used when llm.provider is deepseek. Prefer env var DEEPSEEK_API_KEY.
+  api_key: ""
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-flash"
 
 secrets:
   # Prefer env var TETHER_MASTER_KEY (base64 32 bytes). Generate with:

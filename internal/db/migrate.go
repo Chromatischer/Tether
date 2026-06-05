@@ -20,6 +20,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 `
 
+var currentSchemaBaseline = schemaBaseline{
+	Release: "v0.7",
+	Version: 20,
+}
+
+type schemaBaseline struct {
+	Release string
+	Version int
+}
+
 type migration struct {
 	Version int
 	Name    string
@@ -35,6 +45,9 @@ func Migrate(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	if err := checkBaseline(applied); err != nil {
+		return err
+	}
 
 	migs, err := loadMigrations()
 	if err != nil {
@@ -48,6 +61,22 @@ func Migrate(db *sql.DB) error {
 		if err := applyMigration(db, m); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func checkBaseline(applied map[int]bool) error {
+	if len(applied) == 0 {
+		return nil
+	}
+	maxApplied := 0
+	for v := range applied {
+		if v > maxApplied {
+			maxApplied = v
+		}
+	}
+	if maxApplied < currentSchemaBaseline.Version {
+		return fmt.Errorf("database schema is older than the %s baseline: latest applied migration is %04d, need at least %04d; upgrade through a compatible earlier release first", currentSchemaBaseline.Release, maxApplied, currentSchemaBaseline.Version)
 	}
 	return nil
 }

@@ -124,7 +124,7 @@ func (a *Agent) attachedContextStatus(userID, convID int64) AttachedContextStatu
 
 	tokenEstimate += estimateTextTokens("(tether metadata; ignore)")
 	st.EstimatedTokens = tokenEstimate
-	if info := a.modelInfo(a.cfg.OpenRouter.Model); info.ContextLength > 0 {
+	if info := a.modelInfo(a.cfg.LLMModel()); info.ContextLength > 0 {
 		st.ContextLimit = info.ContextLength
 		st.ContextPct = contextPercent(tokenEstimate, info.ContextLength)
 	}

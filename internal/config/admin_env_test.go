@@ -81,6 +81,39 @@ func TestLoad_AdminEnvFallbacks(t *testing.T) {
 	}
 }
 
+func TestLoad_AdminEnvDiscordEnabledOverride(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	on := true
+	if err := SaveAdminEnv(dir, AdminEnv{DiscordEnabled: &on}); err != nil {
+		t.Fatalf("SaveAdminEnv: %v", err)
+	}
+
+	// yaml leaves discord.enabled unset (false); admin env must flip it on.
+	p := writeTempConfig(t, dir, "ssh:\n  portal_password_hash: \""+string(h)+"\"\npaths:\n  data_dir: "+filepath.ToSlash(dir)+"\nopenrouter: {}\nsecrets: {}\nsignal: {}\ndiscord: {}\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Discord.Enabled {
+		t.Fatalf("expected admin env to enable discord gateway")
+	}
+
+	// And it must be authoritative when turning it back off.
+	off := false
+	if err := SaveAdminEnv(dir, AdminEnv{DiscordEnabled: &off}); err != nil {
+		t.Fatalf("SaveAdminEnv off: %v", err)
+	}
+	p2 := writeTempConfig(t, dir, "ssh:\n  portal_password_hash: \""+string(h)+"\"\npaths:\n  data_dir: "+filepath.ToSlash(dir)+"\nopenrouter: {}\nsecrets: {}\nsignal: {}\ndiscord:\n  enabled: true\n")
+	cfg2, err := Load(p2)
+	if err != nil {
+		t.Fatalf("Load off: %v", err)
+	}
+	if cfg2.Discord.Enabled {
+		t.Fatalf("expected admin env to disable discord gateway over yaml enabled=true")
+	}
+}
+
 func TestLoad_ConfigOverridesAdminEnv(t *testing.T) {
 	dir := t.TempDir()
 	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
