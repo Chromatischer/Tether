@@ -152,7 +152,7 @@ install_go() {
   tarball="go${GO_VERSION}.linux-${arch}.tar.gz"
   url="https://go.dev/dl/${tarball}"
   tmp="$(mktemp -d)"
-  trap 'rm -rf "${tmp}"' EXIT
+  trap "rm -rf '${tmp}'" EXIT
 
   log "Installing Go ${GO_VERSION} to /usr/local/go"
   curl -fsSL "${url}" -o "${tmp}/${tarball}"

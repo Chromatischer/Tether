@@ -20,6 +20,8 @@
   - Chat request/response types now support streaming, tool-call indexes, strict tool schemas, reasoning content, top-p, prompt cache usage, and reasoning token details.
 - **Default chat system prompt adjusted**
   - Updated the built-in chat system prompt to emphasize autonomous execution, natural chat behavior, and the new multiple-choice question tool path.
+- **Linux installer/updater cleanup fixed**
+  - Fixed Go installer temp-directory cleanup so install and update scripts do not exit with an unbound local variable after successful completion.
 
 ## v0.7 (2026-04-28)
 
