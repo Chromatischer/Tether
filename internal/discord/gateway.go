@@ -116,6 +116,8 @@ func (g *Gateway) Start(ctx context.Context) {
 		if err := s.UpdateGameStatus(0, discordStreamingActivity); err != nil {
 			log.Warn("failed to update discord presence", "error", err)
 		}
+		// Register slash commands so they tab-complete in the Discord client.
+		g.registerSlashCommands(s)
 	})
 	s.AddHandler(func(s *discordgo.Session, _ *discordgo.Resumed) {
 		log.Info("discord resumed")
@@ -131,6 +133,9 @@ func (g *Gateway) Start(ctx context.Context) {
 	})
 	s.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 		go g.onReaction(ctx, s, r)
+	})
+	s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		go g.onInteraction(ctx, s, i)
 	})
 
 	if err := s.Open(); err != nil {
