@@ -80,6 +80,18 @@ type ReasoningSummaryPart struct {
 	Text string
 }
 
+// MarshalJSON emits the shape the Responses API requires for reasoning summary
+// parts: {"type":"summary_text","text":"..."}. Without this, the zero-tag
+// struct would serialize as {"Text":"..."} and OpenRouter rejects the whole
+// request with 400 invalid_prompt (missing "type", wrong-cased "text") when a
+// prior reasoning item is echoed back into the input array on a later turn.
+func (p ReasoningSummaryPart) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{Type: "summary_text", Text: p.Text})
+}
+
 func (p *ReasoningSummaryPart) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
