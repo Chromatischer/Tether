@@ -428,3 +428,51 @@ func TestReasoningSummaryPart_UnmarshalObjectFallback(t *testing.T) {
 		t.Fatalf("expected hello, got %q", part.Text)
 	}
 }
+
+// Regression: a reasoning item echoed back into the input array must serialize
+// its summary parts as {"type":"summary_text","text":...}. Previously the
+// zero-tag struct marshaled as {"Text":...}, which OpenRouter rejected with
+// 400 invalid_prompt (missing "type", wrong-cased "text").
+func TestReasoningSummaryPart_MarshalsResponsesAPIShape(t *testing.T) {
+	item := ResponseItem{
+		Type:    "reasoning",
+		Summary: []ReasoningSummaryPart{{Text: "because reasons"}},
+	}
+	b, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Type    string `json:"type"`
+		Summary []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal marshaled item: %v (raw: %s)", err, b)
+	}
+	if got.Type != "reasoning" {
+		t.Fatalf("expected reasoning item, got %q (raw: %s)", got.Type, b)
+	}
+	if len(got.Summary) != 1 {
+		t.Fatalf("expected 1 summary part, got %d (raw: %s)", len(got.Summary), b)
+	}
+	if got.Summary[0].Type != "summary_text" {
+		t.Fatalf("expected summary_text, got %q (raw: %s)", got.Summary[0].Type, b)
+	}
+	if got.Summary[0].Text != "because reasons" {
+		t.Fatalf("expected text preserved, got %q (raw: %s)", got.Summary[0].Text, b)
+	}
+
+	// Round-trips back through the reader (which accepts the object form).
+	var back ReasoningSummaryPart
+	partRaw, _ := json.Marshal(item.Summary[0])
+	if err := json.Unmarshal(partRaw, &back); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if back.Text != "because reasons" {
+		t.Fatalf("round-trip lost text: %q", back.Text)
+	}
+}
