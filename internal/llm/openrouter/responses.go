@@ -113,10 +113,13 @@ type ContentPart struct {
 }
 
 type ResponsesUsage struct {
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	TotalTokens  int     `json:"total_tokens"`
-	Cost         float64 `json:"cost,omitempty"`
+	InputTokens           int     `json:"input_tokens"`
+	OutputTokens          int     `json:"output_tokens"`
+	TotalTokens           int     `json:"total_tokens"`
+	Cost                  float64 `json:"cost,omitempty"`
+	PromptCacheHitTokens  int     `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int     `json:"prompt_cache_miss_tokens,omitempty"`
+	ReasoningTokens       int     `json:"reasoning_tokens,omitempty"`
 }
 
 type ResponsesResponse struct {

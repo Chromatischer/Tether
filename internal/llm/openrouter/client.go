@@ -24,6 +24,9 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"` // optional; some SDKs include it for tool messages
+
+	// DeepSeek thinking-mode output.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type Tool struct {
@@ -35,9 +38,11 @@ type ToolFunction struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Parameters  interface{} `json:"parameters"`
+	Strict      any         `json:"strict,omitempty"`
 }
 
 type ToolCall struct {
+	Index    *int             `json:"index,omitempty"`
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
@@ -53,10 +58,21 @@ type ChatRequest struct {
 	Messages    []Message `json:"messages"`
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
+	TopP        float64   `json:"top_p,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 
 	Tools             []Tool      `json:"tools,omitempty"`
 	ToolChoice        interface{} `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool        `json:"parallel_tool_calls"`
+	ParallelToolCalls bool        `json:"parallel_tool_calls,omitempty"`
+	StreamOptions     *struct {
+		IncludeUsage bool `json:"include_usage,omitempty"`
+	} `json:"stream_options,omitempty"`
+
+	// DeepSeek accepts OpenAI-compatible reasoning_effort plus a thinking switch.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Thinking        *struct {
+		Type string `json:"type,omitempty"`
+	} `json:"thinking,omitempty"`
 }
 
 type Usage struct {
@@ -65,13 +81,25 @@ type Usage struct {
 	TotalTokens      int     `json:"total_tokens"`
 	Cost             float64 `json:"cost,omitempty"`
 
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens,omitempty"`
+
 	PromptTokensDetails *struct {
 		CachedTokens     int `json:"cached_tokens,omitempty"`
 		CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
+
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 type ChatResponse struct {
+	ID      string `json:"id,omitempty"`
+	Object  string `json:"object,omitempty"`
+	Created int64  `json:"created,omitempty"`
+	Model   string `json:"model,omitempty"`
+
 	Choices []struct {
 		Message      Message `json:"message"`
 		FinishReason string  `json:"finish_reason"`

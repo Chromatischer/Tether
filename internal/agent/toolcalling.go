@@ -315,7 +315,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			toolChoice = "none"
 		}
 		req := openrouter.ResponsesRequest{
-			Model:       a.cfg.OpenRouter.Model,
+			Model:       a.cfg.LLMModel(),
 			Input:       items,
 			Temperature: 0.2,
 			Tools:       tools,
@@ -428,7 +428,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			return nil
 		})
 		if err != nil {
-			a.logLLMError("openrouter.responses_stream", req.Model, userID, convID, err)
+			a.logLLMError(a.cfg.LLMProvider()+".responses_stream", req.Model, userID, convID, err)
 			if emit != nil {
 				emit(StreamEvent{Type: "error", Err: err.Error()})
 			}
@@ -455,6 +455,7 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		if s != nil && s.DB != nil && final.Usage != nil {
 			payload := map[string]any{
 				"model":           req.Model,
+				"provider":        a.cfg.LLMProvider(),
 				"conversation_id": convID,
 				"iteration":       i,
 				"input_tokens":    final.Usage.InputTokens,
@@ -462,6 +463,13 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 				"total_tokens":    final.Usage.TotalTokens,
 				"cost":            final.Usage.Cost,
 				"tools_n":         len(req.Tools),
+			}
+			if final.Usage.PromptCacheHitTokens > 0 || final.Usage.PromptCacheMissTokens > 0 {
+				payload["prompt_cache_hit_tokens"] = final.Usage.PromptCacheHitTokens
+				payload["prompt_cache_miss_tokens"] = final.Usage.PromptCacheMissTokens
+			}
+			if final.Usage.ReasoningTokens > 0 {
+				payload["reasoning_tokens"] = final.Usage.ReasoningTokens
 			}
 			pb, _ := json.Marshal(payload)
 			uid := userID

@@ -71,7 +71,7 @@ func (a *Agent) SessionStatus(userID, convID int64) SessionStatus {
 	}
 	a.mu.Unlock()
 
-	modelLimit := a.modelInfo(a.cfg.OpenRouter.Model).ContextLength
+	modelLimit := a.modelInfo(a.cfg.LLMModel()).ContextLength
 	if modelLimit <= 0 {
 		modelLimit = 128000
 	}

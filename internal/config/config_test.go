@@ -47,6 +47,9 @@ func TestLoad_DefaultsAndRequiredFields(t *testing.T) {
 	if cfg.OpenRouter.BaseURL == "" || cfg.OpenRouter.Model == "" {
 		t.Fatalf("expected openrouter defaults")
 	}
+	if cfg.LLMProvider() != "openrouter" {
+		t.Fatalf("expected openrouter provider default, got %q", cfg.LLMProvider())
+	}
 	if cfg.Secrets.TTLHours != 24 {
 		t.Fatalf("expected secrets.ttl_hours default 24, got %d", cfg.Secrets.TTLHours)
 	}
@@ -72,6 +75,7 @@ func TestLoad_EnvFallbacks(t *testing.T) {
 	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
 
 	t.Setenv("OPENROUTER_API_KEY", "k-openrouter")
+	t.Setenv("DEEPSEEK_API_KEY", "k-deepseek")
 	t.Setenv("TETHER_MASTER_KEY", "k-master")
 	t.Setenv("TETHER_SIGNAL_NUMBER", "+123")
 
@@ -83,10 +87,41 @@ func TestLoad_EnvFallbacks(t *testing.T) {
 	if cfg.OpenRouter.APIKey != "k-openrouter" {
 		t.Fatalf("expected OPENROUTER_API_KEY fallback")
 	}
+	if cfg.DeepSeek.APIKey != "k-deepseek" {
+		t.Fatalf("expected DEEPSEEK_API_KEY fallback")
+	}
 	if cfg.Secrets.MasterKey != "k-master" {
 		t.Fatalf("expected TETHER_MASTER_KEY fallback")
 	}
 	if cfg.Signal.AccountNumber != "+123" {
 		t.Fatalf("expected TETHER_SIGNAL_NUMBER fallback")
+	}
+}
+
+func TestLoad_DeepSeekProvider(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+
+	t.Setenv("DEEPSEEK_API_KEY", "k-deepseek")
+	p := writeTempConfig(t, dir, "ssh:\n  portal_password_hash: \""+string(h)+"\"\nllm:\n  provider: deepseek\ndeepseek:\n  model: deepseek-reasoner\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLMProvider() != "deepseek" {
+		t.Fatalf("expected deepseek provider, got %q", cfg.LLMProvider())
+	}
+	if cfg.LLMAPIKey() != "k-deepseek" || cfg.LLMModel() != "deepseek-reasoner" || cfg.LLMBaseURL() != "https://api.deepseek.com" {
+		t.Fatalf("unexpected deepseek llm settings")
+	}
+}
+
+func TestLoad_RejectsUnknownLLMProvider(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+
+	p := writeTempConfig(t, dir, "ssh:\n  portal_password_hash: \""+string(h)+"\"\nllm:\n  provider: nope\n")
+	if _, err := Load(p); err == nil {
+		t.Fatalf("expected provider validation error")
 	}
 }

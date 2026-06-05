@@ -13,6 +13,13 @@ Set your OpenRouter API key:
 export OPENROUTER_API_KEY="..."
 ```
 
+To use DeepSeek directly instead, set:
+
+```bash
+export TETHER_LLM_PROVIDER=deepseek
+export DEEPSEEK_API_KEY="..."
+```
+
 Generate a secrets master key (required for `/secret ...`):
 
 ```bash
@@ -108,8 +115,8 @@ Implemented:
 - SSH server via `wish` + Bubble Tea TUI (alt screen + mouse; clickable header/buttons)
 - In-app signup/login (separate from SSH portal auth)
 - Chat view storing messages in SQLite
-- OpenRouter client (chat/completions) + basic LLM response cache (SQLite)
-- OpenRouter **tool calling loop** (OpenAI-style `tools` / `tool_calls`)
+- OpenRouter and DeepSeek LLM backends + basic LLM response cache (SQLite)
+- Streaming tool calling loop (Responses API on OpenRouter, chat/completions adapter on DeepSeek)
 - Tools implemented: `bash` (bubblewrap/no-net, output limits + redaction), `read`, `write`, `web-search`, `web-fetch`, `fetch.summarize`, `tool.search`, `tool.enable`, `tool.describe`, `confirm.request`, `subagent.spawn`, `subagent.status`, `proactive.run`
 - Proactive engine: built-in rules (daily brief/open loops/inactivity) + configurable custom agents (`agents:` in proactive rules YAML) with schedule_times/events/actions triggers
 - Secrets vault (encrypted-at-rest) user commands: `/secret add|list|delete|clear`

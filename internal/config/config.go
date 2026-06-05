@@ -24,6 +24,11 @@ type Config struct {
 		AuthorizedKeysPath string `yaml:"authorized_keys_path"`
 	} `yaml:"ssh"`
 
+	LLM struct {
+		// Provider supports "openrouter" and "deepseek".
+		Provider string `yaml:"provider"`
+	} `yaml:"llm"`
+
 	OpenRouter struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
@@ -38,6 +43,12 @@ type Config struct {
 			Order          []string `yaml:"order,omitempty"`
 		} `yaml:"provider"`
 	} `yaml:"openrouter"`
+
+	DeepSeek struct {
+		APIKey  string `yaml:"api_key"`
+		BaseURL string `yaml:"base_url"`
+		Model   string `yaml:"model"`
+	} `yaml:"deepseek"`
 
 	Secrets struct {
 		MasterKey string `yaml:"master_key"`
@@ -133,6 +144,20 @@ func Load(path string) (*Config, error) {
 		cfg.SSH.AuthorizedKeysPath = "./config/authorized_keys"
 	}
 
+	// LLM settings
+	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
+	if cfg.LLM.Provider == "" {
+		cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(os.Getenv("TETHER_LLM_PROVIDER")))
+	}
+	if cfg.LLM.Provider == "" {
+		cfg.LLM.Provider = "openrouter"
+	}
+	switch cfg.LLM.Provider {
+	case "openrouter", "deepseek":
+	default:
+		return nil, errors.New("llm.provider must be openrouter or deepseek")
+	}
+
 	// OpenRouter settings
 	if strings.TrimSpace(cfg.OpenRouter.APIKey) == "" {
 		if adminEnv.OpenRouterAPIKey != "" {
@@ -149,6 +174,17 @@ func Load(path string) (*Config, error) {
 	}
 	if adminEnv.OpenRouterModel != "" {
 		cfg.OpenRouter.Model = adminEnv.OpenRouterModel
+	}
+
+	// DeepSeek settings
+	if strings.TrimSpace(cfg.DeepSeek.APIKey) == "" {
+		cfg.DeepSeek.APIKey = os.Getenv("DEEPSEEK_API_KEY")
+	}
+	if cfg.DeepSeek.BaseURL == "" {
+		cfg.DeepSeek.BaseURL = "https://api.deepseek.com"
+	}
+	if cfg.DeepSeek.Model == "" {
+		cfg.DeepSeek.Model = "deepseek-v4-flash"
 	}
 
 	// OpenRouter provider routing defaults.

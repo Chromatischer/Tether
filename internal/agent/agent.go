@@ -42,6 +42,12 @@ type Reply struct {
 	ToolCalls []ToolCallInfo
 }
 
+type llmClient interface {
+	Responses(context.Context, openrouter.ResponsesRequest) (openrouter.ResponsesResponse, error)
+	ResponsesStream(context.Context, openrouter.ResponsesRequest, func(openrouter.ResponsesStreamEvent) error) (openrouter.ResponsesResponse, error)
+	Models(context.Context) ([]openrouter.Model, error)
+}
+
 type pendingConfirmation struct {
 	UserID         int64
 	ConversationID int64
@@ -58,7 +64,7 @@ type pendingConfirmation struct {
 type Agent struct {
 	cfg   *config.Config
 	db    *sql.DB
-	llm   *openrouter.Client
+	llm   llmClient
 	cache *cache.LLMCache
 
 	registry *tools.Registry
@@ -86,10 +92,7 @@ func (a *Agent) ReloadRuntimeConfig() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.llm != nil {
-		a.llm.BaseURL = a.cfg.OpenRouter.BaseURL
-		a.llm.APIKey = a.cfg.OpenRouter.APIKey
-	}
+	a.llm = newLLMClient(a.cfg)
 
 	if strings.TrimSpace(a.cfg.Secrets.MasterKey) == "" {
 		a.secrets = nil
@@ -105,8 +108,7 @@ func (a *Agent) ReloadRuntimeConfig() {
 }
 
 func (a *Agent) responsesCached(ctx context.Context, req openrouter.ResponsesRequest) (openrouter.ResponsesResponse, error) {
-	payload, _ := json.Marshal(req)
-	key := cache.KeyFromBytes(payload)
+	key := a.responsesCacheKey(req)
 	if cached, ok, err := a.cache.Get(key); err == nil && ok {
 		var resp openrouter.ResponsesResponse
 		if err := json.Unmarshal([]byte(cached), &resp); err == nil {
@@ -118,12 +120,21 @@ func (a *Agent) responsesCached(ctx context.Context, req openrouter.ResponsesReq
 	resp, err := a.llm.Responses(ctx, req)
 	if err != nil {
 		// Always log LLM request failures; otherwise they can be easy to miss if only surfaced to UI.
-		a.logLLMError("openrouter.responses", req.Model, 0, 0, err)
+		a.logLLMError(a.cfg.LLMProvider()+".responses", req.Model, 0, 0, err)
 		return openrouter.ResponsesResponse{}, err
 	}
 	b, _ := json.Marshal(resp)
 	_ = a.cache.Put(key, string(b))
 	return resp, nil
+}
+
+func (a *Agent) responsesCacheKey(req openrouter.ResponsesRequest) string {
+	payload, _ := json.Marshal(map[string]any{
+		"provider": a.cfg.LLMProvider(),
+		"base_url": a.cfg.LLMBaseURL(),
+		"request":  req,
+	})
+	return cache.KeyFromBytes(payload)
 }
 
 func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
@@ -134,6 +145,9 @@ func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, 
 }
 
 func (a *Agent) openRouterProviderPrefs() *openrouter.ProviderPreferences {
+	if a.cfg.LLMProvider() != "openrouter" {
+		return nil
+	}
 	p := openrouter.ProviderPreferences{}
 	p.AllowFallbacks = a.cfg.OpenRouter.Provider.AllowFallbacks
 
@@ -222,8 +236,8 @@ func extractResponsesReasoning(resp openrouter.ResponsesResponse) string {
 }
 
 func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return "", errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
 	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -232,13 +246,13 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.defaultChatSystemPromptText()}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-		req := openrouter.ResponsesRequest{
-			Model:           a.cfg.OpenRouter.Model,
-			Input:           items,
-			Temperature:     0.2,
-			ToolChoice:      "none",
-			Provider:        a.openRouterProviderPrefs(),
-		}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -250,8 +264,8 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 // that only have a user_id + a standalone prompt, but still want to respect the
 // user's personality.
 func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt string) (string, error) {
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return "", errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
 	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -265,13 +279,13 @@ func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt strin
 	}
 	items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}})
 
-		req := openrouter.ResponsesRequest{
-			Model:           a.cfg.OpenRouter.Model,
-			Input:           items,
-			Temperature:     0.2,
-			ToolChoice:      "none",
-			Provider:        a.openRouterProviderPrefs(),
-		}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -280,8 +294,8 @@ func (a *Agent) RunPromptForUser(ctx context.Context, userID int64, prompt strin
 }
 
 func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, error) {
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return "", errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
 	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -290,13 +304,13 @@ func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, 
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.defaultProactiveSystemPromptText()}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-		req := openrouter.ResponsesRequest{
-			Model:           a.cfg.OpenRouter.Model,
-			Input:           items,
-			Temperature:     0.2,
-			ToolChoice:      "none",
-			Provider:        a.openRouterProviderPrefs(),
-		}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -305,8 +319,8 @@ func (a *Agent) RunProactivePrompt(ctx context.Context, prompt string) (string, 
 }
 
 func (a *Agent) RunProactivePromptForUser(ctx context.Context, userID int64, prompt string) (string, error) {
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return "", errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
 	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -315,13 +329,13 @@ func (a *Agent) RunProactivePromptForUser(ctx context.Context, userID int64, pro
 		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.proactiveSystemPromptText(userID, 0)}}},
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
 	}
-		req := openrouter.ResponsesRequest{
-			Model:           a.cfg.OpenRouter.Model,
-			Input:           items,
-			Temperature:     0.2,
-			ToolChoice:      "none",
-			Provider:        a.openRouterProviderPrefs(),
-		}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
 	resp, err := a.responsesCached(ctx2, req)
 	if err != nil {
 		return "", fmt.Errorf("llm: %w", err)
@@ -336,8 +350,8 @@ func (a *Agent) Reply(ctx context.Context, p ReplyParams) (Reply, error) {
 // ReplyStream is like Reply, but optionally emits incremental streaming events.
 // The returned Reply is the final assistant text + the list of tool calls invoked.
 func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(StreamEvent)) (Reply, error) {
-	if strings.TrimSpace(a.cfg.OpenRouter.APIKey) == "" {
-		return Reply{}, errors.New("OPENROUTER_API_KEY not configured")
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return Reply{}, fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
 	if sess := a.sessionFor(p.UserID, p.ConversationID); sess != nil {
 		sess.TouchActivity()

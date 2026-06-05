@@ -15,7 +15,7 @@ import (
 func (a *Agent) maybeUpdateSummary(conversationID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	modelLimit := a.modelInfo(a.cfg.OpenRouter.Model).ContextLength
+	modelLimit := a.modelInfo(a.cfg.LLMModel()).ContextLength
 	if modelLimit <= 0 {
 		modelLimit = 128000
 	}
@@ -61,11 +61,11 @@ func (a *Agent) compactConversationSlice(ctx context.Context, history []store.Me
 		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: b.String()}}},
 	}
 	req := openrouter.ResponsesRequest{
-		Model:           a.cfg.OpenRouter.Model,
-		Input:           items,
-		Temperature:     0.2,
-		ToolChoice:      "none",
-		Provider:        a.openRouterProviderPrefs(),
+		Model:       a.cfg.LLMModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
 	}
 	resp, err := a.responsesCached(ctx, req)
 	if err != nil {

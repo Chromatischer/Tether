@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.8 (2026-06-05)
+
+### Added
+- **Configurable LLM provider selection**
+  - Added `llm.provider` with `openrouter` and `deepseek` support.
+  - Added DeepSeek config, environment fallback via `DEEPSEEK_API_KEY`, and provider-specific API key/model/base URL helpers.
+- **DeepSeek chat-completions backend**
+  - Added a DeepSeek LLM client that adapts Tether's Responses-style agent loop onto chat/completions.
+  - Added streaming support for text, reasoning deltas, tool-call argument deltas, and final usage mapping.
+  - Added fallback DeepSeek model metadata when the model catalog endpoint is unavailable.
+
+### Changed
+- **Agent runtime now uses provider-neutral LLM plumbing**
+  - Agent prompt, proactive, summary, context status, and tool-calling paths now read the active provider/model through shared config helpers.
+  - LLM response cache keys now include provider and base URL so OpenRouter and DeepSeek responses cannot collide.
+  - LLM usage audit events now record provider, prompt cache hit/miss tokens, and reasoning tokens when available.
+- **OpenRouter chat schema expanded**
+  - Chat request/response types now support streaming, tool-call indexes, strict tool schemas, reasoning content, top-p, prompt cache usage, and reasoning token details.
+- **Default chat system prompt adjusted**
+  - Updated the built-in chat system prompt to emphasize autonomous execution, natural chat behavior, and the new multiple-choice question tool path.
+
 ## v0.7 (2026-04-28)
 
 ### Added
