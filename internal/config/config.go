@@ -231,6 +231,9 @@ func Load(path string) (*Config, error) {
 			cfg.Discord.BotToken = os.Getenv("TETHER_DISCORD_BOT_TOKEN")
 		}
 	}
+	if adminEnv.DiscordEnabled != nil {
+		cfg.Discord.Enabled = *adminEnv.DiscordEnabled
+	}
 
 	// MCP
 	if cfg.MCP.Enabled == nil {
