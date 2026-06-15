@@ -18,13 +18,20 @@ import (
 	"tether/internal/portal"
 	"tether/internal/proactive"
 	signalgw "tether/internal/signal"
+	"tether/internal/term"
 )
 
 func main() {
 	var cfgPath string
 	var gradientTest bool
+	var termMode bool
+	var continueConv bool
+	var textMode bool
 	flag.StringVar(&cfgPath, "config", "./config/tether.yaml", "path to tether config")
 	flag.BoolVar(&gradientTest, "gradient-test", false, "run the SSH portal in gradient test mode")
+	flag.BoolVar(&termMode, "term", false, "run in terminal (headless) mode")
+	flag.BoolVar(&continueConv, "continue", false, "attach to existing conversation (--term mode)")
+	flag.BoolVar(&textMode, "text", false, "disable ANSI styling (--term mode)")
 	flag.Parse()
 
 	cfg, err := config.Load(cfgPath)
@@ -32,8 +39,7 @@ func main() {
 		log.Fatal("failed to load config", "error", err)
 	}
 
-	logger := log.NewWithOptions(os.Stderr, log.Options{Level: cfg.LogLevelParsed})
-	log.SetDefault(logger)
+	log.SetDefault(log.NewWithOptions(os.Stderr, log.Options{Level: cfg.LogLevelParsed}))
 
 	database, err := db.Open(cfg.DB.Path)
 	if err != nil {
@@ -46,6 +52,14 @@ func main() {
 	}
 
 	ag := agent.New(cfg, database)
+
+	if termMode {
+		if err := term.Run(context.Background(), cfg, database, ag, continueConv, textMode); err != nil {
+			log.Error("terminal mode error", "error", err)
+		}
+		return
+	}
+
 	srv, err := portal.NewServer(cfg, database, ag, gradientTest)
 	if err != nil {
 		log.Fatal("failed to create ssh portal server", "error", err)

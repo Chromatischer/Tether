@@ -74,6 +74,66 @@ func renderBrandLogo(text string, bg color.Color, gradientsEnabled bool) string 
 	)
 }
 
+func RenderedLogo() string {
+	bg := lipgloss.Color("233")
+	rendered := renderBrandLogo(tetherLogo, bg, true)
+	return lipgloss.NewStyle().
+		Background(bg).
+		Foreground(lipgloss.Color("172")).
+		Render(rendered)
+}
+
+func RenderedLogoTerm() string {
+	return renderGridGradientTextTransparent(
+		tetherLogo,
+		24, 18, 18,
+		generateGradientStops(
+			lipgloss.Color("#b94f2b"),
+			lipgloss.Color("#e59617"),
+			10,
+		)...,
+	)
+}
+
+func renderGridGradientTextTransparent(text string, xOversample int, yOversample int, angle float64, stops ...color.Color) string {
+	lines := strings.Split(text, "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		maxWidth = max(maxWidth, utf8.RuneCountInString(line))
+	}
+	height := len(lines)
+	if maxWidth == 0 || height == 0 {
+		return text
+	}
+
+	gridW := max(maxWidth*max(1, xOversample), maxWidth)
+	gridH := max(height*max(1, yOversample), height)
+	gradient := lipgloss.Blend2D(gridW, gridH, angle, stops...)
+
+	var out strings.Builder
+	for y, line := range lines {
+		if y > 0 {
+			out.WriteRune('\n')
+		}
+		x := 0
+		for _, r := range line {
+			if r == ' ' {
+				out.WriteRune(' ')
+				x++
+				continue
+			}
+			sampleX := min((x*gridW)/max(1, maxWidth), gridW-1)
+			sampleY := min((y*gridH)/max(1, height), gridH-1)
+			out.WriteString(lipgloss.NewStyle().
+				Foreground(gradient[sampleY*gridW+sampleX]).
+				Bold(true).
+				Render(string(r)))
+			x++
+		}
+	}
+	return out.String()
+}
+
 func generateGradientStops(start, end color.Color, count int) []color.Color {
 	count = max(2, count)
 	return lipgloss.Blend1D(count, start, end)
