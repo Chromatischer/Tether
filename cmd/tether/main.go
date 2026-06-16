@@ -25,13 +25,9 @@ func main() {
 	var cfgPath string
 	var gradientTest bool
 	var termMode bool
-	var continueConv bool
-	var textMode bool
 	flag.StringVar(&cfgPath, "config", "./config/tether.yaml", "path to tether config")
 	flag.BoolVar(&gradientTest, "gradient-test", false, "run the SSH portal in gradient test mode")
-	flag.BoolVar(&termMode, "term", false, "run in terminal (headless) mode")
-	flag.BoolVar(&continueConv, "continue", false, "attach to existing conversation (--term mode)")
-	flag.BoolVar(&textMode, "text", false, "disable ANSI styling (--term mode)")
+	flag.BoolVar(&termMode, "term", false, "run the TUI locally in this terminal (no SSH, no connectors)")
 	flag.Parse()
 
 	cfg, err := config.Load(cfgPath)
@@ -54,8 +50,8 @@ func main() {
 	ag := agent.New(cfg, database)
 
 	if termMode {
-		if err := term.Run(context.Background(), cfg, database, ag, continueConv, textMode); err != nil {
-			log.Error("terminal mode error", "error", err)
+		if err := term.Run(cfg, database, ag); err != nil {
+			log.Fatal("terminal mode error", "error", err)
 		}
 		return
 	}
