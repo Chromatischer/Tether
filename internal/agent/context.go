@@ -149,12 +149,27 @@ func (a *Agent) buildContextInputItemsWithSessionAndSystemPrompt(ctx context.Con
 	// Stable metadata marker to keep provider-side caching/sticky routing stable.
 	items = append(items, openrouter.ResponseItem{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: fmt.Sprintf("(tether metadata; ignore) conversation_id=%d", convID)}}})
 
+	// Signed reasoning persisted for prior assistant turns, replayed immediately
+	// before the assistant message it belongs to. Scoped to the current model so
+	// we never replay a block another model cannot verify.
+	var reasoningByMsg map[int64][]store.ReasoningBlock
+	if convID != 0 && a.db != nil {
+		reasoningByMsg, _ = store.GetMessageReasoningForConversation(a.db, convID, a.cfg.OpenRouter.Model)
+	}
+
 	for _, m := range history {
 		role := m.Role
 		switch role {
 		case "assistant":
 			if strings.TrimSpace(m.Content) == "" {
 				continue
+			}
+			for _, rb := range reasoningByMsg[m.ID] {
+				items = append(items, openrouter.ResponseItem{
+					Type:             "reasoning",
+					ID:               rb.ItemID,
+					EncryptedContent: rb.EncryptedContent,
+				})
 			}
 			items = append(items, openrouter.ResponseItem{
 				Type:   "message",

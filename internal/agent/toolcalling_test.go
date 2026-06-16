@@ -212,6 +212,31 @@ func TestExecuteFunctionCalls_AuditsArgsHashOnly(t *testing.T) {
 	}
 }
 
+func TestReasoningConfig(t *testing.T) {
+	// "auto" enables adaptive reasoning: reasoning on, no fixed effort.
+	got := reasoningConfig("auto")
+	if got.Effort != "" {
+		t.Fatalf("auto should not pin an effort, got %q", got.Effort)
+	}
+	if got.Enabled == nil || !*got.Enabled {
+		t.Fatalf("auto should enable reasoning")
+	}
+
+	// "AUTO" with surrounding space is still adaptive.
+	if got := reasoningConfig("  AUTO "); got.Enabled == nil || !*got.Enabled || got.Effort != "" {
+		t.Fatalf("auto matching should be case- and space-insensitive, got %+v", got)
+	}
+
+	// A fixed effort is passed through and does not set Enabled.
+	got = reasoningConfig("high")
+	if got.Effort != "high" {
+		t.Fatalf("expected effort high, got %q", got.Effort)
+	}
+	if got.Enabled != nil {
+		t.Fatalf("fixed effort should not set Enabled")
+	}
+}
+
 func TestTruncateAuditErr(t *testing.T) {
 	long := strings.Repeat("x", 1000)
 	got := truncateAuditErr(&testErr{s: long})
@@ -242,6 +267,78 @@ func TestReplayableResponseItems_PreservesReasoningForProviderContinuation(t *te
 		t.Fatalf("expected reasoning encrypted content to survive, got %+v", got[0])
 	}
 }
+
+func TestReplayableResponseItems_DropsSummaryOnlyReasoning(t *testing.T) {
+	// Anthropic-style reasoning comes back as a summary with no encrypted_content.
+	// Replaying it produces an unsigned thinking block that Anthropic rejects, so
+	// it must be dropped while the assistant message and tool call survive.
+	in := []openrouter.ResponseItem{
+		{Type: "reasoning", ID: "rs_1", Summary: []openrouter.ReasoningSummaryPart{{Text: "thinking"}}},
+		{Type: "message", ID: "msg_1"},
+		{Type: "function_call", ID: "fc_1"},
+	}
+	got := replayableResponseItems(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 replayable items, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "message" || got[1].Type != "function_call" {
+		t.Fatalf("unexpected replayable items: %+v", got)
+	}
+}
+
+func TestReasoningBlocksFromItems_KeepsOnlySigned(t *testing.T) {
+	in := []openrouter.ResponseItem{
+		{Type: "reasoning", ID: "rs_1", EncryptedContent: "signed"},
+		{Type: "reasoning", ID: "rs_2", Summary: []openrouter.ReasoningSummaryPart{{Text: "summary-only"}}},
+		{Type: "message", ID: "msg_1"},
+	}
+	got := reasoningBlocksFromItems(in)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 signed block, got %d: %+v", len(got), got)
+	}
+	if got[0].ItemID != "rs_1" || got[0].EncryptedContent != "signed" {
+		t.Fatalf("unexpected block: %+v", got[0])
+	}
+}
+
+func TestStripReasoningItems(t *testing.T) {
+	in := []openrouter.ResponseItem{
+		{Type: "reasoning", ID: "rs_1", EncryptedContent: "x"},
+		{Type: "message", ID: "msg_1"},
+		{Type: "function_call", ID: "fc_1"},
+	}
+	got := stripReasoningItems(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 items after strip, got %d", len(got))
+	}
+	for _, it := range got {
+		if it.Type == "reasoning" {
+			t.Fatalf("reasoning item survived strip: %+v", got)
+		}
+	}
+}
+
+func TestIsThinkingSignatureError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errString("messages.5.content.0: Invalid signature in thinking block"), true},
+		{errString("Invalid SIGNATURE in THINKING block"), true},
+		{errString("some other 400 error"), false},
+		{errString("invalid signature on jwt"), false},
+	}
+	for i, c := range cases {
+		if got := isThinkingSignatureError(c.err); got != c.want {
+			t.Fatalf("case %d: got %v want %v", i, got, c.want)
+		}
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
 
 func TestMergeFinalFunctionCallsWithPending_PrefersReconstructedArguments(t *testing.T) {
 	final := []openrouter.ResponseItem{

@@ -138,11 +138,11 @@ func (a *Agent) ResumeConfirmedStream(ctx context.Context, userID int64, token s
 		return Reply{Text: pause.Text, ToolCalls: append([]ToolCallInfo{}, p.ToolCalls...)}, p.ConversationID, true, nil
 	}
 	items = append(items, toolOutputs...)
-	replyText, reasoning, toolCalls, err := a.replyWithToolsStream(ctx, sess, p.UserID, p.ConversationID, items, append(p.ToolCalls, infos...), emit)
+	replyText, reasoning, toolCalls, reasoningItems, err := a.replyWithToolsStream(ctx, sess, p.UserID, p.ConversationID, items, append(p.ToolCalls, infos...), emit)
 	if err != nil {
 		return Reply{}, p.ConversationID, true, err
 	}
-	return Reply{Text: replyText, Reasoning: reasoning, ToolCalls: toolCalls}, p.ConversationID, true, nil
+	return Reply{Text: replyText, Reasoning: reasoning, ToolCalls: toolCalls, ReasoningItems: reasoningItems}, p.ConversationID, true, nil
 }
 
 func (a *Agent) prunePendingLocked(now time.Time) {

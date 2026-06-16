@@ -36,7 +36,7 @@ func (r agentSubagentRunner) Run(ctx context.Context, userID int64, req subagent
 		Content: []openrouter.ContentPart{{Type: "input_text", Text: req.Prompt}},
 	})
 
-	text, _, _, err := r.ag.replyWithToolsStream(ctx, sess, userID, 0, items, nil, progressEmitter(emit))
+	text, _, _, _, err := r.ag.replyWithToolsStream(ctx, sess, userID, 0, items, nil, progressEmitter(emit))
 	if err != nil {
 		return "", err
 	}
@@ -60,6 +60,7 @@ func (a *Agent) newSubagentSession(userID int64, req subagents.RunRequest) (*too
 	s.Confirm = auditedConfirmer{mgr: a.confirm, db: a.db}
 	s.MCP = a.mcp
 	s.LLM = a
+	s.AllowPrivateNetworkFetch = a.cfg.Web.AllowPrivateNetwork
 	if a.secrets != nil {
 		s.Secrets = auditedSecrets{store: a.secrets, db: a.db}
 	}

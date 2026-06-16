@@ -37,12 +37,25 @@ type ResponsesRequest struct {
 	ToolChoice any                 `json:"tool_choice,omitempty"`
 	Reasoning  *ResponsesReasoning `json:"reasoning,omitempty"`
 
+	// Include requests extra fields on output items. We use
+	// "reasoning.encrypted_content" so providers (Anthropic, OpenAI o-series)
+	// return the signed/encrypted reasoning payload, which can then be replayed
+	// in follow-up turns without tripping signature validation.
+	// Docs: https://openrouter.ai/docs/api/reference/responses/overview
+	Include []string `json:"include,omitempty"`
+
 	// Provider routing preferences (OpenRouter-specific).
 	Provider *ProviderPreferences `json:"provider,omitempty"`
 }
 
 type ResponsesReasoning struct {
+	// Effort pins the reasoning depth (low|medium|high). Left empty for
+	// adaptive reasoning, where Enabled is set instead and the model decides
+	// how much to spend.
 	Effort string `json:"effort,omitempty"`
+	// Enabled turns reasoning on without pinning an effort. Pointer so the
+	// field is omitted unless explicitly set.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type ResponsesTool struct {
@@ -84,6 +97,16 @@ type ResponseItem struct {
 
 type ReasoningSummaryPart struct {
 	Text string
+}
+
+// MarshalJSON emits the Responses API summary-part shape
+// ({"type":"summary_text","text":"..."}) so a reasoning item read from one turn
+// can be replayed as input on the next without being mangled into {"Text":"..."}.
+func (p ReasoningSummaryPart) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{Type: "summary_text", Text: p.Text})
 }
 
 func (p *ReasoningSummaryPart) UnmarshalJSON(data []byte) error {
