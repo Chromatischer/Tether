@@ -12,6 +12,9 @@ type Dirs struct {
 	Config    string
 	Skills    string
 	Cache     string
+	// Agents holds folder-based proactive agents, each in its own subdirectory,
+	// authored and maintained by the main agent.
+	Agents string
 }
 
 func ForUser(dataDir string, userID int64) Dirs {
@@ -22,11 +25,12 @@ func ForUser(dataDir string, userID int64) Dirs {
 		Config:    filepath.Join(root, "config"),
 		Skills:    filepath.Join(root, "skills"),
 		Cache:     filepath.Join(root, "cache"),
+		Agents:    filepath.Join(root, "agents"),
 	}
 }
 
 func Ensure(d Dirs) error {
-	for _, p := range []string{d.Root, d.Workspace, d.Config, d.Skills, d.Cache} {
+	for _, p := range []string{d.Root, d.Workspace, d.Config, d.Skills, d.Cache, d.Agents} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return err
 		}

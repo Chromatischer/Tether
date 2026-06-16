@@ -24,9 +24,10 @@ type Rules struct {
 		Minutes int  `yaml:"minutes"`
 	} `yaml:"inactivity"`
 
-	// Custom proactive agents.
-	// These can run on schedules, on built-in app events, and on manually-triggered actions.
-	Agents []AgentRule `yaml:"agents"`
+	// Custom proactive agents. These are sourced exclusively from the folder-based
+	// agents/ directory (one folder per agent), not from this YAML. The field is
+	// populated at load time and is never read from or written to proactive.yaml.
+	Agents []AgentRule `yaml:"-"`
 }
 
 type AgentRule struct {
@@ -43,9 +44,29 @@ type AgentRule struct {
 	// Custom action names that can be triggered manually (e.g. via proactive.run or /proactive action <name>).
 	Actions []string `yaml:"actions"`
 
+	// Condition gates the agent on a shell predicate (exit 0 = run). When set
+	// with no schedule/events/actions, the engine polls the predicate and runs
+	// the agent when it passes. When set alongside a schedule/event/action, it
+	// is an additional gate evaluated at fire time.
+	Condition *Condition `yaml:"condition,omitempty"`
+
 	CooldownMinutes int `yaml:"cooldown_minutes"` // optional
 	MaxPerDay       int `yaml:"max_per_day"`      // optional (default 1)
 	TimeoutSeconds  int `yaml:"timeout_seconds"`  // optional (default 120)
+
+	// Dir is the host path of this agent's folder, for folder-based agents.
+	// Empty for legacy YAML-defined agents. Not serialized.
+	Dir string `yaml:"-"`
+}
+
+// Condition is a shell predicate that gates a proactive agent. Either an inline
+// Command or a Script (a path relative to the agent's folder) is run in the
+// no-network sandbox; exit code 0 means the condition is met.
+type Condition struct {
+	Command string `yaml:"command,omitempty"`
+	Script  string `yaml:"script,omitempty"`
+	// PollMinutes throttles evaluation for condition-only agents (default 5).
+	PollMinutes int `yaml:"poll_minutes,omitempty"`
 }
 
 func DefaultRules() Rules {
