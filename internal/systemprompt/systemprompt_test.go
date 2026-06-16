@@ -11,7 +11,7 @@ func TestDefaultMarkdown(t *testing.T) {
 		template string
 		want     string
 	}{
-		{name: "chat", template: TemplateChat, want: "You are Tether"},
+		{name: "chat", template: TemplateChat, want: "you are Cas now"},
 		{name: "proactive", template: TemplateProactive, want: "You are Tether running in autonomous proactive mode"},
 		{name: "unknown", template: "missing", want: ""},
 	}
