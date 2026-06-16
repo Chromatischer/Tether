@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,7 +37,8 @@ func (t WebFetch) Spec() tools.ToolSpec {
 		Summary: "Fetch a URL over the network and cache the truncated response body.",
 		WhenToUse: "Use this to retrieve page content. Then use fetch.summarize to get a safe markdown summary. " +
 			"Prefer fetch.summarize over returning raw bodies.",
-		Safety: "Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token.",
+		Safety: "Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token. " +
+			"Private, loopback, and link-local addresses are blocked by default (SSRF protection).",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -200,7 +202,7 @@ func (t WebFetch) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 		}
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safeFetchHTTPClient(30*time.Second, s.AllowPrivateNetworkFetch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -230,6 +232,17 @@ func (t WebFetch) Execute(ctx context.Context, s *Session, rawArgs json.RawMessa
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		var blocked *blockedAddrError
+		if errors.As(err, &blocked) {
+			return nil, fmt.Errorf(
+				"web-fetch blocked: %q resolves to internal address %s. "+
+					"Fetching private, loopback, or link-local addresses is disabled to prevent SSRF. "+
+					"This is not a transient error — retrying the same URL will fail again. "+
+					"If this endpoint is genuinely intended and authorized, an admin can enable "+
+					"private-network fetches in the admin 'agent' tab.",
+				u, blocked.ip,
+			)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

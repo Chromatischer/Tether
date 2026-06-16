@@ -124,6 +124,15 @@ type Session struct {
 	// BashNetworkEnabled allows the bash tool to run with network access for this session.
 	// It must only be enabled through an explicit confirmed action.
 	BashNetworkEnabled bool
+
+	// AllowPrivateNetworkFetch permits web-fetch to reach private/loopback/
+	// link-local addresses. Set from config each turn; default false (SSRF guard).
+	AllowPrivateNetworkFetch bool
+
+	// AllowHostExec permits the non-sandboxed host bash tool. Set from config for
+	// the main session only (never for sub-agents); default false. Even when true,
+	// each host command requires a per-call confirmation and a stated reason.
+	AllowHostExec bool
 }
 
 // AddInvokedSkill stores/replaces the most recent invocation of a skill.
@@ -155,6 +164,7 @@ func NewSession(reg *tools.Registry) *Session {
 	active["confirm.scope"] = true
 	active["read"] = true
 	active["write"] = true
+	active["edit"] = true
 	active["web-search"] = true
 	active["web-fetch"] = true
 	active["fetch.summarize"] = true
