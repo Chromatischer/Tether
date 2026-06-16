@@ -105,6 +105,10 @@ type agentReleaseMsg struct {
 	RequestID      int
 }
 
+// autoLoginMsg triggers terminal-mode entry as the local root account,
+// bypassing the login/signup view.
+type autoLoginMsg struct{}
+
 type appBackendSyncPollMsg struct{}
 
 type appBackendSyncMsg struct {
@@ -158,11 +162,78 @@ func (m appModel) activateConversation(conv *store.Conversation) appModel {
 	return m
 }
 
+// provisionAndEnter sets up per-user state for an authenticated user and
+// transitions into the chat view. Shared by interactive login and the
+// terminal-mode root auto-login.
+func (m appModel) provisionAndEnter(u *store.User) (appModel, tea.Cmd, error) {
+	conv, err := store.GetOrCreateActiveConversation(m.ctx.DB, u.ID)
+	if err != nil {
+		return m, nil, err
+	}
+
+	// Deliver any pending proactive notifications.
+	// If a notification has a conversation_id, inject it into that conversation.
+	// Otherwise, inject into the user's active conversation (backwards-compatible behavior).
+	nots, err := store.ListUndeliveredNotifications(m.ctx.DB, u.ID, 50)
+	if err == nil {
+		for _, n := range nots {
+			targetConvID := conv.ID
+			if n.ConversationID != 0 {
+				targetConvID = n.ConversationID
+			}
+			note := "[Proactive/" + n.Kind + "] " + n.Content
+			_ = store.AddMessage(m.ctx.DB, targetConvID, "system", note)
+			_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
+		}
+	}
+
+	// Ensure per-user sandbox/config directories exist.
+	dirs := userspace.ForUser(m.ctx.Config.Paths.DataDir, u.ID)
+	if err := userspace.Ensure(dirs); err != nil {
+		return m, nil, err
+	}
+	// Ensure default proactive rules exist in SQLite (spec requirement).
+	b, _ := yaml.Marshal(proactive.DefaultRules())
+	_ = store.EnsureDefaultProactiveRulesYAML(m.ctx.DB, u.ID, string(b))
+
+	// Also write legacy per-user proactive rules file for transparency/editing.
+	rulesPath := proactive.DefaultRulesPath(dirs.Config)
+	if _, err := os.Stat(rulesPath); err != nil {
+		_ = os.WriteFile(rulesPath, b, 0o644)
+	}
+
+	// Ensure default agent personalities exist (self-editable by the agent).
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentChat)
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveDailyBrief)
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveOpenLoops)
+	if rules, err := proactive.LoadRules(rulesPath); err == nil {
+		for _, ar := range rules.Agents {
+			if id, ok := personality.NormalizeID(ar.ID); ok {
+				_ = userspace.EnsurePersonalityFile(dirs, personality.ProactiveAgentKey(id))
+			}
+		}
+	}
+
+	m.user = u
+	m = m.activateConversation(conv)
+	m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
+	m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+	return m, tea.Batch(
+		m.chat.loadCmd(),
+		m.triggerProactiveEventCmd(proactive.EventLogin, nil),
+		m.backendSyncTickCmd(),
+	), nil
+}
+
 func (m appModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tea.RequestBackgroundColor,
 		cursor.Blink,
-	)
+	}
+	if m.ctx != nil && m.ctx.AutoLogin {
+		cmds = append(cmds, func() tea.Msg { return autoLoginMsg{} })
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -232,65 +303,27 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
 		}
-		conv, err := store.GetOrCreateActiveConversation(m.ctx.DB, u.ID)
+		var cmd tea.Cmd
+		m, cmd, err = m.provisionAndEnter(u)
 		if err != nil {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
 		}
+		return m, cmd
 
-		// Deliver any pending proactive notifications.
-		// If a notification has a conversation_id, inject it into that conversation.
-		// Otherwise, inject into the user's active conversation (backwards-compatible behavior).
-		nots, err := store.ListUndeliveredNotifications(m.ctx.DB, u.ID, 50)
+	case autoLoginMsg:
+		// Terminal mode: enter as the local root account, no login screen.
+		u, err := store.EnsureRootUser(m.ctx.DB)
 		if err == nil {
-			for _, n := range nots {
-				targetConvID := conv.ID
-				if n.ConversationID != 0 {
-					targetConvID = n.ConversationID
-				}
-				msg := "[Proactive/" + n.Kind + "] " + n.Content
-				_ = store.AddMessage(m.ctx.DB, targetConvID, "system", msg)
-				_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
+			var cmd tea.Cmd
+			m, cmd, err = m.provisionAndEnter(u)
+			if err == nil {
+				return m, cmd
 			}
 		}
-
-		// Ensure per-user sandbox/config directories exist.
-		dirs := userspace.ForUser(m.ctx.Config.Paths.DataDir, u.ID)
-		if err := userspace.Ensure(dirs); err != nil {
-			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
-			return m, nil
-		}
-		// Ensure default proactive rules exist in SQLite (spec requirement).
-		b, _ := yaml.Marshal(proactive.DefaultRules())
-		_ = store.EnsureDefaultProactiveRulesYAML(m.ctx.DB, u.ID, string(b))
-
-		// Also write legacy per-user proactive rules file for transparency/editing.
-		rulesPath := proactive.DefaultRulesPath(dirs.Config)
-		if _, err := os.Stat(rulesPath); err != nil {
-			_ = os.WriteFile(rulesPath, b, 0o644)
-		}
-
-		// Ensure default agent personalities exist (self-editable by the agent).
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentChat)
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveDailyBrief)
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveOpenLoops)
-		if rules, err := proactive.LoadRules(rulesPath); err == nil {
-			for _, ar := range rules.Agents {
-				if id, ok := personality.NormalizeID(ar.ID); ok {
-					_ = userspace.EnsurePersonalityFile(dirs, personality.ProactiveAgentKey(id))
-				}
-			}
-		}
-
-		m.user = u
-		m = m.activateConversation(conv)
-		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
-		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
-		return m, tea.Batch(
-			m.chat.loadCmd(),
-			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
-			m.backendSyncTickCmd(),
-		)
+		// Fall back to the login view so the error is visible.
+		m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
+		return m, nil
 
 	case loginSuccessMsg:
 		m.user = msg.User
@@ -1901,7 +1934,7 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}()
 	return waitAgentAsyncCmd(ch)
 }
@@ -1974,7 +2007,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}()
 	return waitAgentAsyncCmd(ch)
 }
@@ -1997,7 +2030,7 @@ func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.C
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}
 }
 
@@ -2243,10 +2276,11 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		return m, m.maybeDispatchWaitlist()
 	}
 	if targetConvID != 0 && !renderInActiveChat {
-		_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", clean)
+		_, _ = store.AddAssistantMessageWithReasoning(m.ctx.DB, targetConvID, clean, msg.Model, msg.ReasoningItems)
 	}
 	if renderInActiveChat {
 		m.chat = m.chat.finishStreamingAssistant(msg.RequestID, clean, msg.Reasoning)
+		m.chat = m.chat.persistReasoningForRequest(msg.RequestID, msg.Model, msg.ReasoningItems)
 	}
 	return m, m.maybeDispatchWaitlist()
 }

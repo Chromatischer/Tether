@@ -279,7 +279,7 @@ func (g *Gateway) handleInbound(ctx context.Context, from string, text string) {
 	}
 
 	out, of := redact.ScanAndRedact(reply.Text)
-	_ = store.AddMessage(g.db, conv.ID, "assistant", out)
+	_, _ = store.AddAssistantMessageWithReasoning(g.db, conv.ID, out, g.ag.Model(), reply.ReasoningItems)
 	if len(of) > 0 {
 		_, _ = g.send(ctx, from, "(Assistant response was redacted due to secret-like content.)\n"+out)
 		return
@@ -378,7 +378,7 @@ func (g *Gateway) handleReaction(ctx context.Context, from string, reaction stru
 			return
 		}
 		out, of := redact.ScanAndRedact(reply.Text)
-		_ = store.AddMessage(g.db, convID, "assistant", out)
+		_, _ = store.AddAssistantMessageWithReasoning(g.db, convID, out, g.ag.Model(), reply.ReasoningItems)
 		if len(of) > 0 {
 			out = "(Assistant response was redacted due to secret-like content.)\n" + out
 		}
@@ -400,7 +400,7 @@ func (g *Gateway) handleReaction(ctx context.Context, from string, reaction stru
 		return
 	}
 	out, of := redact.ScanAndRedact(reply.Text)
-	_ = store.AddMessage(g.db, pending.ConversationID, "assistant", out)
+	_, _ = store.AddAssistantMessageWithReasoning(g.db, pending.ConversationID, out, g.ag.Model(), reply.ReasoningItems)
 	if len(of) > 0 {
 		out = "(Assistant response was redacted due to secret-like content.)\n" + out
 	}

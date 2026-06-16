@@ -22,9 +22,10 @@ const (
 	settingsSectionConfirm
 	settingsSectionSignal
 	settingsSectionRetention
+	settingsSectionDiscord
 )
 
-var settingsSectionLabels = []string{"proactive rules", "confirmation", "signal", "retention"}
+var settingsSectionLabels = []string{"proactive rules", "confirmation", "signal", "retention", "discord"}
 
 type settingsModel struct {
 	ctx    *SessionContext
@@ -59,6 +60,11 @@ type settingsModel struct {
 	retentionMemDays int
 	retentionFocus   int // 0=chat, 1=memory
 
+	// discord verbosity section
+	discordVP   viewport.Model
+	discordSel  int // index into discordOpts
+	discordOpts []string
+
 	status    string
 	statusErr bool
 }
@@ -71,6 +77,7 @@ type settingsLoadedMsg struct {
 	signalNumber      string
 	retentionDays     int
 	retentionMemDays  int
+	discordVerbosity  string
 	err               error
 }
 
@@ -111,8 +118,14 @@ func newSettingsModel(ctx *SessionContext) settingsModel {
 		confirmVP:       mk(),
 		signalVP:        mk(),
 		retentionVP:     mk(),
+		discordVP:       mk(),
 		rulesTA:         ta,
 		confirmOpts:     []string{"ask", "always", "never"},
+		discordOpts: []string{
+			store.DiscordVerbosityFull,
+			store.DiscordVerbosityNoThinking,
+			store.DiscordVerbosityMessageOnly,
+		},
 		signalLinkInput: li,
 		retentionInput:  ri,
 		retentionInput2: ri2,
@@ -138,6 +151,8 @@ func (m settingsModel) withSize(w, h int) settingsModel {
 	m.signalVP.SetHeight(ch)
 	m.retentionVP.SetWidth(w)
 	m.retentionVP.SetHeight(ch)
+	m.discordVP.SetWidth(w)
+	m.discordVP.SetHeight(ch)
 	m.rulesTA.SetWidth(max(20, w-4))
 	m.rulesTA.SetHeight(max(5, ch-4))
 	m.signalLinkInput.SetWidth(max(20, w-4))
@@ -183,6 +198,7 @@ func (m settingsModel) loadCmd() tea.Cmd {
 			signalNumber:      signalNum,
 			retentionDays:     chatDays,
 			retentionMemDays:  memDays,
+			discordVerbosity:  store.GetDiscordVerbosity(ctx.DB, userID),
 		}
 	}
 }
@@ -209,6 +225,13 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		m.signalNumber = msg.signalNumber
 		m.retentionDays = msg.retentionDays
 		m.retentionMemDays = msg.retentionMemDays
+		// map verbosity string → index
+		m.discordSel = 0
+		for i, opt := range m.discordOpts {
+			if opt == msg.discordVerbosity {
+				m.discordSel = i
+			}
+		}
 		m.status = ""
 		m.statusErr = false
 		m.rebuildSections()
@@ -237,6 +260,8 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				return m.switchSection(settingsSectionSignal)
 			case "4":
 				return m.switchSection(settingsSectionRetention)
+			case "5":
+				return m.switchSection(settingsSectionDiscord)
 			case "[":
 				next := (int(m.sec) - 1 + len(settingsSectionLabels)) % len(settingsSectionLabels)
 				return m.switchSection(settingsSection(next))
@@ -257,6 +282,8 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			return m.updateSignal(msg)
 		case settingsSectionRetention:
 			return m.updateRetention(msg)
+		case settingsSectionDiscord:
+			return m.updateDiscord(msg)
 		}
 
 	case tea.MouseClickMsg:
@@ -279,6 +306,8 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			m.signalVP, cmd = m.signalVP.Update(msg)
 		case settingsSectionRetention:
 			m.retentionVP, cmd = m.retentionVP.Update(msg)
+		case settingsSectionDiscord:
+			m.discordVP, cmd = m.discordVP.Update(msg)
 		}
 	}
 	return m, cmd
@@ -335,6 +364,32 @@ func (m settingsModel) updateConfirm(msg tea.KeyPressMsg) (settingsModel, tea.Cm
 	case "enter", " ":
 		chosen := m.confirmOpts[m.confirmSel]
 		if err := store.SetUserSetting(m.ctx.DB, m.userID, "confirm_strictness", chosen); err != nil {
+			m.status = "save error: " + err.Error()
+			m.statusErr = true
+		} else {
+			m.status = "saved: " + chosen
+			m.statusErr = false
+		}
+		m.rebuildSections()
+	}
+	return m, nil
+}
+
+func (m settingsModel) updateDiscord(msg tea.KeyPressMsg) (settingsModel, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.discordSel > 0 {
+			m.discordSel--
+			m.rebuildSections()
+		}
+	case "down", "j":
+		if m.discordSel < len(m.discordOpts)-1 {
+			m.discordSel++
+			m.rebuildSections()
+		}
+	case "enter", " ":
+		chosen := m.discordOpts[m.discordSel]
+		if err := store.SetDiscordVerbosity(m.ctx.DB, m.userID, chosen); err != nil {
 			m.status = "save error: " + err.Error()
 			m.statusErr = true
 		} else {
@@ -489,6 +544,7 @@ func (m *settingsModel) rebuildSections() {
 	m.rebuildConfirm()
 	m.rebuildSignal()
 	m.rebuildRetention()
+	m.rebuildDiscord()
 }
 
 func (m *settingsModel) rebuildRules() {
@@ -586,6 +642,41 @@ func (m *settingsModel) rebuildRetention() {
 	setViewportContent(&m.retentionVP, strings.TrimRight(b.String(), "\n"), colorBg)
 }
 
+func discordVerbosityLabel(opt string) string {
+	switch opt {
+	case store.DiscordVerbosityFull:
+		return "full"
+	case store.DiscordVerbosityNoThinking:
+		return "no thinking"
+	case store.DiscordVerbosityMessageOnly:
+		return "message only"
+	default:
+		return opt
+	}
+}
+
+func (m *settingsModel) rebuildDiscord() {
+	if m.discordVP.Width() <= 0 {
+		return
+	}
+	var b strings.Builder
+	b.WriteString(styleTitleBg.Render("discord verbosity") + "\n\n")
+	b.WriteString(styleMutedBg.Render("How much of the agent's work appears in your Discord DMs?") + "\n\n")
+	for i, opt := range m.discordOpts {
+		label := discordVerbosityLabel(opt)
+		if i == m.discordSel {
+			b.WriteString(styleAccentBg.Render("▶ "+label) + "\n")
+		} else {
+			b.WriteString(styleDimBg.Render("  "+label) + "\n")
+		}
+	}
+	b.WriteString("\n" + styleDimBg.Render("full") + styleBodyBg.Render(" — ") + styleMutedBg.Render("show tool calls, reasoning, and the final message") + "\n")
+	b.WriteString(styleDimBg.Render("no thinking") + styleBodyBg.Render(" — ") + styleMutedBg.Render("show tool calls and the final message") + "\n")
+	b.WriteString(styleDimBg.Render("message only") + styleBodyBg.Render(" — ") + styleMutedBg.Render("show only the final message (no tool calls)") + "\n")
+	b.WriteString("\n" + m.hintLine(settingsSectionDiscord))
+	setViewportContent(&m.discordVP, strings.TrimRight(b.String(), "\n"), colorBg)
+}
+
 func (m settingsModel) hintLine(sec settingsSection) string {
 	base := styleDimBg.Render("[/] sections  r·refresh")
 	extra := ""
@@ -604,6 +695,8 @@ func (m settingsModel) hintLine(sec settingsSection) string {
 		}
 	case settingsSectionRetention:
 		extra = styleBodyBg.Render("  ") + styleDimBg.Render("tab·switch  enter·save")
+	case settingsSectionDiscord:
+		extra = styleBodyBg.Render("  ") + styleDimBg.Render("↑↓·select  enter·save")
 	}
 	if m.status != "" {
 		if m.statusErr {
@@ -669,6 +762,8 @@ func (m settingsModel) View() tea.View {
 		body = m.signalVP.View()
 	case settingsSectionRetention:
 		body = m.retentionVP.View()
+	case settingsSectionDiscord:
+		body = m.discordVP.View()
 	}
 	if m.w > 0 || m.h > 0 {
 		body = fillArea(body, m.w, max(0, m.h-1), colorBg)

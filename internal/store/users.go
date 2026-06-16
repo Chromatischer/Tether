@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +15,40 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUsernameTaken      = errors.New("username already taken")
 )
+
+// RootUsername is the implicit account used by local terminal mode, which
+// runs without portal authentication.
+const RootUsername = "root"
+
+// EnsureRootUser returns the local "root" account, creating it (as admin) if
+// it does not exist. The password is randomized and unused: local terminal
+// mode bypasses the login flow entirely.
+func EnsureRootUser(db *sql.DB) (*User, error) {
+	var u User
+	err := db.QueryRow(`SELECT id, username, role FROM users WHERE username = ?`, RootUsername).
+		Scan(&u.ID, &u.Username, &u.Role)
+	if err == nil {
+		return &u, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(secret)), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	res, err := db.Exec(`INSERT INTO users(username, pass_hash, role) VALUES (?, ?, 'admin')`, RootUsername, string(hash))
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &User{ID: id, Username: RootUsername, Role: "admin"}, nil
+}
 
 func CreateUser(db *sql.DB, username, password string) (*User, error) {
 	username = strings.TrimSpace(username)

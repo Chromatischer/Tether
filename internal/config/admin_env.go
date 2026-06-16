@@ -14,6 +14,15 @@ type AdminEnv struct {
 	DiscordBotToken  string `yaml:"discord_bot_token,omitempty"`
 	SignalNumber     string `yaml:"signal_number,omitempty"`
 	MasterKey        string `yaml:"master_key,omitempty"`
+
+	// Agent runtime tuning, stored as strings so they round-trip through the
+	// admin text inputs. Empty means "leave config/default in effect".
+	AgentMaxToolCalls       string `yaml:"agent_max_tool_calls,omitempty"`
+	AgentTurnTimeoutSeconds string `yaml:"agent_turn_timeout_seconds,omitempty"`
+	AgentTemperature        string `yaml:"agent_temperature,omitempty"`
+	AgentReasoningEffort    string `yaml:"agent_reasoning_effort,omitempty"`
+	WebAllowPrivateNetwork  string `yaml:"web_allow_private_network,omitempty"`
+	HostExecEnabled         string `yaml:"host_exec_enabled,omitempty"`
 }
 
 func AdminEnvPath(dataDir string) string {
@@ -62,6 +71,12 @@ func (e *AdminEnv) normalize() {
 	e.DiscordBotToken = strings.TrimSpace(e.DiscordBotToken)
 	e.SignalNumber = strings.TrimSpace(e.SignalNumber)
 	e.MasterKey = strings.TrimSpace(e.MasterKey)
+	e.AgentMaxToolCalls = strings.TrimSpace(e.AgentMaxToolCalls)
+	e.AgentTurnTimeoutSeconds = strings.TrimSpace(e.AgentTurnTimeoutSeconds)
+	e.AgentTemperature = strings.TrimSpace(e.AgentTemperature)
+	e.AgentReasoningEffort = strings.TrimSpace(e.AgentReasoningEffort)
+	e.WebAllowPrivateNetwork = strings.TrimSpace(e.WebAllowPrivateNetwork)
+	e.HostExecEnabled = strings.TrimSpace(e.HostExecEnabled)
 }
 
 func (e AdminEnv) empty() bool {
@@ -69,5 +84,11 @@ func (e AdminEnv) empty() bool {
 		e.OpenRouterModel == "" &&
 		e.DiscordBotToken == "" &&
 		e.SignalNumber == "" &&
-		e.MasterKey == ""
+		e.MasterKey == "" &&
+		e.AgentMaxToolCalls == "" &&
+		e.AgentTurnTimeoutSeconds == "" &&
+		e.AgentTemperature == "" &&
+		e.AgentReasoningEffort == "" &&
+		e.WebAllowPrivateNetwork == "" &&
+		e.HostExecEnabled == ""
 }

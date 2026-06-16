@@ -92,6 +92,11 @@ type agentReplyMsg struct {
 	Text           string
 	Reasoning      string
 	ToolCalls      []toolCallEntry
+	// ReasoningItems is the signed reasoning behind the answer; Model is the
+	// model that produced it. Persisted so reasoning can be replayed on later
+	// turns (see store.SetMessageReasoning).
+	ReasoningItems []store.ReasoningBlock
+	Model          string
 }
 
 type loginSuccessMsg struct {
@@ -692,6 +697,24 @@ func (m chatModel) finishStreamingAssistant(requestID int, text string, reasonin
 	delete(m.pendingAssistantIdx, requestID)
 	m.reflow()
 	m.viewport.GotoBottom()
+	return m
+}
+
+// persistReasoningForRequest attaches the signed reasoning blocks to the most
+// recent persisted assistant message for the given request, so it can be
+// replayed on later turns.
+func (m chatModel) persistReasoningForRequest(requestID int, model string, blocks []store.ReasoningBlock) chatModel {
+	if len(blocks) == 0 || m.db == nil || m.convID == 0 {
+		return m
+	}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.requestID != requestID || msg.role != "assistant" || msg.dbID == 0 {
+			continue
+		}
+		_ = store.SetMessageReasoning(m.db, msg.dbID, m.convID, model, blocks)
+		break
+	}
 	return m
 }
 

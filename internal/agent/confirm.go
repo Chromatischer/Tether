@@ -169,10 +169,6 @@ func (a *Agent) ConfirmToken(userID int64, token string) bool {
 	return ok
 }
 
-func (a *Agent) RejectConfirmToken(userID int64, token string) bool {
-	return a.rejectConfirmToken(userID, token)
-}
-
 func (a *Agent) rejectConfirmToken(userID int64, token string) bool {
 	if a.confirm == nil {
 		return false

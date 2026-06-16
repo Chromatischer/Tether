@@ -272,7 +272,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 			if !ok {
 				return
 			}
-			stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+			stream := newDiscordReplyStream(ctx, s, r.ChannelID, store.GetDiscordVerbosity(g.db, pending.UserID))
 			defer stream.Close()
 			stream.Start()
 			reply, convID, resumed, err := g.ag.ResumeConfirmedStream(ctx, pending.UserID, token, func(ev agent.StreamEvent) {
@@ -287,7 +287,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 				return
 			}
 			out, of := redact.ScanAndRedact(reply.Text)
-			_ = store.AddMessage(g.db, convID, "assistant", out)
+			_, _ = store.AddAssistantMessageWithReasoning(g.db, convID, out, g.ag.Model(), reply.ReasoningItems)
 			if len(of) > 0 {
 				stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 				return
@@ -303,7 +303,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 		}
 		note := "Pending tool confirmation rejected by the user."
 		_ = store.AddMessage(g.db, pending.ConversationID, "system", note)
-		stream := newDiscordReplyStream(ctx, s, r.ChannelID)
+		stream := newDiscordReplyStream(ctx, s, r.ChannelID, store.GetDiscordVerbosity(g.db, pending.UserID))
 		defer stream.Close()
 		stream.Start()
 		reply, err := g.ag.ReplyStream(ctx, agent.ReplyParams{UserID: pending.UserID, ConversationID: pending.ConversationID, Text: ""}, func(ev agent.StreamEvent) {
@@ -314,7 +314,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 			return
 		}
 		out, of := redact.ScanAndRedact(reply.Text)
-		_ = store.AddMessage(g.db, pending.ConversationID, "assistant", out)
+		_, _ = store.AddAssistantMessageWithReasoning(g.db, pending.ConversationID, out, g.ag.Model(), reply.ReasoningItems)
 		if len(of) > 0 {
 			stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 			return
@@ -346,7 +346,7 @@ func (g *Gateway) handleConversationTurn(ctx context.Context, s *discordgo.Sessi
 		_, _ = s.ChannelMessageSend(channelID, "Your message looked like it contained secrets/tokens and was redacted. Please use /secret add via SSH for secrets.")
 	}
 
-	stream := newDiscordReplyStream(ctx, s, channelID)
+	stream := newDiscordReplyStream(ctx, s, channelID, store.GetDiscordVerbosity(g.db, uid))
 	defer stream.Close()
 	stream.Start()
 
@@ -360,7 +360,7 @@ func (g *Gateway) handleConversationTurn(ctx context.Context, s *discordgo.Sessi
 	}
 
 	out, of := redact.ScanAndRedact(reply.Text)
-	_ = store.AddMessage(g.db, convID, "assistant", out)
+	_, _ = store.AddAssistantMessageWithReasoning(g.db, convID, out, g.ag.Model(), reply.ReasoningItems)
 
 	sum := sha256.Sum256([]byte(out))
 	payload, _ := json.Marshal(map[string]any{"to": remoteID, "len": len(out), "sha256": hex.EncodeToString(sum[:])})
@@ -534,11 +534,12 @@ func discordChoiceNumberFromEmoji(emoji string) (int, bool) {
 }
 
 type discordReplyStream struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	s       *discordgo.Session
-	channel string
-	ticker  *time.Ticker
+	ctx       context.Context
+	cancel    context.CancelFunc
+	s         *discordgo.Session
+	channel   string
+	verbosity string
+	ticker    *time.Ticker
 
 	mu        sync.Mutex
 	messageID string
@@ -552,14 +553,18 @@ type discordReplyStream struct {
 	finalText string
 }
 
-func newDiscordReplyStream(parent context.Context, s *discordgo.Session, channelID string) *discordReplyStream {
+func newDiscordReplyStream(parent context.Context, s *discordgo.Session, channelID, verbosity string) *discordReplyStream {
 	ctx, cancel := context.WithCancel(parent)
+	if !store.ValidDiscordVerbosity(verbosity) {
+		verbosity = store.DiscordVerbosityDefault
+	}
 	return &discordReplyStream{
-		ctx:     ctx,
-		cancel:  cancel,
-		s:       s,
-		channel: channelID,
-		ticker:  time.NewTicker(discordEditInterval),
+		ctx:       ctx,
+		cancel:    cancel,
+		s:         s,
+		channel:   channelID,
+		verbosity: verbosity,
+		ticker:    time.NewTicker(discordEditInterval),
 	}
 }
 
@@ -580,15 +585,21 @@ func (r *discordReplyStream) OnEvent(ev agent.StreamEvent) {
 	r.mu.Lock()
 	switch ev.Type {
 	case "reasoning_delta":
-		r.reasoning.WriteString(ev.Delta)
-		r.dirty = true
+		// Reasoning is only surfaced at the most verbose level.
+		if r.verbosity == store.DiscordVerbosityFull {
+			r.reasoning.WriteString(ev.Delta)
+			r.dirty = true
+		}
 	case "assistant_delta":
 		r.answer.WriteString(ev.Delta)
 		r.dirty = true
 	case "tool_call":
-		if name := strings.TrimSpace(ev.Tool.Name); name != "" {
-			r.tools = append(r.tools, name)
-			r.dirty = true
+		// Tool calls are hidden in message-only mode.
+		if r.verbosity != store.DiscordVerbosityMessageOnly {
+			if name := strings.TrimSpace(ev.Tool.Name); name != "" {
+				r.tools = append(r.tools, name)
+				r.dirty = true
+			}
 		}
 	}
 	r.mu.Unlock()
@@ -875,6 +886,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 				"  /signal status\n" +
 				"  /discord status\n" +
 				"  /discord unlink\n" +
+				"  /discord verbosity [full|no_thinking|message_only]\n" +
 				"  /memory list [kind]\n" +
 				"  /memory add <kind> <content>\n" +
 				"  /memory update <id> <content>\n" +
@@ -1030,7 +1042,7 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 
 	case "/discord":
 		if len(fields) < 2 {
-			return true, "usage: /discord status | /discord unlink", conv
+			return true, "usage: /discord status | /discord unlink | /discord verbosity [full|no_thinking|message_only]", conv
 		}
 		switch fields[1] {
 		case "status":
@@ -1042,15 +1054,29 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 			if !ok {
 				return true, "Discord: not linked", conv
 			}
-			return true, "Discord linked: " + did, conv
+			return true, "Discord linked: " + did + "\nVerbosity: " + store.GetDiscordVerbosity(g.db, userID), conv
 		case "unlink":
 			recordUser(text)
 			if err := store.UnlinkDiscordUserID(g.db, userID); err != nil {
 				return true, "failed to unlink: " + err.Error(), conv
 			}
 			return true, "Discord unlinked", conv
+		case "verbosity":
+			recordUser(text)
+			if len(fields) < 3 {
+				return true, "Discord verbosity: " + store.GetDiscordVerbosity(g.db, userID) +
+					"\nusage: /discord verbosity [full|no_thinking|message_only]\n" +
+					"  full — show tool calls, reasoning, and the final message\n" +
+					"  no_thinking — show tool calls and the final message\n" +
+					"  message_only — show only the final message", conv
+			}
+			level := strings.ToLower(strings.TrimSpace(fields[2]))
+			if err := store.SetDiscordVerbosity(g.db, userID, level); err != nil {
+				return true, "failed to set verbosity: " + err.Error() + "\nchoose one of: full, no_thinking, message_only", conv
+			}
+			return true, "Discord verbosity set to " + level, conv
 		default:
-			return true, "usage: /discord status | /discord unlink", conv
+			return true, "usage: /discord status | /discord unlink | /discord verbosity [full|no_thinking|message_only]", conv
 		}
 
 	case "/memory":

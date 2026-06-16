@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/ssh"
@@ -24,6 +25,25 @@ func DetectTerminalProfile(s ssh.Session) TerminalProfile {
 		term = strings.TrimSpace(pty.Term)
 	}
 
+	return terminalProfileFromEnv(env, term)
+}
+
+// DetectLocalTerminalProfile builds a profile from the local process
+// environment, for running the TUI directly in the attached terminal
+// (no SSH session). It mirrors DetectTerminalProfile's logic.
+func DetectLocalTerminalProfile() TerminalProfile {
+	env := map[string]string{}
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		env[key] = value
+	}
+	return terminalProfileFromEnv(env, strings.TrimSpace(env["TERM"]))
+}
+
+func terminalProfileFromEnv(env map[string]string, term string) TerminalProfile {
 	profile := TerminalProfile{
 		Term:       term,
 		IsIterm:    isItermTerminal(env),
