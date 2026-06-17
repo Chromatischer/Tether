@@ -10,6 +10,7 @@ func DefaultTools() map[string]Tool {
 		"tool.describe":   ToolDescribe{},
 		"bash":            Bash{},
 		"bash.host":       HostBash{},
+		"code":            Code{},
 		"read":            ReadFile{},
 		"write":           WriteFile{},
 		"edit":            EditFile{},

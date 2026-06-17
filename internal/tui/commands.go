@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,11 +9,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"tether/internal/chatcmd"
 	"tether/internal/proactive"
-	"tether/internal/secrets"
 	"tether/internal/store"
-	"tether/internal/subagents"
-	"tether/internal/tools"
 )
 
 // commandFunc handles a single slash command. text is the raw input and fields
@@ -410,43 +407,23 @@ func (m appModel) cmdTools(text string, fields []string) (appModel, tea.Cmd) {
 		if len(fields) < 3 {
 			return m.sys("usage: /tools describe <name>"), nil
 		}
-		name := strings.TrimSpace(fields[2])
-		spec, ok := m.toolReg.Get(name)
-		if !ok {
-			return m.sys("unknown tool: " + name), nil
-		}
-		return m.sys(strings.TrimSpace(tools.RenderToolMarkdown(spec))), nil
+		return m.sys(chatcmd.ToolsDescribe(m.toolReg, fields[2])), nil
 	}
 
-	var infos []tools.ToolInfo
 	if len(fields) == 1 || fields[1] == "list" {
-		infos = m.toolReg.List()
+		return m.sys(chatcmd.ToolsList(m.toolReg)), nil
 	} else if fields[1] == "search" {
 		q := ""
 		if len(fields) > 2 {
 			q = strings.Join(fields[2:], " ")
 		}
-		infos = m.toolReg.Search(q)
-	} else {
-		return m.sys(usageBlock(
-			"/tools list",
-			"/tools search <query>",
-			"/tools describe <name>",
-		)), nil
+		return m.sys(chatcmd.ToolsSearch(m.toolReg, q)), nil
 	}
-
-	var b strings.Builder
-	b.WriteString("Tools:\n")
-	for _, t := range infos {
-		b.WriteString("- ")
-		b.WriteString(t.Name)
-		if t.Description != "" {
-			b.WriteString(" — ")
-			b.WriteString(t.Description)
-		}
-		b.WriteString("\n")
-	}
-	return m.sys(strings.TrimSpace(b.String())), nil
+	return m.sys(usageBlock(
+		"/tools list",
+		"/tools search <query>",
+		"/tools describe <name>",
+	)), nil
 }
 
 func (m appModel) cmdSignal(text string, fields []string) (appModel, tea.Cmd) {
@@ -462,33 +439,15 @@ func (m appModel) cmdSignal(text string, fields []string) (appModel, tea.Cmd) {
 	switch fields[1] {
 	case "link":
 		m = m.echo(text)
-		code, err := store.CreateSignalLinkCode(m.ctx.DB, m.user.ID, 10*time.Minute)
-		if err != nil {
-			return m.sys("failed to create link code: " + err.Error()), nil
-		}
-		acct := strings.TrimSpace(m.ctx.Config.Signal.AccountNumber)
-		if acct == "" {
-			acct = "<signal account not configured>"
-		}
-		return m.sys("Signal link code: " + code + "\nSend this code from your phone number to the Tether Signal account: " + acct + "\n(Code expires in ~10 minutes.)"), nil
+		return m.sys(chatcmd.SignalLink(m.ctx.DB, m.user.ID, m.ctx.Config.Signal.AccountNumber)), nil
 
 	case "status":
 		m = m.echo(text)
-		n, ok, err := store.GetSignalNumber(m.ctx.DB, m.user.ID)
-		if err != nil {
-			return m.sys("failed to get signal status: " + err.Error()), nil
-		}
-		if !ok {
-			return m.sys("Signal: not linked"), nil
-		}
-		return m.sys("Signal linked: " + n), nil
+		return m.sys(chatcmd.SignalStatus(m.ctx.DB, m.user.ID)), nil
 
 	case "unlink":
 		m = m.echo(text)
-		if err := store.UnlinkSignalNumber(m.ctx.DB, m.user.ID); err != nil {
-			return m.sys("failed to unlink: " + err.Error()), nil
-		}
-		return m.sys("Signal unlinked"), nil
+		return m.sys(chatcmd.SignalUnlink(m.ctx.DB, m.user.ID)), nil
 	}
 	return m.sys(usage()), nil
 }
@@ -586,67 +545,28 @@ func (m appModel) cmdMemory(text string, fields []string) (appModel, tea.Cmd) {
 		if len(fields) >= 3 {
 			kind = fields[2]
 		}
-		items, err := store.ListMemoryItems(m.ctx.DB, m.user.ID, kind, 100)
-		if err != nil {
-			return m.sys("failed to list memory: " + err.Error()), nil
-		}
-		if len(items) == 0 {
-			return m.sys("no memory items"), nil
-		}
-		var b strings.Builder
-		b.WriteString("Memory:\n")
-		for _, it := range items {
-			b.WriteString("- ")
-			b.WriteString(fmt.Sprintf("%d", it.ID))
-			b.WriteString(" [")
-			b.WriteString(it.Kind)
-			b.WriteString("] ")
-			b.WriteString(it.Content)
-			b.WriteString("\n")
-		}
-		return m.sys(strings.TrimSpace(b.String())), nil
+		return m.sys(chatcmd.MemoryList(m.ctx.DB, m.user.ID, kind)), nil
 
 	case "add":
 		if len(fields) < 4 {
 			return m.sys("usage: /memory add <kind> <content>"), nil
 		}
-		kind := fields[2]
-		content := strings.Join(fields[3:], " ")
 		m = m.echo(text)
-		id, err := store.AddMemoryItem(m.ctx.DB, m.user.ID, kind, content)
-		if err != nil {
-			return m.sys("failed to add memory: " + err.Error()), nil
-		}
-		return m.sys("memory added (id " + fmt.Sprintf("%d", id) + ")"), nil
+		return m.sys(chatcmd.MemoryAdd(m.ctx.DB, m.user.ID, fields[2], strings.Join(fields[3:], " "))), nil
 
 	case "update":
 		if len(fields) < 4 {
 			return m.sys("usage: /memory update <id> <content>"), nil
 		}
 		m = m.echo(text)
-		id, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			return m.sys("invalid id"), nil
-		}
-		content := strings.Join(fields[3:], " ")
-		if err := store.UpdateMemoryItem(m.ctx.DB, m.user.ID, id, content); err != nil {
-			return m.sys("failed to update memory: " + err.Error()), nil
-		}
-		return m.sys("memory updated"), nil
+		return m.sys(chatcmd.MemoryUpdate(m.ctx.DB, m.user.ID, fields[2], strings.Join(fields[3:], " "))), nil
 
 	case "delete":
 		if len(fields) < 3 {
 			return m.sys("usage: /memory delete <id>"), nil
 		}
 		m = m.echo(text)
-		id, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			return m.sys("invalid id"), nil
-		}
-		if err := store.DeleteMemoryItem(m.ctx.DB, m.user.ID, id); err != nil {
-			return m.sys("failed to delete memory: " + err.Error()), nil
-		}
-		return m.sys("memory deleted"), nil
+		return m.sys(chatcmd.MemoryDelete(m.ctx.DB, m.user.ID, fields[2])), nil
 	}
 	return m.sys(usage()), nil
 }
@@ -669,23 +589,7 @@ func (m appModel) cmdTask(text string, fields []string) (appModel, tea.Cmd) {
 	switch fields[1] {
 	case "list":
 		m = m.echo(text)
-		items, err := store.ListMemoryItems(m.ctx.DB, m.user.ID, "task", 100)
-		if err != nil {
-			return m.sys("failed: " + err.Error()), nil
-		}
-		if len(items) == 0 {
-			return m.sys("no tasks"), nil
-		}
-		var b strings.Builder
-		b.WriteString("Tasks:\n")
-		for _, it := range items {
-			b.WriteString("- ")
-			b.WriteString(fmt.Sprintf("%d", it.ID))
-			b.WriteString(": ")
-			b.WriteString(it.Content)
-			b.WriteString("\n")
-		}
-		return m.sys(strings.TrimSpace(b.String())), nil
+		return m.sys(chatcmd.TaskList(m.ctx.DB, m.user.ID)), nil
 
 	case "add":
 		if len(fields) < 3 {
@@ -693,11 +597,11 @@ func (m appModel) cmdTask(text string, fields []string) (appModel, tea.Cmd) {
 		}
 		m = m.echo(text)
 		content := strings.Join(fields[2:], " ")
-		id, err := store.AddMemoryItem(m.ctx.DB, m.user.ID, "task", content)
-		if err != nil {
-			return m.sys("failed: " + err.Error()), nil
+		resp, ok := chatcmd.TaskAdd(m.ctx.DB, m.user.ID, content)
+		m = m.sys(resp)
+		if !ok {
+			return m, nil
 		}
-		m = m.sys("task added (id " + fmt.Sprintf("%d", id) + ")")
 		return m, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": content})
 
 	case "edit":
@@ -705,15 +609,12 @@ func (m appModel) cmdTask(text string, fields []string) (appModel, tea.Cmd) {
 			return m.sys("usage: /task edit <id> <text>"), nil
 		}
 		m = m.echo(text)
-		id, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			return m.sys("invalid id"), nil
-		}
 		content := strings.Join(fields[3:], " ")
-		if err := store.UpdateMemoryItem(m.ctx.DB, m.user.ID, id, content); err != nil {
-			return m.sys("failed: " + err.Error()), nil
+		resp, ok := chatcmd.TaskUpdate(m.ctx.DB, m.user.ID, fields[2], content)
+		m = m.sys(resp)
+		if !ok {
+			return m, nil
 		}
-		m = m.sys("task updated")
 		return m, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": content})
 
 	case "done":
@@ -721,14 +622,11 @@ func (m appModel) cmdTask(text string, fields []string) (appModel, tea.Cmd) {
 			return m.sys("usage: /task done <id>"), nil
 		}
 		m = m.echo(text)
-		id, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			return m.sys("invalid id"), nil
+		resp, ok := chatcmd.TaskDone(m.ctx.DB, m.user.ID, fields[2])
+		m = m.sys(resp)
+		if !ok {
+			return m, nil
 		}
-		if err := store.DeleteMemoryItem(m.ctx.DB, m.user.ID, id); err != nil {
-			return m.sys("failed: " + err.Error()), nil
-		}
-		m = m.sys("task marked done")
 		return m, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": text})
 	}
 	return m.sys(usage()), nil
@@ -751,10 +649,11 @@ func (m appModel) cmdSecret(text string, fields []string) (appModel, tea.Cmd) {
 		return m.sys(usage()), nil
 	}
 
-	s, err := secrets.NewStore(m.ctx.DB, m.ctx.Config.Secrets.MasterKey, time.Duration(m.ctx.Config.Secrets.TTLHours)*time.Hour)
-	if err != nil {
-		return m.sys("secrets unavailable: " + err.Error() + " (set TETHER_MASTER_KEY; generate with: go run ./cmd/tether-keygen)"), nil
+	s, errMsg := chatcmd.OpenSecretStore(m.ctx.DB, m.ctx.Config.Secrets.MasterKey, m.ctx.Config.Secrets.TTLHours)
+	if s == nil {
+		return m.sys(errMsg), nil
 	}
+	ttl := m.ctx.Config.Secrets.TTLHours
 
 	switch fields[1] {
 	case "add":
@@ -765,49 +664,22 @@ func (m appModel) cmdSecret(text string, fields []string) (appModel, tea.Cmd) {
 		secretText := strings.Join(fields[3:], " ")
 		// Record command without the secret.
 		m = m.echo("/secret add " + label + " [REDACTED]")
-		if err := s.Put(context.Background(), m.user.ID, label, secretText); err != nil {
-			return m.sys("failed to store secret: " + err.Error()), nil
-		}
-		exp := time.Now().Add(time.Duration(m.ctx.Config.Secrets.TTLHours) * time.Hour).Format(time.RFC3339)
-		return m.sys("secret stored as '" + label + "' (expires ~" + exp + ")"), nil
+		return m.sys(chatcmd.SecretAdd(s, m.user.ID, label, secretText, ttl)), nil
 
 	case "list":
 		m = m.echo(text)
-		items, err := s.List(context.Background(), m.user.ID)
-		if err != nil {
-			return m.sys("failed to list secrets: " + err.Error()), nil
-		}
-		if len(items) == 0 {
-			return m.sys("no secrets set"), nil
-		}
-		var b strings.Builder
-		b.WriteString("Secrets (labels only):\n")
-		for _, it := range items {
-			b.WriteString("- ")
-			b.WriteString(it.Label)
-			b.WriteString(" (expires ")
-			b.WriteString(it.ExpiresAt.Format(time.RFC3339))
-			b.WriteString(")\n")
-		}
-		return m.sys(strings.TrimSpace(b.String())), nil
+		return m.sys(chatcmd.SecretList(s, m.user.ID)), nil
 
 	case "delete":
 		if len(fields) < 3 {
 			return m.sys("usage: /secret delete <label>"), nil
 		}
-		label := fields[2]
 		m = m.echo(text)
-		if err := s.Delete(context.Background(), m.user.ID, label); err != nil {
-			return m.sys("failed to delete secret: " + err.Error()), nil
-		}
-		return m.sys("deleted secret '" + label + "'"), nil
+		return m.sys(chatcmd.SecretDelete(s, m.user.ID, fields[2])), nil
 
 	case "clear":
 		m = m.echo(text)
-		if err := s.Clear(context.Background(), m.user.ID); err != nil {
-			return m.sys("failed to clear secrets: " + err.Error()), nil
-		}
-		return m.sys("cleared all secrets"), nil
+		return m.sys(chatcmd.SecretClear(s, m.user.ID)), nil
 	}
 	return m.sys(usage()), nil
 }
@@ -831,26 +703,13 @@ func (m appModel) cmdSubagent(text string, fields []string) (appModel, tea.Cmd) 
 		if prompt == "" {
 			return m.sys("usage: /subagent spawn <prompt>"), nil
 		}
-		run := m.subMgr.Spawn(m.user.ID, subagents.RunRequest{Prompt: prompt})
-		return m.sys("spawned subagent: " + run.ID + " (status: " + string(run.Status) + ")"), nil
+		return m.sys(chatcmd.SubagentSpawn(m.subMgr, m.user.ID, prompt)), nil
 
 	case "status":
 		if len(fields) < 3 {
 			return m.sys("usage: /subagent status <id>"), nil
 		}
-		id := fields[2]
-		run, ok := m.subMgr.GetForUser(m.user.ID, id)
-		if !ok {
-			return m.sys("subagent not found: " + id), nil
-		}
-		resp := "subagent " + run.ID + ": " + string(run.Status)
-		if run.Err != "" {
-			resp += "\nerror: " + run.Err
-		}
-		if run.Result != "" {
-			resp += "\nresult:\n" + run.Result
-		}
-		return m.sys(resp), nil
+		return m.sys(chatcmd.SubagentStatus(m.subMgr, m.user.ID, fields[2])), nil
 	}
 	return m.sys(usage()), nil
 }

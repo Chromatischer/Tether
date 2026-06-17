@@ -156,7 +156,7 @@ func (m adminModel) withSize(w, h int) adminModel {
 		return m
 	}
 	m.w, m.h = w, h
-	ch := max(1, h-1)
+	ch := max(1, h-2) // 1 line for the connector strip + 1 for the tab bar
 	m.audit.SetWidth(w)
 	m.audit.SetHeight(ch)
 	m.users.SetWidth(w)
@@ -359,7 +359,8 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && msg.Y == 1 {
+		// Screen rows: 0 = app header, 1 = connector strip, 2 = tab bar.
+		if msg.Button == tea.MouseLeft && msg.Y == 2 {
 			if tab, ok := m.hitTab(msg.X); ok {
 				return m.switchTab(tab)
 			}
@@ -385,10 +386,10 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			return m.switchTab(adminTabSetup)
 		case "6":
 			return m.switchTab(adminTabAgent)
-		case "[":
+		case "[", "left", "shift+tab":
 			next := (int(m.tab) - 1 + len(adminTabLabels)) % len(adminTabLabels)
 			return m.switchTab(adminTab(next))
-		case "]":
+		case "]", "right", "tab":
 			next := (int(m.tab) + 1) % len(adminTabLabels)
 			return m.switchTab(adminTab(next))
 		case "r":
@@ -1189,7 +1190,44 @@ func (m adminModel) View() tea.View {
 		body = m.agent.View()
 	}
 	if m.w > 0 || m.h > 0 {
-		body = fillArea(body, m.w, max(0, m.h-1), colorBg)
+		body = fillArea(body, m.w, max(0, m.h-2), colorBg)
 	}
-	return tea.NewView(tabBar + "\n" + body)
+	return tea.NewView(m.renderConnectorStrip() + "\n" + tabBar + "\n" + body)
+}
+
+// renderConnectorStrip renders the Console's shared connector-health line.
+func (m adminModel) renderConnectorStrip() string {
+	model := ""
+	if m.ctx != nil && m.ctx.Agent != nil {
+		model = m.ctx.Agent.Model()
+	}
+	var h connectorHealth
+	if m.ctx != nil {
+		h = connectorHealthFor(m.ctx.DB, m.ctx.Config, model, m.ctx.ConnectorsLive)
+	}
+	bg := lipgloss.NewStyle().Background(lipgloss.Color("232"))
+	dot := func(st connState) string {
+		c := colorDim
+		switch st {
+		case connOnline:
+			c = colorGreen
+		case connWarn:
+			c = colorWarn
+		}
+		return bg.Foreground(c).Render(glyphOnline)
+	}
+	seg := func(st connState, label string) string {
+		return dot(st) + styleStatusVal.Render(" ") + styleStatusDim.Render(label)
+	}
+	gap3 := bg.Render("   ")
+	line := bg.Render("  ") + seg(h.signal, "signal") + gap3 + seg(h.discord, "discord") + gap3 + seg(h.jobs, "proactive")
+	if h.model != "" {
+		line += gap3 + styleStatusDim.Render("· "+h.model)
+	}
+	if m.w > 0 {
+		if gapW := m.w - lipgloss.Width(line); gapW > 0 {
+			line += bg.Render(strings.Repeat(" ", gapW))
+		}
+	}
+	return line
 }

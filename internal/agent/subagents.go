@@ -60,6 +60,7 @@ func (a *Agent) newSubagentSession(userID int64, req subagents.RunRequest) (*too
 	s.Confirm = auditedConfirmer{mgr: a.confirm, db: a.db}
 	s.MCP = a.mcp
 	s.LLM = a
+	s.Tools = codeToolInvoker{a: a}
 	s.AllowPrivateNetworkFetch = a.cfg.Web.AllowPrivateNetwork
 	if a.secrets != nil {
 		s.Secrets = auditedSecrets{store: a.secrets, db: a.db}

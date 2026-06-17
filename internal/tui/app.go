@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"tether/internal/agent"
+	"tether/internal/config"
 	"tether/internal/personality"
 	"tether/internal/proactive"
 	"tether/internal/redact"
@@ -70,6 +72,26 @@ type appModel struct {
 	activeRuns    int
 	waitlist      []string
 	releasedRuns  map[int]bool
+
+	connHealth connectorHealth
+}
+
+// connState is a connector's glanceable health for the header cluster.
+type connState int
+
+const (
+	connOff connState = iota
+	connWarn
+	connOnline
+)
+
+// connectorHealth is a cheap snapshot of connector + job state shown in the
+// header. Refreshed on the periodic poll, never computed per keystroke.
+type connectorHealth struct {
+	signal  connState
+	discord connState
+	jobs    connState
+	model   string
 }
 
 type agentAsyncMsg struct {
@@ -216,6 +238,7 @@ func (m appModel) provisionAndEnter(u *store.User) (appModel, tea.Cmd, error) {
 	m = m.activateConversation(conv)
 	m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 	m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+	m = m.refreshChatMetrics()
 	return m, tea.Batch(
 		m.chat.loadCmd(),
 		m.triggerProactiveEventCmd(proactive.EventLogin, nil),
@@ -328,6 +351,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.activateConversation(msg.Conv)
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
@@ -335,6 +359,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case appBackendSyncPollMsg:
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(m.backendSyncNowCmd(), m.backendSyncTickCmd())
 
 	case appBackendSyncMsg:
@@ -380,6 +405,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat = m.chat.appendLocal("You", clean)
 		m.waitlist = append(m.waitlist, clean)
 		runCmd := m.maybeDispatchWaitlist()
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(
 			runCmd,
 			m.triggerProactiveEventCmd(proactive.EventUserMessage, map[string]string{"text": clean}),
@@ -521,9 +547,17 @@ func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs str
 	}
 	tabs = lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
 
-	// Right side: terminal compatibility notice + online dot + username.
+	// Right side: connector cluster + model badge + terminal notice + account.
+	if m.user != nil {
+		userBadge = renderConnectorCluster(m.connHealth)
+	}
 	if label := strings.TrimSpace(term.HeaderLabel); label != "" {
-		userBadge = styleHeaderNotice.Render(label)
+		notice := styleHeaderNotice.Render(label)
+		if userBadge != "" {
+			userBadge = lipgloss.JoinHorizontal(lipgloss.Top, userBadge, notice)
+		} else {
+			userBadge = notice
+		}
 	}
 
 	if m.user != nil {
@@ -566,6 +600,29 @@ func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs str
 	return brand, buttons, tabs, userBadge
 }
 
+// renderConnectorCluster renders the header's "●sig ●dsc ●job  model" block.
+func renderConnectorCluster(h connectorHealth) string {
+	dot := func(st connState) lipgloss.Style {
+		switch st {
+		case connOnline:
+			return styleConnOnline
+		case connWarn:
+			return styleConnWarn
+		default:
+			return styleConnOff
+		}
+	}
+	one := func(st connState, label string) string {
+		return dot(st).Render(glyphOnline) + styleConnLabel.Render(label+" ")
+	}
+	cluster := styleConnLabel.Render(" ") +
+		one(h.signal, "sig") + one(h.discord, "dsc") + one(h.jobs, "job")
+	if m := strings.TrimSpace(h.model); m != "" {
+		cluster = lipgloss.JoinHorizontal(lipgloss.Top, cluster, styleHeaderModel.Render(m))
+	}
+	return cluster
+}
+
 func (m appModel) headerButtons() []headerButton {
 	// Keep this in sync with renderHeader.
 	if m.user == nil {
@@ -577,7 +634,7 @@ func (m appModel) headerButtons() []headerButton {
 		{ID: "settings", Label: "Settings"},
 	}
 	if m.user.Role == "admin" {
-		btns = append(btns, headerButton{ID: "admin", Label: "Admin"})
+		btns = append(btns, headerButton{ID: "admin", Label: "Console"})
 	}
 	return btns
 }
@@ -1004,6 +1061,78 @@ func formatYesNo(v bool) string {
 	return "no"
 }
 
+// refreshChatMetrics snapshots agent session + connector state for the status
+// bar and header cluster. Cheap enough for the periodic poll; never per-keystroke.
+func (m appModel) refreshChatMetrics() appModel {
+	if m.user == nil || m.ag == nil {
+		return m
+	}
+	m.connHealth = m.computeConnectorHealth()
+	if m.conv == nil {
+		return m
+	}
+	st := m.ag.SessionStatus(m.user.ID, m.conv.ID)
+	m.chat = m.chat.withSessionMetrics(sessionMetrics{
+		hasData:     st.UsageSource != "none",
+		contextPct:  st.LastContextPct,
+		contextOK:   st.LastContextLimit > 0,
+		totalTokens: st.TotalTokens,
+		lastModel:   st.LastModel,
+		totalCost:   st.TotalCost,
+		toolCalls:   st.TotalToolCalls,
+		activeRuns:  m.activeRuns,
+	})
+	return m
+}
+
+// computeConnectorHealth derives connector + job state from config and recent
+// audit activity. Uses only cheap count/latest queries (no live HTTP probes).
+func (m appModel) computeConnectorHealth() connectorHealth {
+	model := ""
+	if m.ag != nil {
+		model = m.ag.Model()
+	}
+	if m.ctx == nil {
+		return connectorHealth{model: shortModel(model)}
+	}
+	return connectorHealthFor(m.ctx.DB, m.ctx.Config, model, m.ctx.ConnectorsLive)
+}
+
+// connectorHealthFor is the shared health computation used by both the chat
+// header cluster and the Console strip. When live is false (terminal mode), no
+// gateways are running in this process, so every connector reports offline.
+func connectorHealthFor(db *sql.DB, cfg *config.Config, model string, live bool) connectorHealth {
+	h := connectorHealth{model: shortModel(model)}
+	if !live || db == nil || cfg == nil {
+		return h
+	}
+	now := time.Now().UTC()
+
+	// Signal: enabled + at least one linked number is healthy; enabled but
+	// unlinked is degraded; disabled is off.
+	if cfg.Signal.Enabled {
+		h.signal = connWarn
+		if linked, err := store.CountLinkedSignalNumbers(db); err == nil && linked > 0 {
+			h.signal = connOnline
+		}
+	}
+
+	// Discord: gateway runs when enabled.
+	if cfg.Discord.Enabled {
+		h.discord = connOnline
+	}
+
+	// Proactive jobs: recent tick = healthy, stale = degraded, never = off.
+	if lastTick, ok, err := store.LatestAuditEventTime(db, "proactive_tick"); err == nil && ok {
+		if now.Sub(lastTick.UTC()) < 10*time.Minute {
+			h.jobs = connOnline
+		} else {
+			h.jobs = connWarn
+		}
+	}
+	return h
+}
+
 func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 	if m.activeRuns > 0 {
 		m.activeRuns--
@@ -1049,7 +1178,8 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		if renderInActiveChat {
 			m.chat = m.chat.finishStreamingAssistant(msg.RequestID, "", msg.Reasoning)
 		}
-		return m, m.maybeDispatchWaitlist()
+		cmd := m.maybeDispatchWaitlist()
+		return m.refreshChatMetrics(), cmd
 	}
 	if targetConvID != 0 && !renderInActiveChat {
 		_, _ = store.AddAssistantMessageWithReasoning(m.ctx.DB, targetConvID, clean, msg.Model, msg.ReasoningItems)
@@ -1058,7 +1188,8 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 		m.chat = m.chat.finishStreamingAssistant(msg.RequestID, clean, msg.Reasoning)
 		m.chat = m.chat.persistReasoningForRequest(msg.RequestID, msg.Model, msg.ReasoningItems)
 	}
-	return m, m.maybeDispatchWaitlist()
+	cmd := m.maybeDispatchWaitlist()
+	return m.refreshChatMetrics(), cmd
 }
 
 func (m *appModel) maybeDispatchWaitlist() tea.Cmd {

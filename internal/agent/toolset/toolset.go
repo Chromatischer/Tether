@@ -64,6 +64,18 @@ type MCPCaller interface {
 	CallTool(ctx context.Context, userID int64, serverName string, toolName string, arguments map[string]any) (*mcpsdk.CallToolResult, error)
 }
 
+// ToolInvoker dispatches a tool by name against the session, reusing the same
+// execution path as direct model tool calls. It is provided by the agent
+// runtime (which holds the concrete tool implementations) and is used by the
+// `code` tool to let sandboxed scripts call other enabled tools over RPC.
+//
+// Implementations are responsible for name resolution (LLM-facing vs internal
+// names), the active/allowed gate, and refusing to invoke the `code` tool
+// recursively.
+type ToolInvoker interface {
+	Invoke(ctx context.Context, s *Session, name string, rawArgs json.RawMessage) (any, error)
+}
+
 type LLM interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
@@ -97,6 +109,8 @@ type Session struct {
 	Secrets   SecretGetter
 	MCP       MCPCaller
 	LLM       LLM
+	// Tools dispatches other enabled tools on behalf of the `code` tool.
+	Tools ToolInvoker
 
 	Active map[string]bool
 	// Allowed constrains the total tool universe for this session.
@@ -165,6 +179,7 @@ func NewSession(reg *tools.Registry) *Session {
 	active["read"] = true
 	active["write"] = true
 	active["edit"] = true
+	active["code"] = true
 	active["web-search"] = true
 	active["web-fetch"] = true
 	active["fetch.summarize"] = true

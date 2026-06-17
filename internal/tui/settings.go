@@ -113,14 +113,14 @@ func newSettingsModel(ctx *SessionContext) settingsModel {
 	ri2.CharLimit = 6
 
 	return settingsModel{
-		ctx:             ctx,
-		rulesVP:         mk(),
-		confirmVP:       mk(),
-		signalVP:        mk(),
-		retentionVP:     mk(),
-		discordVP:       mk(),
-		rulesTA:         ta,
-		confirmOpts:     []string{"ask", "always", "never"},
+		ctx:         ctx,
+		rulesVP:     mk(),
+		confirmVP:   mk(),
+		signalVP:    mk(),
+		retentionVP: mk(),
+		discordVP:   mk(),
+		rulesTA:     ta,
+		confirmOpts: []string{"ask", "always", "never"},
 		discordOpts: []string{
 			store.DiscordVerbosityFull,
 			store.DiscordVerbosityNoThinking,

@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,13 +16,12 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"tether/internal/agent"
+	"tether/internal/chatcmd"
 	"tether/internal/config"
 	"tether/internal/proactive"
 	"tether/internal/redact"
-	"tether/internal/secrets"
 	"tether/internal/store"
 	"tether/internal/subagents"
-	"tether/internal/tools"
 )
 
 // Gateway integrates Discord DMs via a bot token.
@@ -977,32 +975,14 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 			if len(fields) < 3 {
 				return true, "usage: /tools describe <name>", conv
 			}
-			spec, ok := reg.Get(strings.TrimSpace(fields[2]))
-			if !ok {
-				return true, "unknown tool: " + strings.TrimSpace(fields[2]), conv
-			}
-			return true, strings.TrimSpace(tools.RenderToolMarkdown(spec)), conv
+			return true, chatcmd.ToolsDescribe(reg, fields[2]), conv
 		}
-		var infos []tools.ToolInfo
 		if len(fields) == 1 || fields[1] == "list" {
-			infos = reg.List()
+			return true, chatcmd.ToolsList(reg), conv
 		} else if fields[1] == "search" {
-			infos = reg.Search(strings.Join(fields[2:], " "))
-		} else {
-			return true, "usage: /tools list | /tools search <query> | /tools describe <name>", conv
+			return true, chatcmd.ToolsSearch(reg, strings.Join(fields[2:], " ")), conv
 		}
-		var b strings.Builder
-		b.WriteString("Tools:\n")
-		for _, t := range infos {
-			b.WriteString("- ")
-			b.WriteString(t.Name)
-			if t.Description != "" {
-				b.WriteString(" — ")
-				b.WriteString(t.Description)
-			}
-			b.WriteString("\n")
-		}
-		return true, strings.TrimSpace(b.String()), conv
+		return true, "usage: /tools list | /tools search <query> | /tools describe <name>", conv
 
 	case "/signal":
 		if len(fields) < 2 {
@@ -1011,31 +991,13 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		switch fields[1] {
 		case "link":
 			recordUser(text)
-			code, err := store.CreateSignalLinkCode(g.db, userID, 10*time.Minute)
-			if err != nil {
-				return true, "failed to create link code: " + err.Error(), conv
-			}
-			acct := strings.TrimSpace(g.cfg.Signal.AccountNumber)
-			if acct == "" {
-				acct = "<signal account not configured>"
-			}
-			return true, "Signal link code: " + code + "\nSend this code from your phone number to the Tether Signal account: " + acct + "\n(Code expires in ~10 minutes.)", conv
+			return true, chatcmd.SignalLink(g.db, userID, g.cfg.Signal.AccountNumber), conv
 		case "status":
 			recordUser(text)
-			n, ok, err := store.GetSignalNumber(g.db, userID)
-			if err != nil {
-				return true, "failed to get signal status: " + err.Error(), conv
-			}
-			if !ok {
-				return true, "Signal: not linked", conv
-			}
-			return true, "Signal linked: " + n, conv
+			return true, chatcmd.SignalStatus(g.db, userID), conv
 		case "unlink":
 			recordUser(text)
-			if err := store.UnlinkSignalNumber(g.db, userID); err != nil {
-				return true, "failed to unlink: " + err.Error(), conv
-			}
-			return true, "Signal unlinked", conv
+			return true, chatcmd.SignalUnlink(g.db, userID), conv
 		default:
 			return true, "usage: /signal link | /signal status | /signal unlink", conv
 		}
@@ -1090,61 +1052,25 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 			if len(fields) >= 3 {
 				kind = fields[2]
 			}
-			items, err := store.ListMemoryItems(g.db, userID, kind, 100)
-			if err != nil {
-				return true, "failed to list memory: " + err.Error(), conv
-			}
-			if len(items) == 0 {
-				return true, "no memory items", conv
-			}
-			var b strings.Builder
-			b.WriteString("Memory:\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(fmt.Sprintf("%d", it.ID))
-				b.WriteString(" [")
-				b.WriteString(it.Kind)
-				b.WriteString("] ")
-				b.WriteString(it.Content)
-				b.WriteString("\n")
-			}
-			return true, strings.TrimSpace(b.String()), conv
+			return true, chatcmd.MemoryList(g.db, userID, kind), conv
 		case "add":
 			if len(fields) < 4 {
 				return true, "usage: /memory add <kind> <content>", conv
 			}
 			recordUser(text)
-			id, err := store.AddMemoryItem(g.db, userID, fields[2], strings.Join(fields[3:], " "))
-			if err != nil {
-				return true, "failed to add memory: " + err.Error(), conv
-			}
-			return true, "memory added (id " + fmt.Sprintf("%d", id) + ")", conv
+			return true, chatcmd.MemoryAdd(g.db, userID, fields[2], strings.Join(fields[3:], " ")), conv
 		case "update":
 			if len(fields) < 4 {
 				return true, "usage: /memory update <id> <content>", conv
 			}
 			recordUser(text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				return true, "invalid id", conv
-			}
-			if err := store.UpdateMemoryItem(g.db, userID, id, strings.Join(fields[3:], " ")); err != nil {
-				return true, "failed to update memory: " + err.Error(), conv
-			}
-			return true, "memory updated", conv
+			return true, chatcmd.MemoryUpdate(g.db, userID, fields[2], strings.Join(fields[3:], " ")), conv
 		case "delete":
 			if len(fields) < 3 {
 				return true, "usage: /memory delete <id>", conv
 			}
 			recordUser(text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				return true, "invalid id", conv
-			}
-			if err := store.DeleteMemoryItem(g.db, userID, id); err != nil {
-				return true, "failed to delete memory: " + err.Error(), conv
-			}
-			return true, "memory deleted", conv
+			return true, chatcmd.MemoryDelete(g.db, userID, fields[2]), conv
 		default:
 			return true, "usage: /memory list [kind] | /memory add <kind> <content> | /memory update <id> <content> | /memory delete <id>", conv
 		}
@@ -1156,64 +1082,39 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		switch fields[1] {
 		case "list":
 			recordUser(text)
-			items, err := store.ListMemoryItems(g.db, userID, "task", 100)
-			if err != nil {
-				return true, "failed: " + err.Error(), conv
-			}
-			if len(items) == 0 {
-				return true, "no tasks", conv
-			}
-			var b strings.Builder
-			b.WriteString("Tasks:\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(fmt.Sprintf("%d", it.ID))
-				b.WriteString(": ")
-				b.WriteString(it.Content)
-				b.WriteString("\n")
-			}
-			return true, strings.TrimSpace(b.String()), conv
+			return true, chatcmd.TaskList(g.db, userID), conv
 		case "add":
 			if len(fields) < 3 {
 				return true, "usage: /task add <text>", conv
 			}
 			recordUser(text)
 			content := strings.Join(fields[2:], " ")
-			id, err := store.AddMemoryItem(g.db, userID, "task", content)
-			if err != nil {
-				return true, "failed: " + err.Error(), conv
+			resp, ok := chatcmd.TaskAdd(g.db, userID, content)
+			if ok {
+				triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": content})
 			}
-			triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": content})
-			return true, "task added (id " + fmt.Sprintf("%d", id) + ")", conv
+			return true, resp, conv
 		case "edit":
 			if len(fields) < 4 {
 				return true, "usage: /task edit <id> <text>", conv
 			}
 			recordUser(text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				return true, "invalid id", conv
-			}
 			content := strings.Join(fields[3:], " ")
-			if err := store.UpdateMemoryItem(g.db, userID, id, content); err != nil {
-				return true, "failed: " + err.Error(), conv
+			resp, ok := chatcmd.TaskUpdate(g.db, userID, fields[2], content)
+			if ok {
+				triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": content})
 			}
-			triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": content})
-			return true, "task updated", conv
+			return true, resp, conv
 		case "done":
 			if len(fields) < 3 {
 				return true, "usage: /task done <id>", conv
 			}
 			recordUser(text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				return true, "invalid id", conv
+			resp, ok := chatcmd.TaskDone(g.db, userID, fields[2])
+			if ok {
+				triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": text})
 			}
-			if err := store.DeleteMemoryItem(g.db, userID, id); err != nil {
-				return true, "failed: " + err.Error(), conv
-			}
-			triggerProactiveEvent(proactive.EventTaskChanged, map[string]string{"text": text})
-			return true, "task marked done", conv
+			return true, resp, conv
 		default:
 			return true, "usage: /task list | /task add <text> | /task edit <id> <text> | /task done <id>", conv
 		}
@@ -1222,57 +1123,31 @@ func (g *Gateway) handleCommand(ctx context.Context, userID int64, conv *store.C
 		if len(fields) < 2 {
 			return true, "usage: /secret add <label> <secret> | /secret list | /secret delete <label> | /secret clear", conv
 		}
-		s, err := secrets.NewStore(g.db, g.cfg.Secrets.MasterKey, time.Duration(g.cfg.Secrets.TTLHours)*time.Hour)
-		if err != nil {
-			return true, "secrets unavailable: " + err.Error() + " (set TETHER_MASTER_KEY; generate with: go run ./cmd/tether-keygen)", conv
+		s, errMsg := chatcmd.OpenSecretStore(g.db, g.cfg.Secrets.MasterKey, g.cfg.Secrets.TTLHours)
+		if s == nil {
+			return true, errMsg, conv
 		}
+		ttl := g.cfg.Secrets.TTLHours
 		switch fields[1] {
 		case "add":
 			if len(fields) < 4 {
 				return true, "usage: /secret add <label> <secret>", conv
 			}
 			label := fields[2]
-			redactedCmd := "/secret add " + label + " [REDACTED]"
-			recordUser(redactedCmd)
-			if err := s.Put(context.Background(), userID, label, strings.Join(fields[3:], " ")); err != nil {
-				return true, "failed to store secret: " + err.Error(), conv
-			}
-			exp := time.Now().Add(time.Duration(g.cfg.Secrets.TTLHours) * time.Hour).Format(time.RFC3339)
-			return true, "secret stored as '" + label + "' (expires ~" + exp + ")", conv
+			recordUser("/secret add " + label + " [REDACTED]")
+			return true, chatcmd.SecretAdd(s, userID, label, strings.Join(fields[3:], " "), ttl), conv
 		case "list":
 			recordUser(text)
-			items, err := s.List(context.Background(), userID)
-			if err != nil {
-				return true, "failed to list secrets: " + err.Error(), conv
-			}
-			if len(items) == 0 {
-				return true, "no secrets set", conv
-			}
-			var b strings.Builder
-			b.WriteString("Secrets (labels only):\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(it.Label)
-				b.WriteString(" (expires ")
-				b.WriteString(it.ExpiresAt.Format(time.RFC3339))
-				b.WriteString(")\n")
-			}
-			return true, strings.TrimSpace(b.String()), conv
+			return true, chatcmd.SecretList(s, userID), conv
 		case "delete":
 			if len(fields) < 3 {
 				return true, "usage: /secret delete <label>", conv
 			}
 			recordUser(text)
-			if err := s.Delete(context.Background(), userID, fields[2]); err != nil {
-				return true, "failed to delete secret: " + err.Error(), conv
-			}
-			return true, "deleted secret '" + fields[2] + "'", conv
+			return true, chatcmd.SecretDelete(s, userID, fields[2]), conv
 		case "clear":
 			recordUser(text)
-			if err := s.Clear(context.Background(), userID); err != nil {
-				return true, "failed to clear secrets: " + err.Error(), conv
-			}
-			return true, "cleared all secrets", conv
+			return true, chatcmd.SecretClear(s, userID), conv
 		default:
 			return true, "usage: /secret add <label> <secret> | /secret list | /secret delete <label> | /secret clear", conv
 		}
