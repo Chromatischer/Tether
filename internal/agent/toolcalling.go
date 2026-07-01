@@ -64,6 +64,10 @@ var confirmScopePattern = regexp.MustCompile(`scope="([^"]+)"`)
 func (a *Agent) activeTools(s *toolset.Session, nm *toolNameMap) []openrouter.ResponsesTool {
 	defs := make([]toolset.ToolDef, 0, len(s.Active))
 	for name := range s.Active {
+		// view_image is only offered to vision-capable models.
+		if name == "view_image" && (s == nil || !s.VisionEnabled) {
+			continue
+		}
 		impl := a.toolImpl[name]
 		if impl == nil {
 			continue
@@ -320,6 +324,19 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		nm = newToolNameMap(s.Registry)
 	}
 
+	// Gate the view_image tool on the active model's vision capability.
+	if s != nil {
+		s.VisionEnabled = a.modelSupportsVision(a.cfg.OpenRouter.Model)
+		if s.Active == nil {
+			s.Active = map[string]bool{}
+		}
+		if s.VisionEnabled && s.IsAllowed("view_image") {
+			s.Active["view_image"] = true
+		} else {
+			delete(s.Active, "view_image")
+		}
+	}
+
 	for i := 0; ; i++ {
 		tools := a.activeTools(s, nm)
 		toolChoice := any("auto")
@@ -545,6 +562,9 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 		}
 		if pause != nil {
 			items = append(items, toolOutputs...)
+			if img := imageMessageItem(s.DrainPendingImages()); img != nil {
+				items = append(items, *img)
+			}
 			a.storePendingConfirmation(&pendingConfirmation{
 				UserID:         userID,
 				ConversationID: convID,
@@ -562,6 +582,9 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			return pause.Text, strings.TrimSpace(streamedReasoning.String()), toolCalls, nil, nil
 		}
 		items = append(items, toolOutputs...)
+		if img := imageMessageItem(s.DrainPendingImages()); img != nil {
+			items = append(items, *img)
+		}
 		totalToolCalls += len(calls)
 		if s != nil && len(calls) > 0 {
 			s.TouchActivity()
@@ -584,6 +607,30 @@ func (a *Agent) replyWithToolsStream(ctx context.Context, s *toolset.Session, us
 			justificationPending = true
 		}
 	}
+}
+
+// imageMessageItem builds a user message carrying images queued by the
+// view_image tool so a vision-capable model can actually see them. Returns nil
+// when there are no images.
+func imageMessageItem(imgs []toolset.PendingImage) *openrouter.ResponseItem {
+	if len(imgs) == 0 {
+		return nil
+	}
+	parts := make([]openrouter.ContentPart, 0, len(imgs)+1)
+	names := make([]string, 0, len(imgs))
+	for _, im := range imgs {
+		if strings.TrimSpace(im.DataURL) == "" {
+			continue
+		}
+		names = append(names, im.Path)
+		parts = append(parts, openrouter.ContentPart{Type: "input_image", ImageURL: im.DataURL})
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	label := "Image content loaded via view_image: " + strings.Join(names, ", ")
+	content := append([]openrouter.ContentPart{{Type: "input_text", Text: label}}, parts...)
+	return &openrouter.ResponseItem{Type: "message", Role: "user", Content: content}
 }
 
 func confirmationScopeFromError(msg string) string {

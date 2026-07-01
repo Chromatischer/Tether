@@ -29,11 +29,6 @@ func (t SelfSchedule) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "self.schedule",
 		Summary: "Schedule the agent to run later (one-off) and deliver the result as a proactive notification.",
-		WhenToUse: "Use this to follow up later without user input (reminders, check-ins, delayed work). " +
-			"Important: the scheduled run snapshots (1) the conversation state at the moment you schedule it (messages up to an anchor message id), and (2) the set of enabled tools at the moment you schedule it. " +
-			"It will NOT see messages added after scheduling, and it will NOT gain tools that were enabled later. " +
-			"Timing note: schedules are polled on a ~1 minute tick, so execution/delivery can have up to ~1 minute of jitter. " +
-			"This tool is disabled by default and must be enabled explicitly via tool.enable.",
 		Safety: "Creates an autonomous background run that will execute later and generate a proactive notification in the same conversation (shown as [Proactive/self_schedule] in the transcript). " +
 			"Not allowed from sub-agents.",
 		InputSchema: map[string]any{

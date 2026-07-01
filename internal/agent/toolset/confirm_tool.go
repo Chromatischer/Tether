@@ -22,9 +22,6 @@ func (t ConfirmRequest) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "confirm.request",
 		Summary: "Request user confirmation and pause until the user confirms.",
-		WhenToUse: "Use this when you need explicit user approval before continuing, especially when you need a confirmation token " +
-			"to pass into another tool call (e.g. write overwrite, destructive bash). " +
-			"For built-in tool confirmations, the host usually pauses automatically; you only need this tool when you want to ask for approval BEFORE attempting the destructive call.",
 		Safety: "This tool does not perform the destructive action itself. It pauses the run until the user confirms via /confirm <token>, " +
 			"then returns the token so you can pass it as confirm_token to the actual destructive tool call.",
 		InputSchema: map[string]any{

@@ -22,6 +22,7 @@ import (
 	"tether/internal/redact"
 	"tether/internal/store"
 	"tether/internal/subagents"
+	"tether/internal/userspace"
 )
 
 // Gateway integrates Discord DMs via a bot token.
@@ -36,6 +37,9 @@ type Gateway struct {
 	ag  *agent.Agent
 
 	s *discordgo.Session
+
+	// fetch downloads attachment URLs; overridable in tests.
+	fetch attachmentFetcher
 
 	mu               sync.Mutex
 	pendingByMessage map[string]discordPendingReaction
@@ -66,6 +70,7 @@ func NewGateway(cfg *config.Config, db *sql.DB, ag *agent.Agent) *Gateway {
 		cfg:              cfg,
 		db:               db,
 		ag:               ag,
+		fetch:            httpFetch,
 		pendingByMessage: map[string]discordPendingReaction{},
 	}
 }
@@ -153,6 +158,7 @@ func (g *Gateway) pruneLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			store.PruneDiscordLinkCodes(g.db)
+			g.pruneAttachments()
 		}
 	}
 }
@@ -182,7 +188,7 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 	}
 
 	content := strings.TrimSpace(m.Content)
-	if content == "" {
+	if content == "" && len(m.Attachments) == 0 {
 		return
 	}
 
@@ -226,12 +232,31 @@ func (g *Gateway) onMessage(ctx context.Context, s *discordgo.Session, m *discor
 		return
 	}
 
+	// Ingest any attachments into the user's sandbox and embed references in
+	// the turn text. Files are saved before redaction/streaming; only the
+	// notation text is redacted, the bytes stay on disk for the agent to read.
+	root := userspace.ForUser(g.cfg.Paths.DataDir, uid).Root
+	saved, attErrs := g.ingestAttachments(ctx, root, m.Attachments)
+	turnText := combineMessageText(content, renderAttachmentBlock(saved, attErrs))
+	if strings.TrimSpace(turnText) == "" {
+		return
+	}
+
 	// Best-effort audit without storing message content.
 	sum := sha256.Sum256([]byte(content))
-	payload, _ := json.Marshal(map[string]any{"from": discordUID, "len": len(content), "sha256": hex.EncodeToString(sum[:])})
+	auditPayload := map[string]any{"from": discordUID, "len": len(content), "sha256": hex.EncodeToString(sum[:])}
+	if len(saved) > 0 || len(attErrs) > 0 {
+		files := make([]map[string]any, 0, len(saved))
+		for _, a := range saved {
+			files = append(files, map[string]any{"kind": string(a.Kind), "sha256": a.SHA256, "size": a.Size, "type": a.ContentType})
+		}
+		auditPayload["attachments"] = files
+		auditPayload["attachment_errors"] = len(attErrs)
+	}
+	payload, _ := json.Marshal(auditPayload)
 	_ = store.AddAuditEvent(g.db, &uid, "discord_inbound", string(payload))
 
-	g.handleConversationTurn(ctx, s, uid, conv.ID, m.ChannelID, content, discordUID)
+	g.handleConversationTurn(ctx, s, uid, conv.ID, m.ChannelID, turnText, discordUID)
 }
 
 func (g *Gateway) sendChunks(s *discordgo.Session, channelID string, msg string) {
@@ -290,7 +315,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 				stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 				return
 			}
-			stream.Finish(out)
+			g.finishWithAttachments(stream, pending.UserID, out)
 			g.attachPendingConfirmationReaction(pending.UserID, convID, r.ChannelID, stream.MessageID())
 			g.attachPendingChoiceReactions(pending.UserID, convID, r.ChannelID, stream.MessageID(), out)
 			return
@@ -317,7 +342,7 @@ func (g *Gateway) onReaction(ctx context.Context, s *discordgo.Session, r *disco
 			stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 			return
 		}
-		stream.Finish(out)
+		g.finishWithAttachments(stream, pending.UserID, out)
 		g.attachPendingConfirmationReaction(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID())
 		g.attachPendingChoiceReactions(pending.UserID, pending.ConversationID, r.ChannelID, stream.MessageID(), out)
 	case discordReactionChoice:
@@ -368,7 +393,7 @@ func (g *Gateway) handleConversationTurn(ctx context.Context, s *discordgo.Sessi
 		stream.Finish("(Assistant response was redacted due to secret-like content.)\n" + out)
 		return
 	}
-	stream.Finish(out)
+	g.finishWithAttachments(stream, uid, out)
 	g.attachPendingConfirmationReaction(uid, convID, channelID, stream.MessageID())
 	g.attachPendingChoiceReactions(uid, convID, channelID, stream.MessageID(), out)
 }
@@ -549,6 +574,7 @@ type discordReplyStream struct {
 	answer    strings.Builder
 	tools     []string
 	finalText string
+	files     []*discordgo.File
 }
 
 func newDiscordReplyStream(parent context.Context, s *discordgo.Session, channelID, verbosity string) *discordReplyStream {
@@ -602,6 +628,14 @@ func (r *discordReplyStream) OnEvent(ev agent.StreamEvent) {
 	}
 	r.mu.Unlock()
 	r.flush(false)
+}
+
+// FinishWithFiles finalizes the reply and attaches files to the final message.
+func (r *discordReplyStream) FinishWithFiles(text string, files []*discordgo.File) {
+	r.mu.Lock()
+	r.files = files
+	r.mu.Unlock()
+	r.Finish(text)
 }
 
 func (r *discordReplyStream) Finish(text string) {
@@ -705,30 +739,55 @@ func (r *discordReplyStream) flushFinal() {
 	content := r.finalText
 	channelID := r.channel
 	messageID := r.messageID
+	files := r.files
 	r.mu.Unlock()
 
 	chunks := splitDiscordMessage(content, discordMessageLimit)
 	if len(chunks) == 0 {
-		chunks = []string{"(No response.)"}
+		// A file-only reply needs a placeholder-free message; otherwise show the
+		// usual empty-response note.
+		if len(files) == 0 {
+			chunks = []string{"(No response.)"}
+		} else {
+			chunks = []string{""}
+		}
 	}
-	if messageID == "" {
-		sendDiscordChunks(r.s, channelID, strings.Join(chunks, "\n"))
+
+	lastIdx := len(chunks) - 1
+	for i, chunk := range chunks {
+		var chunkFiles []*discordgo.File
+		if i == lastIdx {
+			chunkFiles = files
+		}
+
+		// Reuse the streamed placeholder for the first chunk.
+		if i == 0 && messageID != "" {
+			edit := discordgo.NewMessageEdit(channelID, messageID)
+			edit.SetContent(chunk)
+			if len(chunkFiles) > 0 {
+				edit.Files = chunkFiles
+			}
+			if _, err := r.s.ChannelMessageEditComplex(edit); err != nil {
+				log.Warn("failed to edit discord final message", "error", err)
+				r.sendChunkWithFiles(channelID, chunk, chunkFiles)
+			} else {
+				r.mu.Lock()
+				r.lastSent = chunk
+				r.lastEdit = time.Now()
+				r.mu.Unlock()
+			}
+			continue
+		}
+		r.sendChunkWithFiles(channelID, chunk, chunkFiles)
+	}
+}
+
+func (r *discordReplyStream) sendChunkWithFiles(channelID, content string, files []*discordgo.File) {
+	if len(files) == 0 {
+		_, _ = r.s.ChannelMessageSend(channelID, content)
 		return
 	}
-	edit := discordgo.NewMessageEdit(channelID, messageID)
-	edit.SetContent(chunks[0])
-	if _, err := r.s.ChannelMessageEditComplex(edit); err != nil {
-		log.Warn("failed to edit discord final message", "error", err)
-		_, _ = r.s.ChannelMessageSend(channelID, chunks[0])
-	} else {
-		r.mu.Lock()
-		r.lastSent = chunks[0]
-		r.lastEdit = time.Now()
-		r.mu.Unlock()
-	}
-	for _, chunk := range chunks[1:] {
-		_, _ = r.s.ChannelMessageSend(channelID, chunk)
-	}
+	_, _ = r.s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Files: files})
 }
 
 func (r *discordReplyStream) ensureMessage(content string) {

@@ -69,6 +69,21 @@ type Config struct {
 	Discord struct {
 		Enabled  bool   `yaml:"enabled"`
 		BotToken string `yaml:"bot_token"`
+
+		// Attachments controls ingestion of inbound DM attachments (images,
+		// files, voice notes). Files are saved under the user's sandbox at
+		// discord/context/<id>.<ext> and referenced inline in the prompt.
+		Attachments struct {
+			// Enabled toggles attachment ingestion. Default true.
+			Enabled *bool `yaml:"enabled,omitempty"`
+			// MaxSizeMB caps the size of a single downloaded attachment. Default 25.
+			MaxSizeMB int `yaml:"max_size_mb,omitempty"`
+			// MaxPerMessage caps how many attachments are ingested per message. Default 10.
+			MaxPerMessage int `yaml:"max_per_message,omitempty"`
+			// RetentionDays bounds how long context files are kept before the
+			// prune sweep deletes them. Default 14. Zero disables pruning.
+			RetentionDays int `yaml:"retention_days,omitempty"`
+		} `yaml:"attachments"`
 	} `yaml:"discord"`
 
 	// MCP configures external Model Context Protocol servers.
@@ -273,6 +288,19 @@ func Load(path string) (*Config, error) {
 		} else {
 			cfg.Discord.BotToken = os.Getenv("TETHER_DISCORD_BOT_TOKEN")
 		}
+	}
+	if cfg.Discord.Attachments.Enabled == nil {
+		on := true
+		cfg.Discord.Attachments.Enabled = &on
+	}
+	if cfg.Discord.Attachments.MaxSizeMB <= 0 {
+		cfg.Discord.Attachments.MaxSizeMB = 25
+	}
+	if cfg.Discord.Attachments.MaxPerMessage <= 0 {
+		cfg.Discord.Attachments.MaxPerMessage = 10
+	}
+	if cfg.Discord.Attachments.RetentionDays == 0 {
+		cfg.Discord.Attachments.RetentionDays = 14
 	}
 
 	// Agent runtime tuning (admin-editable overrides layered over config/defaults).

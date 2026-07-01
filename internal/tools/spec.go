@@ -21,7 +21,6 @@ type ToolExample struct {
 type ToolSpec struct {
 	Name         string        `json:"name"`
 	Summary      string        `json:"summary"`
-	WhenToUse    string        `json:"when_to_use,omitempty"`
 	Safety       string        `json:"safety,omitempty"`
 	InputSchema  any           `json:"input_schema"`
 	OutputSchema any           `json:"output_schema,omitempty"`

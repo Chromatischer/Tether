@@ -14,6 +14,7 @@ func DefaultTools() map[string]Tool {
 		"read":            ReadFile{},
 		"write":           WriteFile{},
 		"edit":            EditFile{},
+		"view_image":      ViewImage{},
 		"web-search":      WebSearch{},
 		"web-fetch":       WebFetch{},
 		"fetch.summarize": FetchSummarize{},

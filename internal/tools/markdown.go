@@ -42,10 +42,6 @@ func RenderToolMarkdown(s ToolSpec) string {
 	b.WriteString("## `" + s.Name + "`\n\n")
 	b.WriteString(strings.TrimSpace(s.Summary) + "\n\n")
 
-	if strings.TrimSpace(s.WhenToUse) != "" {
-		b.WriteString("**When to use**\n\n")
-		b.WriteString(strings.TrimSpace(s.WhenToUse) + "\n\n")
-	}
 	if strings.TrimSpace(s.Safety) != "" {
 		b.WriteString("**Safety / confirmation**\n\n")
 		b.WriteString(strings.TrimSpace(s.Safety) + "\n\n")

@@ -70,7 +70,6 @@ func (t MCPTool) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:         name,
 		Summary:      desc + " (MCP: " + server + ")",
-		WhenToUse:    "Use this when you need the capability exposed by this MCP server tool.",
 		Safety:       safety,
 		InputSchema:  input,
 		OutputSchema: output,

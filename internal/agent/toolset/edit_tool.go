@@ -28,9 +28,6 @@ func (t EditFile) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "edit",
 		Summary: "Make an exact string replacement in an existing file in the user sandbox.",
-		WhenToUse: "Use this for small, targeted changes instead of rewriting a whole file with write. " +
-			"Read the file first in the same session. old_string must match the file exactly (including whitespace) " +
-			"and be unique unless replace_all is set.",
 		Safety: "Edits an existing file in place. Requires that the same session has already read the path. " +
 			"old_string must occur exactly once unless replace_all is true. Symlinks are rejected. " +
 			"Personality files under config/agents/**/PERSONALITY.md keep backups.",

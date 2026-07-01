@@ -20,9 +20,6 @@ func (t ToolSearch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "tool.search",
 		Summary: "Search for available tools by name, purpose, tags, and usage hints.",
-		WhenToUse: "Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. " +
-			"Use natural keyword queries like 'bash shell', 'run command', or 'read files'. " +
-			"For full documentation (schemas + examples), call tool.describe.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -70,14 +67,16 @@ func (t ToolSearch) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	var args toolSearchArgs
 	_ = json.Unmarshal(rawArgs, &args)
 	results := s.Registry.Search(args.Query)
-	if s.Allowed == nil {
-		return results, nil
-	}
 	filtered := make([]tools.ToolInfo, 0, len(results))
 	for _, info := range results {
-		if s.IsAllowed(info.Name) {
-			filtered = append(filtered, info)
+		// view_image is only usable on vision-capable models; hide it otherwise.
+		if info.Name == "view_image" && !s.VisionEnabled {
+			continue
 		}
+		if s.Allowed != nil && !s.IsAllowed(info.Name) {
+			continue
+		}
+		filtered = append(filtered, info)
 	}
 	return filtered, nil
 }
@@ -94,8 +93,6 @@ func (t ToolEnable) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "tool.enable",
 		Summary: "Enable a tool for the current agent session.",
-		WhenToUse: "Use this to enable tools that are not in the always-on minimal set. " +
-			"Typically: tool.search → tool.describe → tool.enable → use the tool.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -157,9 +154,8 @@ type toolDescribeArgs struct {
 
 func (t ToolDescribe) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:      "tool.describe",
-		Summary:   "Get full documentation for a tool (schemas, examples, safety notes).",
-		WhenToUse: "Use this whenever you’re about to call a tool and you’re not 100% sure about its arguments, confirmation rules, or output shape.",
+		Name:    "tool.describe",
+		Summary: "Get full documentation for a tool (schemas, examples, safety notes).",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

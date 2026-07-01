@@ -28,7 +28,6 @@ func TestRegistry_SearchMatchesKeywordsAcrossMetadata(t *testing.T) {
 	r.Register(ToolSpec{
 		Name:        "bash",
 		Summary:     "Run a shell command inside the user sandbox.",
-		WhenToUse:   "Use this to execute local commands and inspect projects.",
 		InputSchema: map[string]any{"type": "object"},
 		Tags:        []string{"shell", "sandbox"},
 	})

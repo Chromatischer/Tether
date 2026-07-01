@@ -3,6 +3,7 @@ package tui
 import (
 	"database/sql"
 	"fmt"
+	"image/color"
 	"regexp"
 	"slices"
 	"sort"
@@ -926,7 +927,13 @@ func (m chatModel) hasStreamingToolCall(requestID int, name, args string) bool {
 }
 
 func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) (int, bool) {
-	for _, idx := range m.streamingToolCalls[requestID] {
+	// A call event with no result starts a fresh row.
+	if strings.TrimSpace(entry.Result) == "" {
+		return 0, false
+	}
+	calls := m.streamingToolCalls[requestID]
+	// Prefer an exact name+args match that is still running.
+	for _, idx := range calls {
 		if idx < 0 || idx >= len(m.messages) {
 			continue
 		}
@@ -935,20 +942,37 @@ func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) 
 			continue
 		}
 		parsed, ok := parseToolCallContent(msg.content)
-		if !ok || parsed.Name != entry.Name {
+		if !ok || strings.TrimSpace(parsed.Result) != "" {
 			continue
 		}
-		if strings.TrimSpace(entry.Result) != "" &&
-			toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) &&
-			strings.TrimSpace(parsed.Result) == "" {
+		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
 			return idx, true
 		}
+	}
+	// Fall back to the oldest still-running row with the same name. The args in
+	// the call event can differ from the result event (e.g. streamed/truncated
+	// JSON), so name+running is enough to avoid orphaning a "running…" row.
+	for _, idx := range calls {
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok || parsed.Name != entry.Name || strings.TrimSpace(parsed.Result) != "" {
+			continue
+		}
+		return idx, true
 	}
 	return 0, false
 }
 
 func (m chatModel) findStreamingToolCallRowIncludingCompleted(requestID int, entry toolCallEntry, used map[int]bool) (int, bool) {
-	for _, idx := range m.streamingToolCalls[requestID] {
+	calls := m.streamingToolCalls[requestID]
+	// Prefer an exact name+args match.
+	for _, idx := range calls {
 		if used != nil && used[idx] {
 			continue
 		}
@@ -964,6 +988,27 @@ func (m chatModel) findStreamingToolCallRowIncludingCompleted(requestID int, ent
 			continue
 		}
 		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
+			return idx, true
+		}
+	}
+	// Fall back to the first unused row with the same name, so the final reply
+	// reconciles with a streamed row whose args differed instead of duplicating.
+	for _, idx := range calls {
+		if used != nil && used[idx] {
+			continue
+		}
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok {
+			continue
+		}
+		if parsed.Name == entry.Name {
 			return idx, true
 		}
 	}
@@ -1167,13 +1212,28 @@ func parseDBTime(s string) time.Time {
 	return time.Time{}
 }
 
-// tsPrefix renders a dim "HH:MM" timestamp prefix for a message label line.
-// Returns "" for zero times so synthetic/local messages don't show "00:00".
+// tsPrefix renders a dim "HH:MM" timestamp prefix for a message label line on
+// the canvas background. Returns "" for zero times so synthetic/local messages
+// don't show "00:00".
 func tsPrefix(t time.Time) string {
+	return tsPrefixBg(t, colorBg)
+}
+
+// tsPrefixBg is like tsPrefix but carries an explicit background. lipgloss v2
+// drops the strip background after the first inner styled span, so the
+// timestamp (and the spacer after it) must paint the strip bg themselves or the
+// rest of the label line renders on the terminal default bg.
+func tsPrefixBg(t time.Time, bg color.Color) string {
 	if t.IsZero() {
 		return ""
 	}
-	return styleDim.Render(t.Local().Format("15:04")) + "  "
+	return lipgloss.NewStyle().Foreground(colorDim).Background(bg).Render(t.Local().Format("15:04") + "  ")
+}
+
+// bgSpace renders n spaces carrying a background, used to keep strip bg
+// continuous between inner styled spans.
+func bgSpace(bg color.Color, n int) string {
+	return lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", n))
 }
 
 // formatMessage renders a single chat message as a full-width left-border strip.
@@ -1182,54 +1242,51 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 	if width <= 0 {
 		width = 80
 	}
-	ts := tsPrefix(msg.ts)
+
+	pulse := func(bg color.Color) string {
+		dotLevels := []lipgloss.Style{
+			lipgloss.NewStyle().Foreground(colorDim).Background(bg),
+			lipgloss.NewStyle().Foreground(colorMuted).Background(bg),
+			lipgloss.NewStyle().Foreground(colorAmber).Background(bg),
+			lipgloss.NewStyle().Foreground(colorMuted).Background(bg),
+		}
+		d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
+		return d(0) + bgSpace(bg, 1) + d(1) + bgSpace(bg, 1) + d(2)
+	}
 
 	switch msg.role {
 	case "user":
-		label := ts + styleSenderUser.Render("you ›")
+		ub := colorUserMsgBg
+		label := tsPrefixBg(msg.ts, ub) + styleSenderUser.Background(ub).Render("you ›")
 		bodyW := max(16, width-styleUserMsg.GetHorizontalFrameSize())
 		body := lipgloss.Wrap(msg.content, bodyW, " ")
 		return styleUserMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant_pending":
-		dotLevels := []lipgloss.Style{
-			lipgloss.NewStyle().Foreground(colorDim),
-			lipgloss.NewStyle().Foreground(colorMuted),
-			lipgloss.NewStyle().Foreground(colorAmber),
-			lipgloss.NewStyle().Foreground(colorMuted),
-		}
-		d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
-		return styleAgentMsg.Width(width).Render(d(0) + " " + d(1) + " " + d(2))
+		return styleAgentMsg.Width(width).Render(pulse(colorBotMsgBg))
 
 	case "assistant":
-		label := ts + styleSenderBot.Render(glyphAssistant+" Tether")
+		bb := colorBotMsgBg
+		label := tsPrefixBg(msg.ts, bb) + styleSenderBot.Background(bb).Render(glyphAssistant+" Tether")
 		bodyW := max(16, width-styleAgentMsg.GetHorizontalFrameSize())
 		body := strings.TrimSpace(msg.content)
 		if msg.streaming && body == "" {
-			// Animated dot pulse: four brightness levels, each dot offset by 1 frame.
-			dotLevels := []lipgloss.Style{
-				lipgloss.NewStyle().Foreground(colorDim),
-				lipgloss.NewStyle().Foreground(colorMuted),
-				lipgloss.NewStyle().Foreground(colorAmber),
-				lipgloss.NewStyle().Foreground(colorMuted),
-			}
-			d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
-			body = d(0) + " " + d(1) + " " + d(2)
+			body = pulse(bb)
 		} else if body != "" {
 			body = renderAssistantBody(body, bodyW, term)
 		}
 		return styleAgentMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant_reasoning":
-		label := ts + styleReasoningHeader.Render(glyphReasoning+" reasoning")
+		label := tsPrefixBg(msg.ts, colorBg) + styleReasoningHeader.Background(colorBg).Render(glyphReasoning+" reasoning")
 		rstyle := styleToolResult.BorderForeground(colorViolet)
 		bodyW := max(16, width-styleToolResult.GetHorizontalFrameSize())
 		body := lipgloss.Wrap(strings.TrimSpace(msg.content), bodyW, " ")
 		if msg.streaming && strings.TrimSpace(body) == "" {
-			body = styleReasoningHint.Render("thinking…")
+			body = styleReasoningHint.Background(colorBg).Render("thinking…")
 		}
 		if !msg.streaming && !msg.expanded {
-			return rstyle.Width(width).Render(label + "  " + styleReasoningHint.Render("click to expand"))
+			return rstyle.Width(width).Render(label + bgSpace(colorBg, 2) + styleReasoningHint.Background(colorBg).Render("click to expand"))
 		}
 		return rstyle.Width(width).Render(label + "\n" + body)
 
@@ -1238,18 +1295,19 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 			senderLabel, s := systemMessageVariant(msg.content)
 			bodyW := max(16, width-s.GetHorizontalFrameSize())
 			rendered := renderRichText(msg.content, bodyW, richTextSystem)
-			return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
+			return s.Width(width).Render(tsPrefixBg(msg.ts, colorBg) + styleSenderSystem.Background(colorBg).Render(senderLabel) + "\n" + rendered)
 		}
 		entry, _ := parseToolCallContent(msg.content)
-		invLine := ts + styleAccent.Render(glyphTool) + "  " + styleTitle.Render(entry.Name)
+		tb := colorToolBg
+		invLine := tsPrefixBg(msg.ts, tb) + styleAccent.Background(tb).Render(glyphTool) + bgSpace(tb, 2) + styleTitle.Background(tb).Render(entry.Name)
 		if args := strings.TrimSpace(entry.Args); args != "" {
-			invLine += "  " + styleMuted.Render("·") + "  " + styleMuted.Render(args)
+			invLine += bgSpace(tb, 2) + styleMuted.Background(tb).Render("·") + bgSpace(tb, 2) + styleMuted.Background(tb).Render(args)
 		}
 		invRow := styleToolStrip.Width(width).Render(invLine)
 
 		result := strings.TrimSpace(entry.Result)
 		if result == "" {
-			return invRow + "\n" + styleToolResult.Width(width).Render(styleToolRunning.Render(glyphRunning+"  running…"))
+			return invRow + "\n" + styleToolResult.Width(width).Render(styleToolRunning.Background(colorBg).Render(glyphRunning+"  running…"))
 		}
 
 		// Completed: pick the state glyph + color from the result.
@@ -1259,24 +1317,26 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 			mark, markStyle = glyphError, styleToolErr
 		}
 		if !msg.streaming && !msg.expanded {
-			head := ts + markStyle.Render(mark) + "  " + styleTitle.Render(entry.Name)
+			head := tsPrefixBg(msg.ts, tb) + markStyle.Background(tb).Render(mark) + bgSpace(tb, 2) + styleTitle.Background(tb).Render(entry.Name)
 			if preview := firstResultLine(result, max(12, width/2)); preview != "" {
-				head += "  " + styleMuted.Render(preview)
+				head += bgSpace(tb, 2) + styleMuted.Background(tb).Render(preview)
 			}
-			head += "  " + styleReasoningHint.Render("click to expand")
+			head += bgSpace(tb, 2) + styleReasoningHint.Background(tb).Render("click to expand")
 			return styleToolStrip.Width(width).Render(head)
 		}
-		resultBody := result
+		resultBody := markStyle.Background(colorBg).Render(mark) + bgSpace(colorBg, 2)
 		if isErr {
-			resultBody = styleToolErrBody.Render(result)
+			resultBody += styleToolErrBody.Background(colorBg).Render(result)
+		} else {
+			resultBody += result
 		}
-		return invRow + "\n" + styleToolResult.Width(width).Render(markStyle.Render(mark)+"  "+resultBody)
+		return invRow + "\n" + styleToolResult.Width(width).Render(resultBody)
 
 	default: // system
 		senderLabel, s := systemMessageVariant(msg.content)
 		bodyW := max(16, width-s.GetHorizontalFrameSize())
 		rendered := renderRichText(msg.content, bodyW, richTextSystem)
-		return s.Width(width).Render(ts + styleSenderSystem.Render(senderLabel) + "\n" + rendered)
+		return s.Width(width).Render(tsPrefixBg(msg.ts, colorBg) + styleSenderSystem.Background(colorBg).Render(senderLabel) + "\n" + rendered)
 	}
 }
 

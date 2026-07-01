@@ -23,9 +23,7 @@ func (t ConfirmScope) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "confirm.scope",
 		Summary: "Compute the exact confirmation scope string used by a tool action.",
-		WhenToUse: "Use this when you want to ask for approval (via confirm.request) BEFORE attempting a destructive tool call. " +
-			"It lets you compute the precise scope string that the target tool will later require for confirm_token consumption.",
-		Safety: "Read-only helper. Does not create or confirm tokens.",
+		Safety:  "Read-only helper. Does not create or confirm tokens.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

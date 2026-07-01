@@ -107,10 +107,9 @@ var searchSynonyms = map[string][]string{
 func scoreToolSearch(spec ToolSpec, normalizedQuery string, queryTokens []string) int {
 	name := normalizeSearchText(spec.Name)
 	summary := normalizeSearchText(spec.Summary)
-	whenToUse := normalizeSearchText(spec.WhenToUse)
 	safety := normalizeSearchText(spec.Safety)
 	tags := normalizeSearchText(strings.Join(spec.Tags, " "))
-	combined := strings.TrimSpace(strings.Join([]string{name, summary, whenToUse, safety, tags}, " "))
+	combined := strings.TrimSpace(strings.Join([]string{name, summary, safety, tags}, " "))
 
 	if combined == "" {
 		return 0
@@ -140,8 +139,6 @@ func scoreToolSearch(spec ToolSpec, normalizedQuery string, queryTokens []string
 			tokenScore = 35
 		case containsSearchToken(summary, token):
 			tokenScore = 25
-		case containsSearchToken(whenToUse, token):
-			tokenScore = 15
 		case containsSearchToken(safety, token):
 			tokenScore = 10
 		}

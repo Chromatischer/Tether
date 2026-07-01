@@ -37,6 +37,14 @@ discord:
   enabled: false
   # Prefer env var TETHER_DISCORD_BOT_TOKEN; you can also set it here.
   bot_token: ""
+  # Inbound DM attachments (images, files, voice notes) are saved under the
+  # user's sandbox at discord/context/<id>.<ext> and referenced inline in the
+  # prompt so the agent can read them with the `read` tool.
+  attachments:
+    enabled: true
+    max_size_mb: 25
+    max_per_message: 10
+    retention_days: 14
 
 paths:
   data_dir: ./data

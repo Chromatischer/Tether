@@ -136,9 +136,13 @@ func (p *ReasoningSummaryPart) UnmarshalJSON(data []byte) error {
 }
 
 type ContentPart struct {
-	Type        string `json:"type"` // input_text|output_text
+	Type        string `json:"type"` // input_text|output_text|input_image
 	Text        string `json:"text,omitempty"`
 	Annotations any    `json:"annotations,omitempty"`
+	// ImageURL carries image input for vision models. In the Responses API this
+	// is a plain string and may be an https URL or a data: URL
+	// (e.g. "data:image/png;base64,..."). Only set when Type is "input_image".
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type ResponsesUsage struct {

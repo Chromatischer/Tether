@@ -66,6 +66,60 @@ func TestInspectorErrorResultLabeled(t *testing.T) {
 	}
 }
 
+func TestToolCallResultUpdatesRunningRowDespiteArgDrift(t *testing.T) {
+	m := newChatModel().withSize(120, 24)
+	// Running event (no result) with one args representation.
+	m = m.upsertStreamingToolCall(1, toolCallEntry{Name: "code", Args: `{"partial`})
+	// Result event for the same call, but the args string differs (streamed /
+	// truncated JSON). It must update the running row, not append a duplicate.
+	m = m.upsertStreamingToolCall(1, toolCallEntry{Name: "code", Args: `{"code":"x"}`, Result: "/work/output"})
+
+	count := 0
+	var last chatMessage
+	for _, msg := range m.messages {
+		if msg.role == "tool_call" {
+			count++
+			last = msg
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 tool_call row, got %d", count)
+	}
+	parsed, _ := parseToolCallContent(last.content)
+	if strings.TrimSpace(parsed.Result) == "" {
+		t.Fatalf("expected the row to carry the result, got %q", last.content)
+	}
+	// The rendered row must not still claim it is running.
+	if strings.Contains(formatMessage(last, 120, 0, TerminalProfile{}), "running") {
+		t.Fatalf("expected completed row, still shows running: %q", last.content)
+	}
+}
+
+func TestFinishStreamingCollapsesCompletedToolCall(t *testing.T) {
+	m := newChatModel().withSize(120, 24)
+	m = m.startStreamingAssistant(1)
+	m = m.upsertStreamingToolCall(1, toolCallEntry{Name: "code", Args: "{}"})
+	m = m.upsertStreamingToolCall(1, toolCallEntry{Name: "code", Args: "{}", Result: "done"})
+	m = m.finishStreamingAssistant(1, "answer", "")
+
+	found := false
+	for _, msg := range m.messages {
+		if msg.role != "tool_call" {
+			continue
+		}
+		found = true
+		if msg.streaming {
+			t.Fatal("tool call should not be streaming after finish")
+		}
+		if msg.expanded {
+			t.Fatal("completed tool call should collapse after finish")
+		}
+	}
+	if !found {
+		t.Fatal("expected a tool_call row to exist")
+	}
+}
+
 func TestConnectorHealthOfflineWhenNotLive(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Signal.Enabled = true

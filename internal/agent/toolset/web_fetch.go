@@ -35,8 +35,6 @@ func (t WebFetch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:    "web-fetch",
 		Summary: "Fetch a URL over the network and cache the truncated response body.",
-		WhenToUse: "Use this to retrieve page content. Then use fetch.summarize to get a safe markdown summary. " +
-			"Prefer fetch.summarize over returning raw bodies.",
 		Safety: "Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token. " +
 			"Private, loopback, and link-local addresses are blocked by default (SSRF protection).",
 		InputSchema: map[string]any{

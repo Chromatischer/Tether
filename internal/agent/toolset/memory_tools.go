@@ -21,10 +21,9 @@ type memoryListArgs struct {
 
 func (t MemoryList) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:      "memory.list",
-		Summary:   "List memory items (facts/preferences/tasks).",
-		WhenToUse: "Use this to inspect what long-term memory items exist for the user (facts/prefs/tasks).",
-		Safety:    "Read-only.",
+		Name:    "memory.list",
+		Summary: "List memory items (facts/preferences/tasks).",
+		Safety:  "Read-only.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -105,10 +104,9 @@ type memoryAddArgs struct {
 
 func (t MemoryAdd) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:      "memory.add",
-		Summary:   "Add a memory item.",
-		WhenToUse: "Use this to store durable user facts, preferences, or tasks that should persist across conversations.",
-		Safety:    "Writes to the database (internal).",
+		Name:    "memory.add",
+		Summary: "Add a memory item.",
+		Safety:  "Writes to the database (internal).",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -171,10 +169,9 @@ type memoryUpdateArgs struct {
 
 func (t MemoryUpdate) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:      "memory.update",
-		Summary:   "Update a memory item by id.",
-		WhenToUse: "Use this to correct or refine an existing memory item.",
-		Safety:    "Writes to the database (internal).",
+		Name:    "memory.update",
+		Summary: "Update a memory item by id.",
+		Safety:  "Writes to the database (internal).",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -231,10 +228,9 @@ type memoryDeleteArgs struct {
 
 func (t MemoryDelete) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:      "memory.delete",
-		Summary:   "Delete a memory item by id.",
-		WhenToUse: "Use this when a memory item is wrong or no longer relevant.",
-		Safety:    "Destructive (deletes data). Consider confirming with the user first if unsure.",
+		Name:    "memory.delete",
+		Summary: "Delete a memory item by id.",
+		Safety:  "Destructive (deletes data). Consider confirming with the user first if unsure.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

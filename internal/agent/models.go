@@ -9,6 +9,23 @@ import (
 type modelInfo struct {
 	ContextLength int
 	Tokenizer     string
+	// Vision reports whether the model accepts image input.
+	Vision bool
+}
+
+// modelSupportsVision reports whether the given model can accept image input.
+// On lookup failure it returns false (fail-safe: the vision tool stays hidden).
+func (a *Agent) modelSupportsVision(model string) bool {
+	return a.modelInfo(model).Vision
+}
+
+func hasImageModality(mods []string) bool {
+	for _, m := range mods {
+		if strings.EqualFold(strings.TrimSpace(m), "image") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) modelInfo(model string) modelInfo {
@@ -42,6 +59,7 @@ func (a *Agent) modelInfo(model string) modelInfo {
 		cache[id] = modelInfo{
 			ContextLength: m.ContextLength,
 			Tokenizer:     strings.TrimSpace(m.Architecture.Tokenizer),
+			Vision:        hasImageModality(m.Architecture.InputModalities),
 		}
 	}
 

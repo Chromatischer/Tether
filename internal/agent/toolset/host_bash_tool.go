@@ -44,9 +44,6 @@ func (t HostBash) Spec() tools.ToolSpec {
 		Name: "bash.host",
 		Summary: "Run a shell command directly on the host, OUTSIDE the sandbox. " +
 			"Disabled unless an admin enabled host execution; every call needs a reason and a per-call confirmation.",
-		WhenToUse: "Use only when a task genuinely requires host access that the sandboxed bash tool cannot provide " +
-			"(real network/host state, host services, files outside the user sandbox). Prefer the sandboxed bash tool for everything else. " +
-			"This tool is disabled by default and must be enabled via tool.enable; it is not available to sub-agents.",
 		Safety: "Runs unsandboxed on the host with full host access and inherits the host environment. " +
 			"Requires (1) admin-enabled host execution, (2) a specific reason, and (3) a confirm_token approving this exact command. " +
 			"The command and reason are recorded in the audit log.",

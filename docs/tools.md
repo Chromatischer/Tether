@@ -13,9 +13,12 @@ Notes:
 
 ## Index
 
-- [`bash`](#bash) — Run a shell command inside the user sandbox (no network; /work is the sandbox root).
+- [`bash`](#bash) — Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.
+- [`bash.host`](#bashhost) — Run a shell command directly on the host, OUTSIDE the sandbox. Disabled unless an admin enabled host execution; every call needs a reason and a per-call confirmation.
+- [`code`](#code) — Run a short Python 3 script in the sandbox to orchestrate and filter your other enabled tools. Use this instead of many separate tool calls when you would otherwise pull large intermediate results into the conversation.
 - [`confirm.request`](#confirmrequest) — Request user confirmation and pause until the user confirms.
 - [`confirm.scope`](#confirmscope) — Compute the exact confirmation scope string used by a tool action.
+- [`edit`](#edit) — Make an exact string replacement in an existing file in the user sandbox.
 - [`fetch.summarize`](#fetchsummarize) — Summarize previously fetched web content into safe markdown.
 - [`memory.add`](#memoryadd) — Add a memory item.
 - [`memory.delete`](#memorydelete) — Delete a memory item by id.
@@ -30,17 +33,14 @@ Notes:
 - [`tool.describe`](#tooldescribe) — Get full documentation for a tool (schemas, examples, safety notes).
 - [`tool.enable`](#toolenable) — Enable a tool for the current agent session.
 - [`tool.search`](#toolsearch) — Search for available tools by name, purpose, tags, and usage hints.
+- [`view_image`](#view-image) — Load an image from the sandbox so you can see it (vision models only).
 - [`web-fetch`](#web-fetch) — Fetch a URL over the network and cache the truncated response body.
 - [`web-search`](#web-search) — Search the web and return a small list of results.
 - [`write`](#write) — Write a file in the user sandbox (relative path).
 
 ## `bash`
 
-Run a shell command inside the user sandbox (no network; /work is the sandbox root).
-
-**When to use**
-
-Use this for project introspection (ls/rg/go test), formatting, and other local automation. The sandbox has no network access. Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...).
+Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.
 
 **Safety / confirmation**
 
@@ -131,13 +131,185 @@ Example result:
 Notes: For destructive commands like rm, the host may pause and ask the user to run /confirm <token> before execution resumes.
 
 
+## `bash.host`
+
+Run a shell command directly on the host, OUTSIDE the sandbox. Disabled unless an admin enabled host execution; every call needs a reason and a per-call confirmation.
+
+**Safety / confirmation**
+
+Runs unsandboxed on the host with full host access and inherits the host environment. Requires (1) admin-enabled host execution, (2) a specific reason, and (3) a confirm_token approving this exact command. The command and reason are recorded in the audit log.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "description": "shell command to run on the host",
+      "minLength": 1,
+      "type": "string"
+    },
+    "confirm_token": {
+      "description": "required; approves this exact command + reason",
+      "type": "string"
+    },
+    "reason": {
+      "description": "specific justification for why host (non-sandboxed) access is required",
+      "minLength": 8,
+      "type": "string"
+    }
+  },
+  "required": [
+    "command",
+    "reason"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stderr_truncated": {
+      "type": "boolean"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stdout_truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "exit_code",
+    "stdout",
+    "stderr"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**Run a host command with reason and approval**
+
+Tool arguments:
+
+```json
+{
+  "command": "systemctl is-active nginx",
+  "confirm_token": "<token>",
+  "reason": "check whether the host nginx service is running"
+}
+```
+
+Example result:
+
+```json
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "active\n"
+}
+```
+
+Notes: Without a valid confirm_token the host pauses and asks the user to /confirm before the command runs.
+
+
+## `code`
+
+Run a short Python 3 script in the sandbox to orchestrate and filter your other enabled tools. Use this instead of many separate tool calls when you would otherwise pull large intermediate results into the conversation.
+
+**Safety / confirmation**
+
+Runs in the same sandbox as bash (network off, /work mounted). Tools that require user confirmation cannot be called from code mode and will raise; call those directly instead.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "description": "Python 3 source to execute",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "result": {
+      "description": "value passed to result(), if any"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stderr_truncated": {
+      "type": "boolean"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stdout_truncated": {
+      "type": "boolean"
+    },
+    "tool_calls": {
+      "description": "number of call_tool() invocations made",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "stdout",
+    "stderr",
+    "exit_code",
+    "tool_calls"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**Filter a large tool result**
+
+Tool arguments:
+
+```json
+{
+  "code": "res = call_tool(\"web-fetch\", url=\"https://example.com\")\n# keep only what we need instead of returning the whole page\nresult({\"title\": res.get(\"title\"), \"len\": len(res.get(\"text\", \"\"))})"
+}
+```
+
+Notes: result() sets the returned value; nothing large needs to enter the conversation.
+
+
 ## `confirm.request`
 
 Request user confirmation and pause until the user confirms.
-
-**When to use**
-
-Use this when you need explicit user approval before continuing, especially when you need a confirmation token to pass into another tool call (e.g. write overwrite, destructive bash). For built-in tool confirmations, the host usually pauses automatically; you only need this tool when you want to ask for approval BEFORE attempting the destructive call.
 
 **Safety / confirmation**
 
@@ -225,10 +397,6 @@ Notes: On first call (no confirm_token), the host pauses and asks the user to /c
 
 Compute the exact confirmation scope string used by a tool action.
 
-**When to use**
-
-Use this when you want to ask for approval (via confirm.request) BEFORE attempting a destructive tool call. It lets you compute the precise scope string that the target tool will later require for confirm_token consumption.
-
 **Safety / confirmation**
 
 Read-only helper. Does not create or confirm tokens.
@@ -243,12 +411,20 @@ Read-only helper. Does not create or confirm tokens.
       "description": "shell command (for tool=bash destructive scope)",
       "type": "string"
     },
+    "name": {
+      "description": "tool name (for tool=tool.enable)",
+      "type": "string"
+    },
+    "network": {
+      "description": "for tool=tool.enable and name=bash: whether network access is requested",
+      "type": "boolean"
+    },
     "path": {
       "description": "file path (for tool=write overwrite scope)",
       "type": "string"
     },
     "tool": {
-      "description": "target tool name (currently: write, bash)",
+      "description": "target tool name (currently: write, bash, tool.enable)",
       "minLength": 1,
       "type": "string"
     }
@@ -301,13 +477,96 @@ Example result:
 Notes: Use the returned scope as the scope in confirm.request, then pass the confirmed token as confirm_token to write.
 
 
+## `edit`
+
+Make an exact string replacement in an existing file in the user sandbox.
+
+**Safety / confirmation**
+
+Edits an existing file in place. Requires that the same session has already read the path. old_string must occur exactly once unless replace_all is true. Symlinks are rejected. Personality files under config/agents/**/PERSONALITY.md keep backups.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "new_string": {
+      "description": "text to replace it with (must differ from old_string)",
+      "type": "string"
+    },
+    "old_string": {
+      "description": "exact text to replace",
+      "minLength": 1,
+      "type": "string"
+    },
+    "path": {
+      "description": "relative path under the user sandbox root",
+      "minLength": 1,
+      "type": "string"
+    },
+    "replace_all": {
+      "description": "replace every occurrence instead of requiring a unique match (default false)",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "path",
+    "old_string",
+    "new_string"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "replacements": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "path",
+    "replacements"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**Fix a single line**
+
+Tool arguments:
+
+```json
+{
+  "new_string": "port := 9090",
+  "old_string": "port := 8080",
+  "path": "workspace/main.go"
+}
+```
+
+Example result:
+
+```json
+{
+  "path": "workspace/main.go",
+  "replacements": 1
+}
+```
+
+
 ## `fetch.summarize`
 
 Summarize previously fetched web content into safe markdown.
-
-**When to use**
-
-Use this after web-fetch. It treats content as untrusted and ignores prompt-injection attempts. Prefer this over asking web-fetch to return raw body.
 
 **Safety / confirmation**
 
@@ -402,10 +661,6 @@ Example result:
 
 Add a memory item.
 
-**When to use**
-
-Use this to store durable user facts, preferences, or tasks that should persist across conversations.
-
 **Safety / confirmation**
 
 Writes to the database (internal).
@@ -480,10 +735,6 @@ Example result:
 
 Delete a memory item by id.
 
-**When to use**
-
-Use this when a memory item is wrong or no longer relevant.
-
 **Safety / confirmation**
 
 Destructive (deletes data). Consider confirming with the user first if unsure.
@@ -548,10 +799,6 @@ Example result:
 ## `memory.list`
 
 List memory items (facts/preferences/tasks).
-
-**When to use**
-
-Use this to inspect what long-term memory items exist for the user (facts/prefs/tasks).
 
 **Safety / confirmation**
 
@@ -652,10 +899,6 @@ Example result:
 
 Update a memory item by id.
 
-**When to use**
-
-Use this to correct or refine an existing memory item.
-
 **Safety / confirmation**
 
 Writes to the database (internal).
@@ -726,10 +969,6 @@ Example result:
 ## `proactive.run`
 
 Run proactive agents for the current user.
-
-**When to use**
-
-Use this to trigger proactive checks on-demand (e.g., run the daily brief now). If no arguments are provided, it runs the built-in daily brief for the user's first conversation.
 
 **Safety / confirmation**
 
@@ -810,10 +1049,6 @@ Example result:
 
 Read a file from the user sandbox (relative path).
 
-**When to use**
-
-Use this to inspect code/config/data inside the sandbox. Output is truncated (currently ~32KiB) to protect context size.
-
 **Safety / confirmation**
 
 Read-only. Cannot access absolute paths; path must stay within the sandbox.
@@ -886,10 +1121,6 @@ Notes: If the file is large, the tool will truncate content.
 ## `self.schedule`
 
 Schedule the agent to run later (one-off) and deliver the result as a proactive notification.
-
-**When to use**
-
-Use this to follow up later without user input (reminders, check-ins, delayed work). Important: the scheduled run snapshots (1) the conversation state at the moment you schedule it (messages up to an anchor message id), and (2) the set of enabled tools at the moment you schedule it. It will NOT see messages added after scheduling, and it will NOT gain tools that were enabled later. Timing note: schedules are polled on a ~1 minute tick, so execution/delivery can have up to ~1 minute of jitter. This tool is disabled by default and must be enabled explicitly via tool.enable.
 
 **Safety / confirmation**
 
@@ -1014,10 +1245,6 @@ Example result:
 
 Load and apply a Claude Code–style skill by name.
 
-**When to use**
-
-Use this when a skill’s description matches the user’s request, or when the user explicitly invokes $<skill-name>. This tool loads the full SKILL.md content (with substitutions and shell injections) into the session so it remains in context.
-
 ### Input schema
 
 ```json
@@ -1098,10 +1325,6 @@ Notes: The returned content is injected into the session so it remains in contex
 ## `subagent.spawn`
 
 Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.
-
-**When to use**
-
-Use this for long-running, multi-step work that should continue in the background without blocking the main conversation loop (e.g., deep repo analysis). After spawning it, you can either keep working and interacting with the user while it runs, or poll subagent.status until it finishes if its result is on your critical path. You must decide the subagent's toolset up front and should keep it as narrow as possible for the task.
 
 **Safety / confirmation**
 
@@ -1189,10 +1412,6 @@ Notes: The subagent may use only read and bash for this run. It cannot spawn oth
 ## `subagent.status`
 
 Get live status for a spawned sub-agent run, including current state and recent progress history.
-
-**When to use**
-
-Use this after subagent.spawn when the subagent is running in the background and you want to inspect its current status, latest text, or recent tool/activity history without blocking the main conversation. Poll it when you need to wait for completion; otherwise continue working and check back later.
 
 **Safety / confirmation**
 
@@ -1305,10 +1524,6 @@ Example result:
 
 Get full documentation for a tool (schemas, examples, safety notes).
 
-**When to use**
-
-Use this whenever you’re about to call a tool and you’re not 100% sure about its arguments, confirmation rules, or output shape.
-
 ### Input schema
 
 ```json
@@ -1393,20 +1608,24 @@ Tool arguments:
 
 Enable a tool for the current agent session.
 
-**When to use**
-
-Use this to enable tools that are not in the always-on minimal set. Typically: tool.search → tool.describe → tool.enable → use the tool.
-
 ### Input schema
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
+    "confirm_token": {
+      "description": "required when enabling bash with network access",
+      "type": "string"
+    },
     "name": {
       "description": "tool name (exact)",
       "minLength": 1,
       "type": "string"
+    },
+    "network": {
+      "description": "for tool=name bash only: request network access for this session; requires confirm_token",
+      "type": "boolean"
     }
   },
   "required": [
@@ -1457,10 +1676,6 @@ Example result:
 ## `tool.search`
 
 Search for available tools by name, purpose, tags, and usage hints.
-
-**When to use**
-
-Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. Use natural keyword queries like 'bash shell', 'run command', or 'read files'. For full documentation (schemas + examples), call tool.describe.
 
 ### Input schema
 
@@ -1531,17 +1746,96 @@ Example result:
 Notes: Descriptions are short on purpose; call tool.describe for full details.
 
 
+## `view_image`
+
+Load an image from the sandbox so you can see it (vision models only).
+
+**Safety / confirmation**
+
+Read-only. Only available on vision-capable models. Path must stay within the sandbox; non-image and oversized files are rejected.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "description": "relative path to an image under the user sandbox root",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "bytes": {
+      "type": "integer"
+    },
+    "path": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "type": {
+      "description": "detected image MIME type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "type",
+    "bytes",
+    "status"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**View a Discord image attachment**
+
+Tool arguments:
+
+```json
+{
+  "path": "discord/context/a1b2c3d4.jpg"
+}
+```
+
+Example result:
+
+```json
+{
+  "bytes": 148213,
+  "path": "discord/context/a1b2c3d4.jpg",
+  "status": "attached",
+  "type": "image/jpeg"
+}
+```
+
+Notes: The image content is now attached to the conversation.
+
+
 ## `web-fetch`
 
 Fetch a URL over the network and cache the truncated response body.
 
-**When to use**
-
-Use this to retrieve page content. Then use fetch.summarize to get a safe markdown summary. Prefer fetch.summarize over returning raw bodies.
-
 **Safety / confirmation**
 
-Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token.
+Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token. Private, loopback, and link-local addresses are blocked by default (SSRF protection).
 
 ### Input schema
 
@@ -1685,10 +1979,6 @@ Notes: Then call fetch.summarize with the returned fetch_id.
 
 Search the web and return a small list of results.
 
-**When to use**
-
-Use this to quickly find relevant pages. Then use web-fetch + fetch.summarize to read content safely.
-
 **Safety / confirmation**
 
 Network access. Only returns titles/URLs/snippets; does not fetch full pages.
@@ -1776,13 +2066,9 @@ Example result:
 
 Write a file in the user sandbox (relative path).
 
-**When to use**
-
-Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, the host may pause and require the user to confirm before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
-
 **Safety / confirmation**
 
-Overwriting an existing file is treated as destructive and requires confirm_token, except for config/agents/**/PERSONALITY.md (self-editable; old versions are backed up). Symlinks are rejected.
+Creating new files is allowed. Overwriting an existing file requires that the same session has already read that path. Personality files under config/agents/**/PERSONALITY.md remain self-editable and keep backups. Symlinks are rejected.
 
 ### Input schema
 
@@ -1791,7 +2077,7 @@ Overwriting an existing file is treated as destructive and requires confirm_toke
   "additionalProperties": false,
   "properties": {
     "confirm_token": {
-      "description": "required when overwriting an existing file",
+      "description": "deprecated; ignored by the write tool",
       "type": "string"
     },
     "content": {

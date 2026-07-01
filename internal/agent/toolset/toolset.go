@@ -147,6 +147,40 @@ type Session struct {
 	// the main session only (never for sub-agents); default false. Even when true,
 	// each host command requires a per-call confirmation and a stated reason.
 	AllowHostExec bool
+
+	// VisionEnabled reports whether the active model accepts image input. Set per
+	// turn from the model's capabilities. Gates the view_image tool.
+	VisionEnabled bool
+
+	// PendingImages holds images queued by the view_image tool during a turn.
+	// The agent loop drains them after tool execution and injects them as image
+	// content the model can actually see.
+	PendingImages []PendingImage
+}
+
+// PendingImage is an image queued for the model to view. DataURL is a
+// self-contained data: URL (base64) and Path is the sandbox-relative source.
+type PendingImage struct {
+	DataURL string
+	Path    string
+}
+
+// AttachImage queues an image for the model to view this turn.
+func (s *Session) AttachImage(img PendingImage) {
+	if s == nil {
+		return
+	}
+	s.PendingImages = append(s.PendingImages, img)
+}
+
+// DrainPendingImages returns and clears any queued images.
+func (s *Session) DrainPendingImages() []PendingImage {
+	if s == nil || len(s.PendingImages) == 0 {
+		return nil
+	}
+	out := s.PendingImages
+	s.PendingImages = nil
+	return out
 }
 
 // AddInvokedSkill stores/replaces the most recent invocation of a skill.
@@ -252,6 +286,9 @@ func (s *Session) Enable(name string) error {
 	}
 	if !s.IsAllowed(name) {
 		return fmt.Errorf("tool not allowed in this session: %s", name)
+	}
+	if name == "view_image" && !s.VisionEnabled {
+		return fmt.Errorf("view_image requires a vision-capable model")
 	}
 	s.Active[name] = true
 	return nil

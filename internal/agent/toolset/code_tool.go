@@ -60,12 +60,6 @@ func (t Code) Spec() tools.ToolSpec {
 		Name: "code",
 		Summary: "Run a short Python 3 script in the sandbox to orchestrate and filter your other enabled tools. " +
 			"Use this instead of many separate tool calls when you would otherwise pull large intermediate results into the conversation.",
-		WhenToUse: "Use when a task needs to chain several tool calls, loop over results, or distill a large tool output down to the few values you actually need. " +
-			"Inside the script: call_tool(name, **kwargs) invokes any enabled tool and returns its result as Python data; " +
-			"result(value) sets the JSON-serializable value returned to you; tools() lists the enabled tools. " +
-			"Anything you print() is captured as stdout. Only the Python standard library is available and there is no network access from the script itself (the tools you call still run normally). " +
-			"TOOL NAMES: call_tool accepts either the canonical dotted name (e.g. \"memory.list\", \"tool.search\") or the underscore form you see in the tool list (\"memory_list\", \"tool_search\") — both resolve. " +
-			"A tool must already be enabled: call tools() first to see exactly what is callable; a \"tool not enabled\" error means you must enable that tool before the script can use it, not that the name was wrong.",
 		Safety: "Runs in the same sandbox as bash (network off, /work mounted). Tools that require user confirmation cannot be called from code mode and will raise; call those directly instead.",
 		InputSchema: map[string]any{
 			"type":                 "object",
