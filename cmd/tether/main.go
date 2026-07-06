@@ -55,6 +55,9 @@ func main() {
 		log.Fatal("failed to create ssh portal server", "error", err)
 	}
 	pro := proactive.NewScheduler(database, ag, ag, ag.Subagents(), cfg.Paths.DataDir, 1*time.Minute)
+	// Let fired schedules / proactive messages reach the user over their linked
+	// external channels as normal messages, not just the in-app notification queue.
+	pro.RegisterNotifier(discGW, sigGW)
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)

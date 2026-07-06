@@ -40,6 +40,9 @@ func RenderToolsMarkdown(specs []ToolSpec) string {
 func RenderToolMarkdown(s ToolSpec) string {
 	var b strings.Builder
 	b.WriteString("## `" + s.Name + "`\n\n")
+	if strings.TrimSpace(s.Category) != "" {
+		b.WriteString("_Category:_ `" + s.Category + "`\n\n")
+	}
 	b.WriteString(strings.TrimSpace(s.Summary) + "\n\n")
 
 	if strings.TrimSpace(s.WhenToUse) != "" {

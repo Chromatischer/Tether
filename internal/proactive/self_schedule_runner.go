@@ -6,18 +6,12 @@ import (
 	"tether/internal/store"
 )
 
-// SelfScheduleRunner executes a self-scheduled job with full agent capabilities (tool loop).
+// SelfScheduleRunner executes a fired self-schedule as a "wakeup": it continues
+// the conversation from where it left off, using the live session and the normal
+// chat system prompt, and injects the scheduled prompt as the next turn.
 //
-// This is implemented by the chat agent (internal/agent) and passed into the proactive
-// scheduler to avoid an import cycle.
-//
-// Implementations should behave like a proactive/background run:
-// - user is not present
-// - output will be delivered later as a notification
-// - avoid irreversible/external actions unless explicitly authorized
-//
-// activeTools is the snapshot of enabled tool names captured at scheduling time.
-// Implementations should restrict tool access to exactly this set.
+// This is implemented by the chat agent (internal/agent) and passed into the
+// proactive scheduler to avoid an import cycle.
 type SelfScheduleRunner interface {
-	RunSelfSchedule(ctx context.Context, job store.SelfSchedule, activeTools []string) (string, error)
+	RunSelfSchedule(ctx context.Context, job store.SelfSchedule) (string, error)
 }

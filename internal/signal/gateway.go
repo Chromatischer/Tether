@@ -292,6 +292,27 @@ func (g *Gateway) handleInbound(ctx context.Context, from string, text string) {
 	g.attachPendingConfirmationReaction(ctx, uid, conv.ID, from, ts)
 }
 
+// DeliverMessage implements proactive.Notifier: it pushes a proactively-generated
+// message to the user's linked Signal number. Returns false (not an error) when
+// Signal is disabled or the user has no linked number.
+func (g *Gateway) DeliverMessage(ctx context.Context, userID, conversationID int64, text string) (bool, error) {
+	_ = conversationID
+	if g == nil || !g.cfg.Signal.Enabled {
+		return false, nil
+	}
+	number, linked, err := store.GetSignalNumber(g.db, userID)
+	if err != nil {
+		return false, err
+	}
+	if !linked || strings.TrimSpace(number) == "" {
+		return false, nil
+	}
+	if _, err := g.send(ctx, number, text); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (g *Gateway) send(ctx context.Context, recipient string, message string) (int64, error) {
 	// Best-effort audit without storing message content.
 	var uidPtr *int64

@@ -20,8 +20,9 @@ type confirmRequestArgs struct {
 
 func (t ConfirmRequest) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "confirm.request",
-		Summary: "Request user confirmation and pause until the user confirms.",
+		Name:     "confirm.request",
+		Category: tools.CategoryConfirm,
+		Summary:  "Request user confirmation and pause until the user confirms.",
 		WhenToUse: "Use this when you need explicit user approval before continuing, especially when you need a confirmation token " +
 			"to pass into another tool call (e.g. write overwrite, destructive bash). " +
 			"For built-in tool confirmations, the host usually pauses automatically; you only need this tool when you want to ask for approval BEFORE attempting the destructive call.",

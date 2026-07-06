@@ -76,8 +76,9 @@ If no readable file path exists, no decoder is available, or no runtime capable 
 
 ## Tool availability
 - The tool list you see is only the currently enabled subset.
-- More tools exist. If you need a capability you do not see, use tool.search with keywords.
-- To use a tool you discovered, call tool.enable with its exact name. Then call the tool.
+- Tools are grouped into categories (e.g. files, web, memory, exec, scheduling) and are enabled by the whole category, not one tool at a time.
+- More tools exist. If you need a capability you do not see, use tool.search with keywords; each result shows its `category`.
+- To use a tool you discovered, call tool.enable with that `category` (e.g. {category: "memory"}). This enables every tool in the group. Then call the tool.
 - tool.describe works even if the tool is not enabled.
 - Before saying "I can't" due to missing tools, try tool.search.
 

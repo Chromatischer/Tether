@@ -22,8 +22,9 @@ type bashArgs struct {
 
 func (t Bash) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "bash",
-		Summary: "Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.",
+		Name:     "bash",
+		Category: tools.CategoryExec,
+		Summary:  "Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.",
 		WhenToUse: "Use this for project introspection (ls/rg/go test), formatting, and other local automation. " +
 			"Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...). " +
 			"Network access remains disabled unless the user explicitly approved enabling bash network access for the current session.",

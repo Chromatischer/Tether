@@ -1,19 +1,26 @@
 package toolset
 
-import "testing"
+import (
+	"testing"
+
+	"tether/internal/tools"
+)
 
 func TestToolSpecs_AreWellFormed(t *testing.T) {
-	tools := DefaultTools()
-	if len(tools) < 5 {
+	defs := DefaultTools()
+	if len(defs) < 5 {
 		t.Fatalf("expected default tools")
 	}
-	for name, impl := range tools {
+	for name, impl := range defs {
 		spec := impl.Spec()
 		if spec.Name != name {
 			t.Fatalf("tool %q: spec.Name mismatch: %q", name, spec.Name)
 		}
 		if spec.Summary == "" {
 			t.Fatalf("tool %q: missing Summary", name)
+		}
+		if !tools.IsValidCategory(spec.Category) {
+			t.Fatalf("tool %q: missing or invalid category %q", name, spec.Category)
 		}
 		if spec.InputSchema == nil {
 			t.Fatalf("tool %q: missing InputSchema", name)

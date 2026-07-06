@@ -253,6 +253,28 @@ func (g *Gateway) SendIntroduction(discordUserID string) error {
 	return g.SendDM(discordUserID, introductionMessage)
 }
 
+// DeliverMessage implements proactive.Notifier: it pushes a proactively-generated
+// message to the user's linked Discord DM. Returns false (not an error) when the
+// gateway isn't running or the user has no linked Discord account.
+func (g *Gateway) DeliverMessage(ctx context.Context, userID, conversationID int64, text string) (bool, error) {
+	_ = ctx
+	_ = conversationID
+	if g == nil || g.s == nil {
+		return false, nil
+	}
+	discordUserID, ok, err := store.GetDiscordUserID(g.db, userID)
+	if err != nil {
+		return false, err
+	}
+	if !ok || strings.TrimSpace(discordUserID) == "" {
+		return false, nil
+	}
+	if err := g.SendDM(discordUserID, text); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SendDM opens (or reuses) a DM channel with the given Discord user and sends
 // content, chunking as needed. Returns nil without error when the gateway is
 // not running so callers can treat it as best-effort.

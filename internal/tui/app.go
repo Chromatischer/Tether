@@ -129,7 +129,7 @@ func usageBlock(lines ...string) string {
 
 func helpSubcommand(sub string) string {
 	subHelp := map[string][]string{
-		"tools":     {"/tools list", "/tools search <query>", "/tools describe <name>"},
+		"tools":     {"/tools list", "/tools categories", "/tools search <query>", "/tools describe <name>"},
 		"subagent":  {"/subagent spawn <prompt>", "/subagent status <id>"},
 		"proactive": {"/proactive action <name>", "/proactive agent <id>"},
 		"signal":    {"/signal link", "/signal status", "/signal unlink"},
@@ -1140,6 +1140,28 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 
+		if len(fields) > 1 && fields[1] == "categories" {
+			var b strings.Builder
+			b.WriteString("Tool categories (enabled by group):\n")
+			for _, c := range m.toolReg.Categories() {
+				state := "off by default"
+				switch {
+				case c.AlwaysOn:
+					state = "always on"
+				case c.DefaultOn:
+					state = "on by default"
+				}
+				b.WriteString("- " + c.Name + " [" + state + "] — " + c.Description + "\n")
+				if len(c.Tools) > 0 {
+					b.WriteString("    " + strings.Join(c.Tools, ", ") + "\n")
+				}
+			}
+			resp := strings.TrimSpace(b.String())
+			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
+			m.chat = m.chat.appendLocal("System", resp)
+			return m, true, nil
+		}
+
 		var infos []tools.ToolInfo
 		if len(fields) == 1 || fields[1] == "list" {
 			infos = m.toolReg.List()
@@ -1152,6 +1174,7 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		} else {
 			resp := usageBlock(
 				"/tools list",
+				"/tools categories",
 				"/tools search <query>",
 				"/tools describe <name>",
 			)
@@ -1165,6 +1188,9 @@ func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
 		for _, t := range infos {
 			b.WriteString("- ")
 			b.WriteString(t.Name)
+			if t.Category != "" {
+				b.WriteString(" [" + t.Category + "]")
+			}
 			if t.Description != "" {
 				b.WriteString(" — ")
 				b.WriteString(t.Description)
@@ -2528,7 +2554,6 @@ func statusBarOnly(value, total, width int) string {
 	}
 	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
 }
-
 
 func formatStatusTimeLocal(t time.Time) string {
 	if t.IsZero() {

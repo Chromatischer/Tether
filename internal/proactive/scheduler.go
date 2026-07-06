@@ -25,6 +25,12 @@ func NewScheduler(db *sql.DB, llm LLM, selfRunner SelfScheduleRunner, subs *suba
 	return &Scheduler{eng: NewEngine(db, llm, selfRunner, subs, dataDir), interval: interval}
 }
 
+// RegisterNotifier registers external-channel deliverers (e.g. the Discord/Signal
+// gateways) used to push proactive/self-scheduled messages to the user.
+func (s *Scheduler) RegisterNotifier(ns ...Notifier) {
+	s.eng.RegisterNotifier(ns...)
+}
+
 func (s *Scheduler) Start(ctx context.Context) {
 	t := time.NewTicker(s.interval)
 	defer t.Stop()

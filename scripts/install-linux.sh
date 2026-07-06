@@ -368,7 +368,7 @@ install_update_sudoers() {
   if ! have_cmd sudo; then
     warn "sudo not found; in-app updates will need /admin update command set to a root-capable updater command"
     return 0
-  fi
+  fiwhen saving in settings change the Button text to Saved with a check symbol when saved correctly and without issues.
   local sudoers
   sudoers="/etc/sudoers.d/tether-update"
   log "Installing sudo rule for in-app updates"

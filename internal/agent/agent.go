@@ -260,6 +260,65 @@ func (a *Agent) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	return strings.TrimSpace(extractResponsesText(resp)), nil
 }
 
+// RunSecondaryPrompt runs a single-shot prompt against the configured secondary
+// model (see config.LLMSecondaryModel). It is intended for simpler/cheaper tasks
+// such as summarizing fetched web content. It falls back to the primary model
+// when no secondary model is configured.
+func (a *Agent) RunSecondaryPrompt(ctx context.Context, prompt string) (string, error) {
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
+	}
+	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: a.defaultChatSystemPromptText()}}},
+		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}}},
+	}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMSecondaryModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
+	resp, err := a.responsesCached(ctx2, req)
+	if err != nil {
+		return "", fmt.Errorf("llm: %w", err)
+	}
+	return strings.TrimSpace(extractResponsesText(resp)), nil
+}
+
+// RunSecondaryPromptWithSystem runs a prompt against the secondary model where
+// the caller fully controls the system message and supplies the (untrusted) user
+// content separately. This keeps instructions and untrusted data in distinct
+// roles, which hardens against prompt injection. It does NOT prepend the default
+// chat system prompt.
+func (a *Agent) RunSecondaryPromptWithSystem(ctx context.Context, system, user string) (string, error) {
+	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
+		return "", fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
+	}
+	ctx2, cancel := withDefaultTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	items := []openrouter.ResponseItem{
+		{Type: "message", Role: "system", Content: []openrouter.ContentPart{{Type: "input_text", Text: system}}},
+		{Type: "message", Role: "user", Content: []openrouter.ContentPart{{Type: "input_text", Text: user}}},
+	}
+	req := openrouter.ResponsesRequest{
+		Model:       a.cfg.LLMSecondaryModel(),
+		Input:       items,
+		Temperature: 0.2,
+		ToolChoice:  "none",
+		Provider:    a.openRouterProviderPrefs(),
+	}
+	resp, err := a.responsesCached(ctx2, req)
+	if err != nil {
+		return "", fmt.Errorf("llm: %w", err)
+	}
+	return strings.TrimSpace(extractResponsesText(resp)), nil
+}
+
 // RunPromptForUser is a convenience wrapper used by subsystems (e.g. subagents)
 // that only have a user_id + a standalone prompt, but still want to respect the
 // user's personality.

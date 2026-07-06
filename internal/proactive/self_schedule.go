@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/log/v2"
-
 	"tether/internal/store"
 )
 
@@ -35,35 +33,11 @@ func (e *Engine) tickSelfSchedules(ctx context.Context, userID int64, now time.T
 		if err != nil || !claimed {
 			continue
 		}
-		tools := parseActiveToolsJSON(it.ActiveToolsJSON)
-		go e.runSelfSchedule(context.Background(), userID, it, tools)
+		go e.runSelfSchedule(context.Background(), userID, it)
 	}
 }
 
-func parseActiveToolsJSON(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(s), &out); err != nil {
-		return nil
-	}
-	// Best-effort cleanup.
-	clean := make([]string, 0, len(out))
-	seen := map[string]bool{}
-	for _, t := range out {
-		t = strings.TrimSpace(t)
-		if t == "" || seen[t] {
-			continue
-		}
-		seen[t] = true
-		clean = append(clean, t)
-	}
-	return clean
-}
-
-func (e *Engine) runSelfSchedule(ctx context.Context, userID int64, it store.SelfSchedule, activeTools []string) {
+func (e *Engine) runSelfSchedule(ctx context.Context, userID int64, it store.SelfSchedule) {
 	// Fixed deadline; proactive scheduler must not block indefinitely.
 	ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -71,16 +45,15 @@ func (e *Engine) runSelfSchedule(ctx context.Context, userID int64, it store.Sel
 	payload, _ := json.Marshal(map[string]any{
 		"schedule_id":     it.ID,
 		"conversation_id": it.ConversationID,
-		"tools_n":         len(activeTools),
 	})
 	_ = store.AddAuditEvent(e.db, &userID, "self_schedule_trigger", string(payload))
 
 	var text string
 	var err error
 
-	// Preferred: run full agent loop with tool calling.
+	// Preferred: continue the conversation as a wakeup (full agent loop).
 	if e.selfRunner != nil {
-		text, err = e.selfRunner.RunSelfSchedule(ctx2, it, activeTools)
+		text, err = e.selfRunner.RunSelfSchedule(ctx2, it)
 	} else if e.llm != nil {
 		// Fallback: text-only proactive prompt (no tool loop).
 		prompt := e.buildSelfSchedulePrompt(userID, it)
@@ -92,17 +65,13 @@ func (e *Engine) runSelfSchedule(ctx context.Context, userID int64, it store.Sel
 	if err != nil {
 		errMsg := "(self-schedule error: " + err.Error() + ")"
 		_ = store.MarkSelfScheduleError(e.db, it.ID, err.Error())
-		_ = store.AddNotificationForConversation(e.db, userID, it.ConversationID, selfScheduleNotificationKind, errMsg)
+		e.deliverProactiveMessage(ctx, userID, it.ConversationID, selfScheduleNotificationKind, errMsg)
 		return
 	}
 
-	out := strings.TrimSpace(text)
-	if out == "" {
-		out = "(empty)"
-	}
-	if err := store.AddNotificationForConversation(e.db, userID, it.ConversationID, selfScheduleNotificationKind, out); err != nil {
-		log.Warn("self-schedule: add notification failed", "error", err)
-	}
+	// Deliver the wakeup result as a normal message (external channel if linked,
+	// otherwise the in-app notification queue).
+	e.deliverProactiveMessage(ctx, userID, it.ConversationID, selfScheduleNotificationKind, text)
 	_ = store.MarkSelfScheduleDone(e.db, it.ID)
 }
 

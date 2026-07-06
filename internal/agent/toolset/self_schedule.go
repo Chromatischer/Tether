@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -27,14 +26,15 @@ type selfScheduleArgs struct {
 
 func (t SelfSchedule) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "self.schedule",
-		Summary: "Schedule the agent to run later (one-off) and deliver the result as a proactive notification.",
+		Name:     "self.schedule",
+		Category: tools.CategoryScheduling,
+		Summary:  "Schedule a future 'wakeup' that continues this conversation later (one-off).",
 		WhenToUse: "Use this to follow up later without user input (reminders, check-ins, delayed work). " +
-			"Important: the scheduled run snapshots (1) the conversation state at the moment you schedule it (messages up to an anchor message id), and (2) the set of enabled tools at the moment you schedule it. " +
-			"It will NOT see messages added after scheduling, and it will NOT gain tools that were enabled later. " +
-			"Timing note: schedules are polled on a ~1 minute tick, so execution/delivery can have up to ~1 minute of jitter. " +
-			"This tool is disabled by default and must be enabled explicitly via tool.enable.",
-		Safety: "Creates an autonomous background run that will execute later and generate a proactive notification in the same conversation (shown as [Proactive/self_schedule] in the transcript). " +
+			"When it fires, the agent simply continues THIS conversation from wherever it is at that moment: current history, the normal system prompt, and the live tool set. " +
+			"It is NOT a snapshot — it will see messages added after you schedule it, and use whatever tools are enabled when it fires. " +
+			"The scheduled `prompt` is injected as the next turn (as if it had just been sent). " +
+			"Timing note: schedules are polled on a ~1 minute tick, so firing can have up to ~1 minute of jitter.",
+		Safety: "Creates an autonomous background run that continues the conversation later. " +
 			"Not allowed from sub-agents.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -171,27 +171,10 @@ func (t SelfSchedule) Execute(ctx context.Context, s *Session, rawArgs json.RawM
 			runAt = now.Add(2 * time.Second)
 		}
 
-		anchorID, ok, err := store.LatestMessageID(s.DB, s.ConversationID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			anchorID = 0
-		}
-
-		// Snapshot current enabled tools so the scheduled run has the same tool access,
-		// even if the live session changes later or the process restarts.
-		enabled := make([]string, 0, len(s.Active))
-		for name, on := range s.Active {
-			if on {
-				enabled = append(enabled, name)
-			}
-		}
-		sort.Strings(enabled)
-		b, _ := json.Marshal(enabled)
-		activeToolsJSON := string(b)
-
-		id, err := store.CreateSelfSchedule(s.DB, s.UserID, s.ConversationID, anchorID, prompt, runAt, activeToolsJSON)
+		// A fired schedule continues the live conversation as a wakeup, so there is
+		// no anchor snapshot and no tool snapshot — it uses whatever state the chat
+		// is in when it fires.
+		id, err := store.CreateSelfSchedule(s.DB, s.UserID, s.ConversationID, 0, prompt, runAt, "[]")
 		if err != nil {
 			return nil, err
 		}
@@ -199,11 +182,10 @@ func (t SelfSchedule) Execute(ctx context.Context, s *Session, rawArgs json.RawM
 		// Best-effort audit (don’t store prompt content).
 		uid := s.UserID
 		payload, _ := json.Marshal(map[string]any{
-			"schedule_id":       id,
-			"conversation_id":   s.ConversationID,
-			"anchor_message_id": anchorID,
-			"run_at":            runAt.Format(time.RFC3339),
-			"prompt_len":        len(prompt),
+			"schedule_id":     id,
+			"conversation_id": s.ConversationID,
+			"run_at":          runAt.Format(time.RFC3339),
+			"prompt_len":      len(prompt),
 		})
 		_ = store.AddAuditEvent(s.DB, &uid, "self_schedule_create", string(payload))
 

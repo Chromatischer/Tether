@@ -24,6 +24,7 @@ type webSearchArgs struct {
 func (t WebSearch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:      "web-search",
+		Category:  tools.CategoryWeb,
 		Summary:   "Search the web and return a small list of results.",
 		WhenToUse: "Use this to quickly find relevant pages. Then use web-fetch + fetch.summarize to read content safely.",
 		Safety:    "Network access. Only returns titles/URLs/snippets; does not fetch full pages.",

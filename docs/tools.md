@@ -13,10 +13,11 @@ Notes:
 
 ## Index
 
-- [`bash`](#bash) — Run a shell command inside the user sandbox (no network; /work is the sandbox root).
+- [`admin.bash`](#adminbash) — Run a shell command on the HOST, outside the sandbox, with full permissions. Requires a justification and explicit per-call user approval.
+- [`bash`](#bash) — Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.
 - [`confirm.request`](#confirmrequest) — Request user confirmation and pause until the user confirms.
 - [`confirm.scope`](#confirmscope) — Compute the exact confirmation scope string used by a tool action.
-- [`fetch.summarize`](#fetchsummarize) — Summarize previously fetched web content into safe markdown.
+- [`fetch.summarize`](#fetchsummarize) — Convert previously fetched web content into safe markdown, optionally summarized over an aspect.
 - [`memory.add`](#memoryadd) — Add a memory item.
 - [`memory.delete`](#memorydelete) — Delete a memory item by id.
 - [`memory.list`](#memorylist) — List memory items (facts/preferences/tasks).
@@ -28,19 +29,127 @@ Notes:
 - [`subagent.spawn`](#subagentspawn) — Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.
 - [`subagent.status`](#subagentstatus) — Get live status for a spawned sub-agent run, including current state and recent progress history.
 - [`tool.describe`](#tooldescribe) — Get full documentation for a tool (schemas, examples, safety notes).
-- [`tool.enable`](#toolenable) — Enable a tool for the current agent session.
+- [`tool.enable`](#toolenable) — Enable a whole tool category (group) for the current agent session.
 - [`tool.search`](#toolsearch) — Search for available tools by name, purpose, tags, and usage hints.
 - [`web-fetch`](#web-fetch) — Fetch a URL over the network and cache the truncated response body.
 - [`web-search`](#web-search) — Search the web and return a small list of results.
 - [`write`](#write) — Write a file in the user sandbox (relative path).
 
-## `bash`
+## `admin.bash`
 
-Run a shell command inside the user sandbox (no network; /work is the sandbox root).
+_Category:_ `admin`
+
+Run a shell command on the HOST, outside the sandbox, with full permissions. Requires a justification and explicit per-call user approval.
 
 **When to use**
 
-Use this for project introspection (ls/rg/go test), formatting, and other local automation. The sandbox has no network access. Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...).
+Use this ONLY when a task genuinely cannot be done inside the sandboxed `bash` tool — e.g. host administration, installing system packages, or accessing files outside the per-user sandbox. Prefer the sandboxed `bash` tool whenever possible. You must supply a clear `justification`; the user sees it and must approve each command via /confirm before it runs.
+
+**Safety / confirmation**
+
+DANGEROUS. Runs unsandboxed on the host with the full environment, filesystem, and network — there are NO restrictions on what the command can do. Every invocation pauses for explicit user approval (a fresh confirm_token, single-use, per command). Destructive or irreversible actions are possible; describe exactly what you intend to do in the justification.
+
+### Input schema
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "description": "shell command to run on the host (bash -lc)",
+      "minLength": 1,
+      "type": "string"
+    },
+    "confirm_token": {
+      "description": "(host-injected on resume) the user-approved token; required before the command runs",
+      "type": "string"
+    },
+    "justification": {
+      "description": "clear, user-facing reason why host (unsandboxed) execution is necessary; shown in the approval prompt",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "command",
+    "justification"
+  ],
+  "type": "object"
+}
+```
+
+### Output shape
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stderr_max_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated": {
+      "type": "boolean"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stdout_max_bytes": {
+      "type": "integer"
+    },
+    "stdout_truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "exit_code",
+    "stdout",
+    "stderr"
+  ],
+  "type": "object"
+}
+```
+
+### Example
+
+**Install a system package on the host**
+
+Tool arguments:
+
+```json
+{
+  "command": "pacman -S --noconfirm ripgrep",
+  "justification": "Install ripgrep on the host so future searches are faster; sandbox cannot persist packages."
+}
+```
+
+Example result:
+
+```json
+{
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "..."
+}
+```
+
+Notes: The host pauses and asks the user to /confirm <token>. The command runs only after approval.
+
+
+## `bash`
+
+_Category:_ `exec`
+
+Run a shell command inside the user sandbox (/work is the sandbox root). Network is off by default and only available if explicitly enabled for this session.
+
+**When to use**
+
+Use this for project introspection (ls/rg/go test), formatting, and other local automation. Commands start in /work by default; project files are usually under /work/workspace (use: cd workspace && ...). Network access remains disabled unless the user explicitly approved enabling bash network access for the current session.
 
 **Safety / confirmation**
 
@@ -133,6 +242,8 @@ Notes: For destructive commands like rm, the host may pause and ask the user to 
 
 ## `confirm.request`
 
+_Category:_ `confirm`
+
 Request user confirmation and pause until the user confirms.
 
 **When to use**
@@ -223,6 +334,8 @@ Notes: On first call (no confirm_token), the host pauses and asks the user to /c
 
 ## `confirm.scope`
 
+_Category:_ `confirm`
+
 Compute the exact confirmation scope string used by a tool action.
 
 **When to use**
@@ -243,12 +356,20 @@ Read-only helper. Does not create or confirm tokens.
       "description": "shell command (for tool=bash destructive scope)",
       "type": "string"
     },
+    "name": {
+      "description": "tool name (for tool=tool.enable)",
+      "type": "string"
+    },
+    "network": {
+      "description": "for tool=tool.enable and name=bash: whether network access is requested",
+      "type": "boolean"
+    },
     "path": {
       "description": "file path (for tool=write overwrite scope)",
       "type": "string"
     },
     "tool": {
-      "description": "target tool name (currently: write, bash)",
+      "description": "target tool name (currently: write, bash, tool.enable)",
       "minLength": 1,
       "type": "string"
     }
@@ -303,15 +424,17 @@ Notes: Use the returned scope as the scope in confirm.request, then pass the con
 
 ## `fetch.summarize`
 
-Summarize previously fetched web content into safe markdown.
+_Category:_ `web`
+
+Convert previously fetched web content into safe markdown, optionally summarized over an aspect.
 
 **When to use**
 
-Use this after web-fetch. It treats content as untrusted and ignores prompt-injection attempts. Prefer this over asking web-fetch to return raw body.
+Use this after web-fetch. It treats content as untrusted and ignores prompt-injection attempts. Provide `aspect` to get an LLM summary focused on a topic/question; omit it to get a plain, deterministic HTML→markdown conversion (no LLM). Prefer this over asking web-fetch to return raw body.
 
 **Safety / confirmation**
 
-Reads from the web-fetch cache (no network). Output is generated by the LLM, but the prompt explicitly instructs it to ignore instructions in the fetched content.
+Reads from the web-fetch cache (no network). When an aspect is given the summary is generated by the secondary LLM; the fetched content is passed as a separate untrusted user message and the system prompt instructs the model to never follow instructions found inside it.
 
 ### Input schema
 
@@ -319,6 +442,10 @@ Reads from the web-fetch cache (no network). Output is generated by the LLM, but
 {
   "additionalProperties": false,
   "properties": {
+    "aspect": {
+      "description": "optional topic/question to focus the summary on. If omitted, the tool returns a plain HTML→markdown conversion without calling the LLM.",
+      "type": "string"
+    },
     "fetch_id": {
       "description": "id returned by web-fetch",
       "minLength": 1,
@@ -344,6 +471,9 @@ Reads from the web-fetch cache (no network). Output is generated by the LLM, but
 {
   "additionalProperties": false,
   "properties": {
+    "aspect": {
+      "type": "string"
+    },
     "contentType": {
       "type": "string"
     },
@@ -359,6 +489,10 @@ Reads from the web-fetch cache (no network). Output is generated by the LLM, but
     "status": {
       "type": "integer"
     },
+    "summarized": {
+      "description": "true when an LLM summary was produced; false for plain conversion",
+      "type": "boolean"
+    },
     "url": {
       "type": "string"
     }
@@ -369,6 +503,7 @@ Reads from the web-fetch cache (no network). Output is generated by the LLM, but
     "status",
     "contentType",
     "fetched_at_utc",
+    "summarized",
     "markdown"
   ],
   "type": "object"
@@ -377,7 +512,7 @@ Reads from the web-fetch cache (no network). Output is generated by the LLM, but
 
 ### Example
 
-**Summarize a previously fetched page**
+**Plain conversion**
 
 Tool arguments:
 
@@ -393,12 +528,15 @@ Example result:
 {
   "fetch_id": "...",
   "markdown": "# Title\n...",
+  "summarized": false,
   "url": "..."
 }
 ```
 
 
 ## `memory.add`
+
+_Category:_ `memory`
 
 Add a memory item.
 
@@ -478,6 +616,8 @@ Example result:
 
 ## `memory.delete`
 
+_Category:_ `memory`
+
 Delete a memory item by id.
 
 **When to use**
@@ -546,6 +686,8 @@ Example result:
 
 
 ## `memory.list`
+
+_Category:_ `memory`
 
 List memory items (facts/preferences/tasks).
 
@@ -650,6 +792,8 @@ Example result:
 
 ## `memory.update`
 
+_Category:_ `memory`
+
 Update a memory item by id.
 
 **When to use**
@@ -724,6 +868,8 @@ Example result:
 
 
 ## `proactive.run`
+
+_Category:_ `scheduling`
 
 Run proactive agents for the current user.
 
@@ -808,6 +954,8 @@ Example result:
 
 ## `read`
 
+_Category:_ `files`
+
 Read a file from the user sandbox (relative path).
 
 **When to use**
@@ -884,6 +1032,8 @@ Notes: If the file is large, the tool will truncate content.
 
 
 ## `self.schedule`
+
+_Category:_ `scheduling`
 
 Schedule the agent to run later (one-off) and deliver the result as a proactive notification.
 
@@ -1012,6 +1162,8 @@ Example result:
 
 ## `skill.invoke`
 
+_Category:_ `skills`
+
 Load and apply a Claude Code–style skill by name.
 
 **When to use**
@@ -1096,6 +1248,8 @@ Notes: The returned content is injected into the session so it remains in contex
 
 
 ## `subagent.spawn`
+
+_Category:_ `subagents`
 
 Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.
 
@@ -1187,6 +1341,8 @@ Notes: The subagent may use only read and bash for this run. It cannot spawn oth
 
 
 ## `subagent.status`
+
+_Category:_ `subagents`
 
 Get live status for a spawned sub-agent run, including current state and recent progress history.
 
@@ -1303,6 +1459,8 @@ Example result:
 
 ## `tool.describe`
 
+_Category:_ `tools`
+
 Get full documentation for a tool (schemas, examples, safety notes).
 
 **When to use**
@@ -1391,11 +1549,24 @@ Tool arguments:
 
 ## `tool.enable`
 
-Enable a tool for the current agent session.
+_Category:_ `tools`
+
+Enable a whole tool category (group) for the current agent session.
 
 **When to use**
 
-Use this to enable tools that are not in the always-on minimal set. Typically: tool.search → tool.describe → tool.enable → use the tool.
+Tools are grouped into categories and enabled by the whole group, not one at a time. Use tool.search to find a tool and see its `category`, then enable that category here. Categories:
+  tools (always on) — Discover, describe, and enable tool groups.
+  confirm (always on) — Request and scope user confirmation for risky actions.
+  files (on by default) — Read and write files in the sandbox.
+  web (on by default) — Search the web, fetch URLs, and summarize fetched pages.
+  subagents (on by default) — Spawn sub-agents and check their status.
+  skills (on by default) — Invoke skills (playbooks) for specialized tasks.
+  exec (on by default) — Run shell commands via bash (network access still requires confirmation).
+  memory (off by default) — List, add, update, and delete long-term memory items.
+  scheduling (off by default) — Run proactive passes and schedule future self-runs.
+  mcp (off by default) — External Model Context Protocol server tools (per-user, configured by admin).
+  admin (off by default) — Privileged host execution OUTSIDE the sandbox with full permissions. Every call requires a justification and explicit user approval.
 
 ### Input schema
 
@@ -1403,14 +1574,34 @@ Use this to enable tools that are not in the always-on minimal set. Typically: t
 {
   "additionalProperties": false,
   "properties": {
-    "name": {
-      "description": "tool name (exact)",
-      "minLength": 1,
+    "category": {
+      "description": "category/group to enable (enables every tool in it)",
+      "enum": [
+        "tools",
+        "confirm",
+        "files",
+        "web",
+        "subagents",
+        "skills",
+        "exec",
+        "memory",
+        "scheduling",
+        "mcp",
+        "admin"
+      ],
       "type": "string"
+    },
+    "confirm_token": {
+      "description": "required when enabling exec with network access",
+      "type": "string"
+    },
+    "network": {
+      "description": "for category=exec only: request network access for bash this session; requires confirm_token",
+      "type": "boolean"
     }
   },
   "required": [
-    "name"
+    "category"
   ],
   "type": "object"
 }
@@ -1422,11 +1613,22 @@ Use this to enable tools that are not in the always-on minimal set. Typically: t
 {
   "additionalProperties": false,
   "properties": {
-    "enabled": {
+    "category": {
       "type": "string"
+    },
+    "enabled": {
+      "description": "tool names now active",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "network": {
+      "type": "boolean"
     }
   },
   "required": [
+    "category",
     "enabled"
   ],
   "type": "object"
@@ -1435,13 +1637,13 @@ Use this to enable tools that are not in the always-on minimal set. Typically: t
 
 ### Example
 
-**Enable bash**
+**Enable the exec group (bash)**
 
 Tool arguments:
 
 ```json
 {
-  "name": "bash"
+  "category": "exec"
 }
 ```
 
@@ -1449,12 +1651,17 @@ Example result:
 
 ```json
 {
-  "enabled": "bash"
+  "category": "exec",
+  "enabled": [
+    "bash"
+  ]
 }
 ```
 
 
 ## `tool.search`
+
+_Category:_ `tools`
 
 Search for available tools by name, purpose, tags, and usage hints.
 
@@ -1532,6 +1739,8 @@ Notes: Descriptions are short on purpose; call tool.describe for full details.
 
 
 ## `web-fetch`
+
+_Category:_ `web`
 
 Fetch a URL over the network and cache the truncated response body.
 
@@ -1683,6 +1892,8 @@ Notes: Then call fetch.summarize with the returned fetch_id.
 
 ## `web-search`
 
+_Category:_ `web`
+
 Search the web and return a small list of results.
 
 **When to use**
@@ -1774,15 +1985,17 @@ Example result:
 
 ## `write`
 
+_Category:_ `files`
+
 Write a file in the user sandbox (relative path).
 
 **When to use**
 
-Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, the host may pause and require the user to confirm before the overwrite proceeds — except for agent personality files under config/agents/**/PERSONALITY.md, which are self-editable.
+Use this to create new files or update files. Prefer small, targeted writes. If the file already exists, read it first in the same session so you have current context before overwriting it.
 
 **Safety / confirmation**
 
-Overwriting an existing file is treated as destructive and requires confirm_token, except for config/agents/**/PERSONALITY.md (self-editable; old versions are backed up). Symlinks are rejected.
+Creating new files is allowed. Overwriting an existing file requires that the same session has already read that path. Personality files under config/agents/**/PERSONALITY.md remain self-editable and keep backups. Symlinks are rejected.
 
 ### Input schema
 
@@ -1791,7 +2004,7 @@ Overwriting an existing file is treated as destructive and requires confirm_toke
   "additionalProperties": false,
   "properties": {
     "confirm_token": {
-      "description": "required when overwriting an existing file",
+      "description": "deprecated; ignored by the write tool",
       "type": "string"
     },
     "content": {

@@ -21,8 +21,9 @@ type proactiveRunArgs struct {
 
 func (t ProactiveRun) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "proactive.run",
-		Summary: "Run proactive agents for the current user.",
+		Name:     "proactive.run",
+		Category: tools.CategoryScheduling,
+		Summary:  "Run proactive agents for the current user.",
 		WhenToUse: "Use this to trigger proactive checks on-demand (e.g., run the daily brief now). " +
 			"If no arguments are provided, it runs the built-in daily brief for the user's first conversation.",
 		Safety: "Read/analyze oriented; may generate notifications in other parts of the system when used by the scheduler. When called as a tool, it returns results only.",

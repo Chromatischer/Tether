@@ -105,7 +105,8 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		}
 
 		// Meta tools accept LLM-visible names in their {name: ...} arguments.
-		if nm != nil && (name == "tool.enable" || name == "tool.describe") {
+		// (tool.enable takes a category, not a tool name, so it is excluded.)
+		if nm != nil && name == "tool.describe" {
 			var obj map[string]any
 			if err := json.Unmarshal(rawArgsOrig, &obj); err == nil {
 				if v, ok := obj["name"].(string); ok {
@@ -123,7 +124,13 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 		if impl == nil {
 			execErr = fmt.Errorf("unknown tool: %s. Use tool.search to find the right tool name, then tool.describe before calling it", name)
 		} else if !s.IsActive(name) {
-			execErr = fmt.Errorf("tool not enabled: %s. Enable it with tool.enable before calling it", name)
+			hint := "Enable its category with tool.enable before calling it"
+			if a.registry != nil {
+				if spec, ok := a.registry.Get(name); ok && spec.Category != "" {
+					hint = fmt.Sprintf("Enable it with tool.enable {category: %q}", spec.Category)
+				}
+			}
+			execErr = fmt.Errorf("tool not enabled: %s. %s", name, hint)
 		} else {
 			if rawArgsExec == nil || len(bytes.TrimSpace(rawArgsExec)) == 0 {
 				execErr = fmt.Errorf("invalid tool arguments for %s: missing JSON object; retry with a complete JSON object that matches the tool schema", name)
@@ -157,6 +164,16 @@ func (a *Agent) executeFunctionCalls(ctx context.Context, s *toolset.Session, ca
 					reasonArg = strings.TrimSpace(req.Reason)
 					if reasonArg != "" {
 						reason = reasonArg
+					}
+				}
+				if name == "admin.bash" {
+					var req struct {
+						Command       string `json:"command"`
+						Justification string `json:"justification"`
+					}
+					_ = json.Unmarshal(rawArgsOrig, &req)
+					if j := strings.TrimSpace(req.Justification); j != "" {
+						reason = "HOST (unsandboxed) command: " + truncateString(strings.TrimSpace(req.Command), 200) + " — justification: " + truncateString(j, 200)
 					}
 				}
 

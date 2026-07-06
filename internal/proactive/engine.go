@@ -33,6 +33,14 @@ const (
 	EventTaskChanged = "task_changed"
 )
 
+// Notifier delivers a proactively-generated message to a user over an external
+// channel (e.g. Discord DM, Signal). Implementations return true when the user is
+// reachable on that channel and the message was sent. Implemented by the chat
+// gateways and registered on the scheduler.
+type Notifier interface {
+	DeliverMessage(ctx context.Context, userID, conversationID int64, text string) (bool, error)
+}
+
 type Engine struct {
 	db      *sql.DB
 	llm     LLM
@@ -41,12 +49,58 @@ type Engine struct {
 
 	selfRunner SelfScheduleRunner
 
-	mu      sync.Mutex
-	pending map[string]bool // key=userID:agentID:trigger:day
+	mu        sync.Mutex
+	pending   map[string]bool // key=userID:agentID:trigger:day
+	notifiers []Notifier
 }
 
 func NewEngine(db *sql.DB, llm LLM, selfRunner SelfScheduleRunner, subs *subagents.Manager, dataDir string) *Engine {
 	return &Engine{db: db, llm: llm, subs: subs, dataDir: dataDir, selfRunner: selfRunner, pending: map[string]bool{}}
+}
+
+// RegisterNotifier adds external-channel deliverers. Safe to call before the
+// engine starts ticking. nil notifiers are ignored.
+func (e *Engine) RegisterNotifier(ns ...Notifier) {
+	for _, n := range ns {
+		if n != nil {
+			e.notifiers = append(e.notifiers, n)
+		}
+	}
+}
+
+// deliverProactiveMessage delivers a proactively-generated assistant message. It
+// first tries the user's external channels; if it reaches at least one, it
+// persists the text as a normal assistant turn so the conversation genuinely
+// continues. If no external channel is available (e.g. a TUI-only user), it falls
+// back to the in-app notification queue, which the TUI surfaces on its next poll.
+func (e *Engine) deliverProactiveMessage(ctx context.Context, userID, conversationID int64, kind, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = "(empty)"
+	}
+	delivered := false
+	for _, n := range e.notifiers {
+		ok, err := n.DeliverMessage(ctx, userID, conversationID, text)
+		if err != nil {
+			log.Warn("proactive deliver failed", "error", err, "user_id", userID)
+			continue
+		}
+		if ok {
+			delivered = true
+		}
+	}
+	if delivered {
+		if conversationID != 0 {
+			_ = store.AddMessage(e.db, conversationID, "assistant", text)
+		}
+		return
+	}
+	// Fallback: in-app notification queue (delivered by the TUI poll).
+	if conversationID != 0 {
+		_ = store.AddNotificationForConversation(e.db, userID, conversationID, kind, text)
+	} else {
+		_ = store.AddNotification(e.db, userID, kind, text)
+	}
 }
 
 func (e *Engine) Tick(ctx context.Context, now time.Time) error {

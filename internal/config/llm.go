@@ -49,6 +49,26 @@ func (c *Config) LLMModel() string {
 	}
 }
 
+// LLMSecondaryModel returns the model used for simpler/cheaper tasks
+// (e.g. fetch.summarize). It falls back to the primary model when no
+// secondary model is configured for the active provider.
+func (c *Config) LLMSecondaryModel() string {
+	if c == nil {
+		return ""
+	}
+	var secondary string
+	switch c.LLMProvider() {
+	case "deepseek":
+		secondary = c.DeepSeek.SecondaryModel
+	default:
+		secondary = c.OpenRouter.SecondaryModel
+	}
+	if strings.TrimSpace(secondary) == "" {
+		return c.LLMModel()
+	}
+	return secondary
+}
+
 func (c *Config) LLMAPIKeyEnvName() string {
 	switch c.LLMProvider() {
 	case "deepseek":

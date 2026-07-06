@@ -4,17 +4,19 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"tether/internal/llm/openrouter"
 	"tether/internal/store"
 )
 
-// RunSelfSchedule executes a self.schedule job using the full chat agent tool loop,
-// restricted to the tool snapshot captured when the schedule was created.
+// RunSelfSchedule runs a fired self-schedule as a "wakeup": it continues the
+// conversation from exactly where it left off. It uses the current conversation
+// history, the normal chat system prompt, and the live session/tool set — nothing
+// is special-cased. The scheduled prompt is injected as the next turn, exactly as
+// if it had been sent into the live chat.
 //
 // This method is invoked by the proactive scheduler (background context).
-func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule, activeTools []string) (string, error) {
+func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule) (string, error) {
 	if a == nil {
 		return "", errors.New("agent not available")
 	}
@@ -27,54 +29,40 @@ func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule, act
 	if job.UserID == 0 || job.ConversationID == 0 {
 		return "", errors.New("invalid schedule")
 	}
+	prompt := strings.TrimSpace(job.Prompt)
+	if prompt == "" {
+		return "", errors.New("empty schedule prompt")
+	}
 
-	// Build a session with tool access restricted to the snapshot.
+	// Live session — same tools and state as the ongoing chat. We deliberately do
+	// NOT restrict to a snapshot: a wakeup continues the conversation as it is now.
 	sess := a.forkSessionFor(job.UserID, job.ConversationID)
 	if sess == nil {
 		return "", errors.New("session not available")
 	}
-	snap := map[string]bool{}
-	for _, name := range activeTools {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		snap[name] = true
-	}
-	sess.Active = snap
+	defer a.mergeSessionFor(job.ConversationID, sess)
 	sess.IsSubagent = false
 
-	// Reconstruct the conversation context as-of the moment scheduling happened.
-	history, err := store.ListRecentMessagesBeforeID(a.db, job.ConversationID, job.AnchorMessageID, 25)
+	// Build context exactly like a normal chat turn: current history + the normal
+	// chat system prompt (no proactive prompt, no anchor snapshot).
+	items, err := a.buildContextInputItemsWithSession(ctx, sess, job.UserID, job.ConversationID, nil)
 	if err != nil {
 		return "", err
 	}
 
-	baseItems, err := a.buildContextInputItemsWithSessionAndSystemPrompt(ctx, sess, job.UserID, job.ConversationID, history, a.proactiveSystemPromptText(job.UserID, job.ConversationID))
-	if err != nil {
-		return "", err
-	}
-
-	createdAt := job.CreatedAt.UTC()
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
-	}
-
-	userText := "Self-scheduled run (background).\n" +
-		"Created at: " + createdAt.Format(time.RFC3339) + "\n" +
-		"Scheduled for: " + job.RunAt.UTC().Format(time.RFC3339) + "\n" +
-		"Now: " + time.Now().UTC().Format(time.RFC3339) + "\n\n" +
-		"Task:\n" + strings.TrimSpace(job.Prompt)
-
-	items := append(baseItems, openrouter.ResponseItem{
+	// The scheduled prompt is the wakeup turn that continues the conversation.
+	items = append(items, openrouter.ResponseItem{
 		Type:    "message",
 		Role:    "user",
-		Content: []openrouter.ContentPart{{Type: "input_text", Text: userText}},
+		Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}},
 	})
 
 	text, _, _, err := a.replyWithToolsStream(ctx, sess, job.UserID, job.ConversationID, items, nil, nil)
 	if err != nil {
 		return "", err
 	}
+
+	// Keep the rolling summary fresh, like a normal turn does.
+	go a.maybeUpdateSummary(job.ConversationID)
 	return strings.TrimSpace(text), nil
 }

@@ -34,6 +34,10 @@ type Config struct {
 		BaseURL string `yaml:"base_url"`
 		Model   string `yaml:"model"`
 
+		// SecondaryModel is a cheaper/faster model used for simpler tasks
+		// (e.g. fetch.summarize). When empty it falls back to Model.
+		SecondaryModel string `yaml:"secondary_model"`
+
 		// Provider routing preferences passed through to OpenRouter.
 		// See OpenRouter provider routing documentation.
 		Provider struct {
@@ -48,6 +52,10 @@ type Config struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
 		Model   string `yaml:"model"`
+
+		// SecondaryModel is a cheaper/faster model used for simpler tasks.
+		// When empty it falls back to Model.
+		SecondaryModel string `yaml:"secondary_model"`
 	} `yaml:"deepseek"`
 
 	Secrets struct {
@@ -174,6 +182,9 @@ func Load(path string) (*Config, error) {
 	}
 	if adminEnv.OpenRouterModel != "" {
 		cfg.OpenRouter.Model = adminEnv.OpenRouterModel
+	}
+	if adminEnv.OpenRouterSecondaryModel != "" {
+		cfg.OpenRouter.SecondaryModel = adminEnv.OpenRouterSecondaryModel
 	}
 
 	// DeepSeek settings

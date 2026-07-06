@@ -444,7 +444,7 @@ func TestHandleCommandGroupedUsageIsMultiLine(t *testing.T) {
 		t.Fatal("expected usage message")
 	}
 	got := updated.chat.messages[len(updated.chat.messages)-1].content
-	if !strings.Contains(got, "usage:\n  /tools list\n  /tools search <query>\n  /tools describe <name>") {
+	if !strings.Contains(got, "usage:\n  /tools list\n  /tools categories\n  /tools search <query>\n  /tools describe <name>") {
 		t.Fatalf("expected multi-line usage block, got %q", got)
 	}
 }

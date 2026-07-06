@@ -18,8 +18,9 @@ type toolSearchArgs struct {
 
 func (t ToolSearch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "tool.search",
-		Summary: "Search for available tools by name, purpose, tags, and usage hints.",
+		Name:     "tool.search",
+		Category: tools.CategoryTools,
+		Summary:  "Search for available tools by name, purpose, tags, and usage hints.",
 		WhenToUse: "Use this when you need to discover what capabilities exist (or what a tool is called) before enabling/using it. " +
 			"Use natural keyword queries like 'bash shell', 'run command', or 'read files'. " +
 			"For full documentation (schemas + examples), call tool.describe.",
@@ -85,38 +86,55 @@ func (t ToolSearch) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 type ToolEnable struct{}
 
 type toolEnableArgs struct {
-	Name         string `json:"name"`
+	Category     string `json:"category"`
 	Network      bool   `json:"network"`
 	ConfirmToken string `json:"confirm_token"`
 }
 
 func (t ToolEnable) Spec() tools.ToolSpec {
+	cats := tools.AllCategories()
+	catLines := make([]string, 0, len(cats))
+	for _, c := range cats {
+		state := "off by default"
+		switch {
+		case c.AlwaysOn:
+			state = "always on"
+		case c.DefaultOn:
+			state = "on by default"
+		}
+		catLines = append(catLines, fmt.Sprintf("%s (%s) — %s", c.Name, state, c.Description))
+	}
 	return tools.ToolSpec{
-		Name:    "tool.enable",
-		Summary: "Enable a tool for the current agent session.",
-		WhenToUse: "Use this to enable tools that are not in the always-on minimal set. " +
-			"Typically: tool.search → tool.describe → tool.enable → use the tool.",
+		Name:     "tool.enable",
+		Category: tools.CategoryTools,
+		Summary:  "Enable a whole tool category (group) for the current agent session.",
+		WhenToUse: "Tools are grouped into categories and enabled by the whole group, not one at a time. " +
+			"Use tool.search to find a tool and see its `category`, then enable that category here. " +
+			"Categories:\n  " + strings.Join(catLines, "\n  "),
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"name":          map[string]any{"type": "string", "minLength": 1, "description": "tool name (exact)"},
-				"network":       map[string]any{"type": "boolean", "description": "for tool=name bash only: request network access for this session; requires confirm_token"},
-				"confirm_token": map[string]any{"type": "string", "description": "required when enabling bash with network access"},
+				"category":      map[string]any{"type": "string", "enum": tools.CategoryNames(), "description": "category/group to enable (enables every tool in it)"},
+				"network":       map[string]any{"type": "boolean", "description": "for category=exec only: request network access for bash this session; requires confirm_token"},
+				"confirm_token": map[string]any{"type": "string", "description": "required when enabling exec with network access"},
 			},
-			"required": []string{"name"},
+			"required": []string{"category"},
 		},
 		OutputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"enabled": map[string]any{"type": "string"},
+				"category": map[string]any{"type": "string"},
+				"enabled":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "tool names now active"},
+				"network":  map[string]any{"type": "boolean"},
 			},
-			"required": []string{"enabled"},
+			"required": []string{"category", "enabled"},
 		},
 		Examples: []tools.ToolExample{
-			{Title: "Enable bash", Args: map[string]any{"name": "bash"}, Result: map[string]any{"enabled": "bash"}},
-			{Title: "Enable bash with network access", Args: map[string]any{"name": "bash", "network": true, "confirm_token": "<confirmed-token>"}, Result: map[string]any{"enabled": "bash", "network": true}},
+			{Title: "Enable the exec group (bash)", Args: map[string]any{"category": "exec"}, Result: map[string]any{"category": "exec", "enabled": []string{"bash"}}},
+			{Title: "Enable exec with network access", Args: map[string]any{"category": "exec", "network": true, "confirm_token": "<confirmed-token>"}, Result: map[string]any{"category": "exec", "enabled": []string{"bash"}, "network": true}},
+			{Title: "Enable the memory group", Args: map[string]any{"category": "memory"}, Result: map[string]any{"category": "memory", "enabled": []string{"memory.add", "memory.delete", "memory.list", "memory.update"}}},
 		},
 		Tags: []string{"meta"},
 	}
@@ -133,9 +151,10 @@ func (t ToolEnable) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return nil, err
 	}
+	category := strings.TrimSpace(args.Category)
 	if args.Network {
-		if !strings.EqualFold(strings.TrimSpace(args.Name), "bash") {
-			return nil, fmt.Errorf("network=true is only supported for tool %q", "bash")
+		if !strings.EqualFold(category, tools.CategoryExec) {
+			return nil, fmt.Errorf("network=true is only supported for category %q", tools.CategoryExec)
 		}
 		scope := bashEnableNetworkScope()
 		if s.Confirm == nil || !s.Confirm.Consume(s.UserID, strings.TrimSpace(args.ConfirmToken), scope) {
@@ -143,10 +162,11 @@ func (t ToolEnable) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 		}
 		s.BashNetworkEnabled = true
 	}
-	if err := s.Enable(args.Name); err != nil {
+	enabled, err := s.EnableCategory(category)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"enabled": args.Name, "network": args.Network && s.BashNetworkEnabled}, nil
+	return map[string]any{"category": category, "enabled": enabled, "network": args.Network && s.BashNetworkEnabled}, nil
 }
 
 type ToolDescribe struct{}
@@ -158,6 +178,7 @@ type toolDescribeArgs struct {
 func (t ToolDescribe) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:      "tool.describe",
+		Category:  tools.CategoryTools,
 		Summary:   "Get full documentation for a tool (schemas, examples, safety notes).",
 		WhenToUse: "Use this whenever you’re about to call a tool and you’re not 100% sure about its arguments, confirmation rules, or output shape.",
 		InputSchema: map[string]any{

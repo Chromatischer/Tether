@@ -69,7 +69,7 @@ func TestBashEnableNetworkScope_Stable(t *testing.T) {
 func TestToolEnable_BashNetworkRequiresConfirmation(t *testing.T) {
 	tool := ToolEnable{}
 	s := &Session{UserID: 1}
-	args, _ := json.Marshal(map[string]any{"name": "bash", "network": true})
+	args, _ := json.Marshal(map[string]any{"category": "exec", "network": true})
 	_, err := tool.Execute(context.Background(), s, args)
 	if err == nil {
 		t.Fatalf("expected error")
@@ -90,7 +90,7 @@ func TestToolEnable_BashNetworkSetsSessionFlag(t *testing.T) {
 	s.Active = map[string]bool{}
 	s.Confirm = &stubConfirmer{ok: true}
 	s.Registry = toolsTestRegistry()
-	args, _ := json.Marshal(map[string]any{"name": "bash", "network": true, "confirm_token": "tok"})
+	args, _ := json.Marshal(map[string]any{"category": "exec", "network": true, "confirm_token": "tok"})
 	got, err := tool.Execute(context.Background(), s, args)
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
@@ -99,7 +99,8 @@ func TestToolEnable_BashNetworkSetsSessionFlag(t *testing.T) {
 		t.Fatalf("expected bash network flag enabled")
 	}
 	m, _ := got.(map[string]any)
-	if enabled, _ := m["enabled"].(string); enabled != "bash" {
+	enabled, _ := m["enabled"].([]string)
+	if len(enabled) != 1 || enabled[0] != "bash" {
 		t.Fatalf("unexpected result: %#v", got)
 	}
 	if network, _ := m["network"].(bool); !network {

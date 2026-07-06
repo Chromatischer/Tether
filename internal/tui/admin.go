@@ -46,22 +46,23 @@ type adminModel struct {
 	userList []store.User
 	userSel  int
 
-	setupPath        string
-	setupOpenRouter  textinput.Model
-	setupModel       textinput.Model
-	setupDiscord     textinput.Model
-	setupDiscordOn   bool
-	setupSignal      textinput.Model
-	setupMasterKey   textinput.Model
-	setupFocus       int
-	setupStatus      string
-	setupStatusErr   bool
-	setupModels      []openrouter.Model
-	setupModelsErr   string
-	setupModelSel    int
-	setupEndpoints   []openrouter.ModelEndpoint
-	setupEndpointID  string
-	setupEndpointErr string
+	setupPath           string
+	setupOpenRouter     textinput.Model
+	setupModel          textinput.Model
+	setupSecondaryModel textinput.Model
+	setupDiscord        textinput.Model
+	setupDiscordOn      bool
+	setupSignal         textinput.Model
+	setupMasterKey      textinput.Model
+	setupFocus          int
+	setupStatus         string
+	setupStatusErr      bool
+	setupModels         []openrouter.Model
+	setupModelsErr      string
+	setupModelSel       int
+	setupEndpoints      []openrouter.ModelEndpoint
+	setupEndpointID     string
+	setupEndpointErr    string
 }
 
 type adminLoadMsg struct {
@@ -111,18 +112,19 @@ func newAdminModel(ctx *SessionContext) adminModel {
 	}
 
 	m := adminModel{
-		ctx:             ctx,
-		audit:           mk(),
-		users:           mk(),
-		jobs:            mk(),
-		signal:          mk(),
-		setup:           mk(),
-		setupPath:       config.AdminEnvPath(ctx.Config.Paths.DataDir),
-		setupOpenRouter: masked("OpenRouter API key: "),
-		setupModel:      plain("OpenRouter model: "),
-		setupDiscord:    masked("Discord bot token: "),
-		setupSignal:     plain("Signal account number: "),
-		setupMasterKey:  masked("Secrets master key: "),
+		ctx:                 ctx,
+		audit:               mk(),
+		users:               mk(),
+		jobs:                mk(),
+		signal:              mk(),
+		setup:               mk(),
+		setupPath:           config.AdminEnvPath(ctx.Config.Paths.DataDir),
+		setupOpenRouter:     masked("OpenRouter API key: "),
+		setupModel:          plain("OpenRouter model: "),
+		setupSecondaryModel: plain("Secondary model (simpler tasks): "),
+		setupDiscord:        masked("Discord bot token: "),
+		setupSignal:         plain("Signal account number: "),
+		setupMasterKey:      masked("Secrets master key: "),
 	}
 	m.setSetupFocus(0)
 	return m
@@ -147,6 +149,7 @@ func (m adminModel) withSize(w, h int) adminModel {
 	inputW := max(24, w-6)
 	m.setupOpenRouter.SetWidth(inputW)
 	m.setupModel.SetWidth(inputW)
+	m.setupSecondaryModel.SetWidth(inputW)
 	m.setupDiscord.SetWidth(inputW)
 	m.setupSignal.SetWidth(inputW)
 	m.setupMasterKey.SetWidth(inputW)
@@ -246,6 +249,9 @@ func (m adminModel) loadTabCmd(tab adminTab) tea.Cmd {
 			if env.OpenRouterModel == "" {
 				env.OpenRouterModel = ctx.Config.OpenRouter.Model
 			}
+			if env.OpenRouterSecondaryModel == "" {
+				env.OpenRouterSecondaryModel = ctx.Config.OpenRouter.SecondaryModel
+			}
 			if env.DiscordBotToken == "" {
 				env.DiscordBotToken = ctx.Config.Discord.BotToken
 			}
@@ -285,6 +291,7 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 		case adminTabSetup:
 			m.setupOpenRouter.SetValue(msg.env.OpenRouterAPIKey)
 			m.setupModel.SetValue(msg.env.OpenRouterModel)
+			m.setupSecondaryModel.SetValue(msg.env.OpenRouterSecondaryModel)
 			m.setupDiscord.SetValue(msg.env.DiscordBotToken)
 			if msg.env.DiscordEnabled != nil {
 				m.setupDiscordOn = *msg.env.DiscordEnabled
@@ -413,15 +420,15 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
-		m.setSetupFocus((m.setupFocus + 1) % 8)
+		m.setSetupFocus((m.setupFocus + 1) % 9)
 		return m, nil
 	case "shift+tab":
-		m.setSetupFocus((m.setupFocus - 1 + 8) % 8)
+		m.setSetupFocus((m.setupFocus - 1 + 9) % 9)
 		return m, nil
 	case "ctrl+s":
 		return m, m.saveSetupCmd()
 	case " ":
-		if m.setupFocus == 4 {
+		if m.setupFocus == 5 {
 			m.setupDiscordOn = !m.setupDiscordOn
 			return m, nil
 		}
@@ -429,11 +436,11 @@ func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 		if m.setupFocus == 2 {
 			return m.chooseSetupModel()
 		}
-		if m.setupFocus == 4 {
+		if m.setupFocus == 5 {
 			m.setupDiscordOn = !m.setupDiscordOn
 			return m, nil
 		}
-		if m.setupFocus == 7 {
+		if m.setupFocus == 8 {
 			return m, m.saveSetupCmd()
 		}
 	case "up":
@@ -452,7 +459,7 @@ func (m adminModel) updateSetupKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
 }
 
 func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
-	if m.setupFocus == 2 || m.setupFocus == 4 || m.setupFocus == 7 {
+	if m.setupFocus == 2 || m.setupFocus == 5 || m.setupFocus == 8 {
 		return m, nil
 	}
 
@@ -465,10 +472,12 @@ func (m adminModel) updateSetupMsg(msg tea.Msg) (adminModel, tea.Cmd) {
 		before = m.setupModel.Value()
 		m.setupModel, cmd = m.setupModel.Update(msg)
 	case 3:
+		m.setupSecondaryModel, cmd = m.setupSecondaryModel.Update(msg)
+	case 4:
 		m.setupDiscord, cmd = m.setupDiscord.Update(msg)
-	case 5:
-		m.setupSignal, cmd = m.setupSignal.Update(msg)
 	case 6:
+		m.setupSignal, cmd = m.setupSignal.Update(msg)
+	case 7:
 		m.setupMasterKey, cmd = m.setupMasterKey.Update(msg)
 	}
 	if m.setupFocus == 1 && before != m.setupModel.Value() {
@@ -482,12 +491,13 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 	ctx := m.ctx
 	discordOn := m.setupDiscordOn
 	env := config.AdminEnv{
-		OpenRouterAPIKey: m.setupOpenRouter.Value(),
-		OpenRouterModel:  m.setupModel.Value(),
-		DiscordBotToken:  m.setupDiscord.Value(),
-		DiscordEnabled:   &discordOn,
-		SignalNumber:     m.setupSignal.Value(),
-		MasterKey:        m.setupMasterKey.Value(),
+		OpenRouterAPIKey:         m.setupOpenRouter.Value(),
+		OpenRouterModel:          m.setupModel.Value(),
+		OpenRouterSecondaryModel: m.setupSecondaryModel.Value(),
+		DiscordBotToken:          m.setupDiscord.Value(),
+		DiscordEnabled:           &discordOn,
+		SignalNumber:             m.setupSignal.Value(),
+		MasterKey:                m.setupMasterKey.Value(),
 	}
 	return func() tea.Msg {
 		if strings.TrimSpace(env.MasterKey) != "" {
@@ -501,6 +511,7 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 
 		ctx.Config.OpenRouter.APIKey = strings.TrimSpace(env.OpenRouterAPIKey)
 		ctx.Config.OpenRouter.Model = strings.TrimSpace(env.OpenRouterModel)
+		ctx.Config.OpenRouter.SecondaryModel = strings.TrimSpace(env.OpenRouterSecondaryModel)
 		ctx.Config.Discord.BotToken = strings.TrimSpace(env.DiscordBotToken)
 		ctx.Config.Discord.Enabled = discordOn
 		ctx.Config.Signal.AccountNumber = strings.TrimSpace(env.SignalNumber)
@@ -556,43 +567,25 @@ func (m *adminModel) rebuildUsersViewport() {
 
 func (m *adminModel) setSetupFocus(focus int) {
 	m.setupFocus = focus
+	m.setupOpenRouter.Blur()
+	m.setupModel.Blur()
+	m.setupSecondaryModel.Blur()
+	m.setupDiscord.Blur()
+	m.setupSignal.Blur()
+	m.setupMasterKey.Blur()
 	switch focus {
 	case 0:
 		m.setupOpenRouter.Focus()
-		m.setupModel.Blur()
-		m.setupDiscord.Blur()
-		m.setupSignal.Blur()
-		m.setupMasterKey.Blur()
 	case 1:
-		m.setupOpenRouter.Blur()
 		m.setupModel.Focus()
-		m.setupDiscord.Blur()
-		m.setupSignal.Blur()
-		m.setupMasterKey.Blur()
 	case 3:
-		m.setupOpenRouter.Blur()
-		m.setupModel.Blur()
+		m.setupSecondaryModel.Focus()
+	case 4:
 		m.setupDiscord.Focus()
-		m.setupSignal.Blur()
-		m.setupMasterKey.Blur()
-	case 5:
-		m.setupOpenRouter.Blur()
-		m.setupModel.Blur()
-		m.setupDiscord.Blur()
-		m.setupSignal.Focus()
-		m.setupMasterKey.Blur()
 	case 6:
-		m.setupOpenRouter.Blur()
-		m.setupModel.Blur()
-		m.setupDiscord.Blur()
-		m.setupSignal.Blur()
+		m.setupSignal.Focus()
+	case 7:
 		m.setupMasterKey.Focus()
-	default:
-		m.setupOpenRouter.Blur()
-		m.setupModel.Blur()
-		m.setupDiscord.Blur()
-		m.setupSignal.Blur()
-		m.setupMasterKey.Blur()
 	}
 }
 
@@ -940,7 +933,7 @@ func trimRunes(s string, maxLen int) string {
 
 func (m adminModel) renderSetup() string {
 	saveLabel := styleTab.Render(" save ")
-	if m.setupFocus == 7 {
+	if m.setupFocus == 8 {
 		saveLabel = styleTabActive.Render(" save ")
 	}
 
@@ -949,7 +942,7 @@ func (m adminModel) renderSetup() string {
 		discordState = "on"
 	}
 	discordToggle := styleMutedBg.Render("Discord gateway: " + discordState)
-	if m.setupFocus == 4 {
+	if m.setupFocus == 5 {
 		discordToggle = styleTabActive.Render(" Discord gateway: "+discordState+" ") +
 			styleDimBg.Render("  space · toggle")
 	}
@@ -962,6 +955,8 @@ func (m adminModel) renderSetup() string {
 	b.WriteString(m.setupModel.View() + "\n\n")
 	b.WriteString(m.renderSetupModelList() + "\n\n")
 	b.WriteString(m.renderSetupModelDetails() + "\n\n")
+	b.WriteString(m.setupSecondaryModel.View() + "\n")
+	b.WriteString(styleDimBg.Render("  used for simpler tasks (e.g. summarizing fetched pages); blank = same as primary") + "\n\n")
 	b.WriteString(m.setupDiscord.View() + "\n\n")
 	b.WriteString(discordToggle + "\n\n")
 	b.WriteString(m.setupSignal.View() + "\n\n")

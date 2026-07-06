@@ -1384,6 +1384,7 @@ func matchCommandSuggestions(text string, isAdmin bool) []chatSuggestion {
 		{Label: "/logout", InsertValue: "/logout", Detail: "log out of the SSH portal"},
 		{Label: "/confirm", InsertValue: "/confirm ", Detail: "approve a pending tool confirmation"},
 		{Label: "/tools list", InsertValue: "/tools list", Detail: "list available tools"},
+		{Label: "/tools categories", InsertValue: "/tools categories", Detail: "list tool categories"},
 		{Label: "/tools search", InsertValue: "/tools search ", Detail: "search tools"},
 		{Label: "/tools describe", InsertValue: "/tools describe ", Detail: "inspect one tool"},
 		{Label: "/subagent spawn", InsertValue: "/subagent spawn ", Detail: "start a background subagent"},

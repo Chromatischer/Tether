@@ -32,8 +32,9 @@ type webFetchArgs struct {
 
 func (t WebFetch) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "web-fetch",
-		Summary: "Fetch a URL over the network and cache the truncated response body.",
+		Name:     "web-fetch",
+		Category: tools.CategoryWeb,
+		Summary:  "Fetch a URL over the network and cache the truncated response body.",
 		WhenToUse: "Use this to retrieve page content. Then use fetch.summarize to get a safe markdown summary. " +
 			"Prefer fetch.summarize over returning raw bodies.",
 		Safety: "Network access. Authenticated fetches (secret_headers) and returning raw body require confirm_token.",

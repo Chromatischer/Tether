@@ -66,6 +66,12 @@ type MCPCaller interface {
 
 type LLM interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
+	// RunSecondaryPrompt runs a prompt against the cheaper/faster secondary
+	// model, used for simpler tasks like summarizing fetched content.
+	RunSecondaryPrompt(ctx context.Context, prompt string) (string, error)
+	// RunSecondaryPromptWithSystem runs a secondary-model prompt with a
+	// caller-controlled system message and separate (untrusted) user content.
+	RunSecondaryPromptWithSystem(ctx context.Context, system, user string) (string, error)
 	RunProactivePrompt(ctx context.Context, prompt string) (string, error)
 	RunProactivePromptForUser(ctx context.Context, userID int64, prompt string) (string, error)
 }
@@ -145,22 +151,16 @@ func (s *Session) AddInvokedSkill(name string, content string) {
 }
 
 func NewSession(reg *tools.Registry) *Session {
+	// Tools are enabled by category (group), not individually. A fresh session
+	// activates every tool in the default-on categories (see tools/category.go).
 	active := map[string]bool{}
-	// Minimal always-on tools.
-	// Note: keep this reasonably small; these are the most commonly needed capabilities.
-	active["tool.search"] = true
-	active["tool.enable"] = true
-	active["tool.describe"] = true
-	active["confirm.request"] = true
-	active["confirm.scope"] = true
-	active["read"] = true
-	active["write"] = true
-	active["web-search"] = true
-	active["web-fetch"] = true
-	active["fetch.summarize"] = true
-	active["subagent.spawn"] = true
-	active["subagent.status"] = true
-	active["skill.invoke"] = true
+	if reg != nil {
+		for _, cat := range tools.DefaultOnCategories() {
+			for _, name := range reg.ToolsInCategory(cat) {
+				active[name] = true
+			}
+		}
+	}
 	now := time.Now().UTC()
 	return &Session{
 		Registry:       reg,
@@ -230,4 +230,27 @@ func (s *Session) Enable(name string) error {
 	}
 	s.Active[name] = true
 	return nil
+}
+
+// EnableCategory activates every allowed tool in a category for this session.
+// It returns the list of tool names that were enabled. Tools not allowed in the
+// session are skipped silently (they are not part of this session's universe).
+func (s *Session) EnableCategory(category string) ([]string, error) {
+	if s.Registry == nil {
+		return nil, fmt.Errorf("tool registry not configured")
+	}
+	category = strings.TrimSpace(category)
+	if !tools.IsValidCategory(category) {
+		return nil, fmt.Errorf("unknown category: %q (valid: %s)", category, strings.Join(tools.CategoryNames(), ", "))
+	}
+	names := s.Registry.ToolsInCategory(category)
+	enabled := make([]string, 0, len(names))
+	for _, name := range names {
+		if !s.IsAllowed(name) {
+			continue
+		}
+		s.Active[name] = true
+		enabled = append(enabled, name)
+	}
+	return enabled, nil
 }

@@ -15,6 +15,9 @@ openrouter:
   api_key: ""
   base_url: "https://openrouter.ai/api/v1"
   model: "z-ai/glm-5.1"
+  # Cheaper/faster model for simpler tasks (e.g. summarizing fetched pages).
+  # Leave blank to reuse the primary model above.
+  secondary_model: ""
 
   # Provider routing preferences passed through to OpenRouter.
   # See OpenRouter provider routing documentation.
@@ -27,6 +30,8 @@ deepseek:
   api_key: ""
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
+  # Cheaper/faster model for simpler tasks. Blank reuses the primary model.
+  secondary_model: ""
 
 secrets:
   # Prefer env var TETHER_MASTER_KEY (base64 32 bytes). Generate with:

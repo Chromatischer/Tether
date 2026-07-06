@@ -295,7 +295,7 @@ func (m settingsModel) updateRules(msg tea.KeyPressMsg) (settingsModel, tea.Cmd)
 				m.statusErr = true
 			} else {
 				m.rulesContent = yaml
-				m.status = "rules saved"
+				m.status = "Saved ✓"
 				m.statusErr = false
 			}
 			m.rebuildSections()
@@ -338,7 +338,7 @@ func (m settingsModel) updateConfirm(msg tea.KeyPressMsg) (settingsModel, tea.Cm
 			m.status = "save error: " + err.Error()
 			m.statusErr = true
 		} else {
-			m.status = "saved: " + chosen
+			m.status = "Saved ✓"
 			m.statusErr = false
 		}
 		m.rebuildSections()
@@ -430,7 +430,7 @@ func (m settingsModel) updateRetention(msg tea.KeyPressMsg) (settingsModel, tea.
 				m.statusErr = true
 			} else {
 				m.retentionDays = days
-				m.status = "chat retention saved"
+				m.status = "Saved ✓"
 				m.statusErr = false
 			}
 		} else {
@@ -447,7 +447,7 @@ func (m settingsModel) updateRetention(msg tea.KeyPressMsg) (settingsModel, tea.
 				m.statusErr = true
 			} else {
 				m.retentionMemDays = days
-				m.status = "memory retention saved"
+				m.status = "Saved ✓"
 				m.statusErr = false
 			}
 		}

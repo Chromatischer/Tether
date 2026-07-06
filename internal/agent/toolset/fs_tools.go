@@ -26,8 +26,9 @@ type readFileArgs struct {
 
 func (t ReadFile) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "read",
-		Summary: "Read a file from the user sandbox (relative path).",
+		Name:     "read",
+		Category: tools.CategoryFiles,
+		Summary:  "Read a file from the user sandbox (relative path).",
 		WhenToUse: "Use this to inspect code/config/data inside the sandbox. " +
 			"Output is truncated (currently ~32KiB) to protect context size.",
 		Safety: "Read-only. Cannot access absolute paths; path must stay within the sandbox.",
@@ -117,8 +118,9 @@ type writeFileArgs struct {
 
 func (t WriteFile) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
-		Name:    "write",
-		Summary: "Write a file in the user sandbox (relative path).",
+		Name:     "write",
+		Category: tools.CategoryFiles,
+		Summary:  "Write a file in the user sandbox (relative path).",
 		WhenToUse: "Use this to create new files or update files. Prefer small, targeted writes. " +
 			"If the file already exists, read it first in the same session so you have current context before overwriting it.",
 		Safety: "Creating new files is allowed. Overwriting an existing file requires that the same session has already read that path. Personality files under config/agents/**/PERSONALITY.md remain self-editable and keep backups. Symlinks are rejected.",

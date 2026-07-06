@@ -19,8 +19,11 @@ type ToolExample struct {
 }
 
 type ToolSpec struct {
-	Name         string        `json:"name"`
-	Summary      string        `json:"summary"`
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+	// Category is the enablement group this tool belongs to (see category.go).
+	// Tools are enabled by category/group, not individually.
+	Category     string        `json:"category,omitempty"`
 	WhenToUse    string        `json:"when_to_use,omitempty"`
 	Safety       string        `json:"safety,omitempty"`
 	InputSchema  any           `json:"input_schema"`
@@ -37,8 +40,11 @@ type ToolSpec struct {
 type ToolInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Category is the group the tool belongs to. The agent enables a whole
+	// category at once via tool.enable.
+	Category string `json:"category,omitempty"`
 }
 
 func (s ToolSpec) Info() ToolInfo {
-	return ToolInfo{Name: s.Name, Description: s.Summary}
+	return ToolInfo{Name: s.Name, Description: s.Summary, Category: s.Category}
 }

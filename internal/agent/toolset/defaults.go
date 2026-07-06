@@ -9,6 +9,7 @@ func DefaultTools() map[string]Tool {
 		"tool.enable":     ToolEnable{},
 		"tool.describe":   ToolDescribe{},
 		"bash":            Bash{},
+		"admin.bash":      AdminBash{},
 		"read":            ReadFile{},
 		"write":           WriteFile{},
 		"web-search":      WebSearch{},

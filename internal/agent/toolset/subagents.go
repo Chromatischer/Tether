@@ -24,6 +24,7 @@ type subagentSpawnArgs struct {
 func (t SubagentSpawn) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:      "subagent.spawn",
+		Category:  tools.CategorySubagents,
 		Summary:   "Spawn a constrained background sub-agent run asynchronously with a caller-selected toolset and at most one preloaded skill.",
 		WhenToUse: "Use this for long-running, multi-step work that should continue in the background without blocking the main conversation loop (e.g., deep repo analysis). After spawning it, you can either keep working and interacting with the user while it runs, or poll subagent.status until it finishes if its result is on your critical path. You must decide the subagent's toolset up front and should keep it as narrow as possible for the task.",
 		Safety:    "Subagents are intentionally constrained: the spawning agent chooses the exact tools they may use, they cannot spawn further subagents, and they cannot invoke new skills after launch. This keeps delegation bounded, prevents recursive agent trees, and avoids uncontrolled skill/tool expansion inside background runs.",
@@ -100,6 +101,7 @@ type subagentStatusArgs struct {
 func (t SubagentStatus) Spec() tools.ToolSpec {
 	return tools.ToolSpec{
 		Name:      "subagent.status",
+		Category:  tools.CategorySubagents,
 		Summary:   "Get live status for a spawned sub-agent run, including current state and recent progress history.",
 		WhenToUse: "Use this after subagent.spawn when the subagent is running in the background and you want to inspect its current status, latest text, or recent tool/activity history without blocking the main conversation. Poll it when you need to wait for completion; otherwise continue working and check back later.",
 		Safety:    "Read-only. This lets the main agent either monitor background work while continuing to interact with the user or explicitly poll until the subagent finishes.",
