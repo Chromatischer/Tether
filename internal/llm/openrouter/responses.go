@@ -35,12 +35,25 @@ type ResponsesRequest struct {
 	ToolChoice any                 `json:"tool_choice,omitempty"`
 	Reasoning  *ResponsesReasoning `json:"reasoning,omitempty"`
 
+	// Include requests extra fields on output items. We use
+	// "reasoning.encrypted_content" so providers (Anthropic, OpenAI o-series)
+	// return the signed/encrypted reasoning payload, which can then be replayed
+	// in follow-up turns without tripping signature validation.
+	// Docs: https://openrouter.ai/docs/api/reference/responses/overview
+	Include []string `json:"include,omitempty"`
+
 	// Provider routing preferences (OpenRouter-specific).
 	Provider *ProviderPreferences `json:"provider,omitempty"`
 }
 
 type ResponsesReasoning struct {
+	// Effort pins the reasoning depth (low|medium|high). Left empty for
+	// adaptive reasoning, where Enabled is set instead and the model decides
+	// how much to spend.
 	Effort string `json:"effort,omitempty"`
+	// Enabled turns reasoning on without pinning an effort. Pointer so the
+	// field is omitted unless explicitly set.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type ResponsesTool struct {
@@ -119,9 +132,13 @@ func (p *ReasoningSummaryPart) UnmarshalJSON(data []byte) error {
 }
 
 type ContentPart struct {
-	Type        string `json:"type"` // input_text|output_text
+	Type        string `json:"type"` // input_text|output_text|input_image
 	Text        string `json:"text,omitempty"`
 	Annotations any    `json:"annotations,omitempty"`
+	// ImageURL carries image input for vision models. In the Responses API this
+	// is a plain string and may be an https URL or a data: URL
+	// (e.g. "data:image/png;base64,..."). Only set when Type is "input_image".
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type ResponsesUsage struct {

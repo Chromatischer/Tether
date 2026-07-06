@@ -7,8 +7,8 @@ import (
 )
 
 type ConversationSummary struct {
-	Summary                  string
-	UpdatedAt                time.Time
+	Summary                    string
+	UpdatedAt                  time.Time
 	SummarizedThroughMessageID int64
 }
 

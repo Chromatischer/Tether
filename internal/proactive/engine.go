@@ -190,9 +190,27 @@ func (e *Engine) Tick(ctx context.Context, now time.Time) error {
 				if !dueAt(now, hhmm) {
 					continue
 				}
+				// A condition, when present, gates the scheduled run.
+				if !e.conditionMet(ctx, uid, ar) {
+					continue
+				}
 				trigger := "time:" + hhmm
 				prompt := e.customAgentPrompt(uid, ar, agID, "scheduled", hhmm, nil)
 				e.runCustomAgent(ctx, uid, ar, agID, "agent/"+agID, trigger, dayKey, "scheduled_due", prompt, startOfDay)
+			}
+
+			// Condition-only agents (no schedule/events/actions): poll the
+			// predicate and run when it passes.
+			if ar.Condition != nil && len(ar.ScheduleTimes) == 0 && len(ar.Events) == 0 && len(ar.Actions) == 0 {
+				poll := ar.Condition.PollMinutes
+				if poll <= 0 {
+					poll = 5
+				}
+				if (now.Unix()/60)%int64(poll) == 0 && e.conditionMet(ctx, uid, ar) {
+					trigger := conditionTrigger(now, ar)
+					prompt := e.customAgentPrompt(uid, ar, agID, "condition", "met", nil)
+					e.runCustomAgent(ctx, uid, ar, agID, "agent/"+agID, trigger, dayKey, "condition_met", prompt, startOfDay)
+				}
 			}
 		}
 
@@ -359,6 +377,10 @@ func (e *Engine) triggerForAgents(ctx context.Context, userID int64, triggerType
 			match = strings.EqualFold(agID, triggerName)
 		}
 		if !match {
+			continue
+		}
+		// A condition, when present, also gates event/action-triggered runs.
+		if !e.conditionMet(ctx, userID, ar) {
 			continue
 		}
 
@@ -653,6 +675,14 @@ func (e *Engine) loadRulesForUser(userID int64) (Rules, error) {
 	}
 	if strings.TrimSpace(rules.OpenLoops.Time) == "" {
 		rules.OpenLoops.Time = "20:00"
+	}
+
+	// Custom proactive agents are folder-based only; legacy YAML `agents:` is not
+	// supported. The agent list comes entirely from the user's agents/ directory.
+	rules.Agents = nil
+	if strings.TrimSpace(e.dataDir) != "" {
+		agentsDir := userspace.ForUser(e.dataDir, userID).Agents
+		rules.Agents = loadFolderAgents(agentsDir)
 	}
 
 	e.ensurePersonalities(userID, rules)

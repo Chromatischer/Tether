@@ -296,6 +296,38 @@ func TestResponsesStream_PreservesReasoningSummaryItem(t *testing.T) {
 	}
 }
 
+func TestResponsesStream_PreservesReasoningEncryptedContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}",
+			"",
+			"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"signed-blob\"}}",
+			"",
+			"data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_enc\",\"status\":\"completed\"}}",
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "")
+	resp, err := c.ResponsesStream(context.Background(), ResponsesRequest{
+		Model: "m",
+		Input: []ResponseItem{{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: "hi"}}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "reasoning" {
+		t.Fatalf("expected reconstructed reasoning item, got %+v", resp)
+	}
+	if resp.Output[0].EncryptedContent != "signed-blob" {
+		t.Fatalf("expected encrypted_content to survive reconstruction, got %+v", resp.Output[0])
+	}
+}
+
 func TestResponsesStream_ReconstructsFunctionCallArgumentsFromDeltas(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -474,5 +506,19 @@ func TestReasoningSummaryPart_MarshalsResponsesAPIShape(t *testing.T) {
 	}
 	if back.Text != "because reasons" {
 		t.Fatalf("round-trip lost text: %q", back.Text)
+	}
+}
+
+func TestResponsesRequest_IncludesEncryptedReasoning(t *testing.T) {
+	b, err := json.Marshal(ResponsesRequest{
+		Model:   "anthropic/claude-x",
+		Input:   "hi",
+		Include: []string{"reasoning.encrypted_content"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"include":["reasoning.encrypted_content"]`) {
+		t.Fatalf("expected include field in request, got %s", b)
 	}
 }

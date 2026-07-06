@@ -18,13 +18,16 @@ import (
 	"tether/internal/portal"
 	"tether/internal/proactive"
 	signalgw "tether/internal/signal"
+	"tether/internal/term"
 )
 
 func main() {
 	var cfgPath string
 	var gradientTest bool
+	var termMode bool
 	flag.StringVar(&cfgPath, "config", "./config/tether.yaml", "path to tether config")
 	flag.BoolVar(&gradientTest, "gradient-test", false, "run the SSH portal in gradient test mode")
+	flag.BoolVar(&termMode, "term", false, "run the TUI locally in this terminal (no SSH, no connectors)")
 	flag.Parse()
 
 	cfg, err := config.Load(cfgPath)
@@ -32,8 +35,7 @@ func main() {
 		log.Fatal("failed to load config", "error", err)
 	}
 
-	logger := log.NewWithOptions(os.Stderr, log.Options{Level: cfg.LogLevelParsed})
-	log.SetDefault(logger)
+	log.SetDefault(log.NewWithOptions(os.Stderr, log.Options{Level: cfg.LogLevelParsed}))
 
 	database, err := db.Open(cfg.DB.Path)
 	if err != nil {
@@ -46,6 +48,13 @@ func main() {
 	}
 
 	ag := agent.New(cfg, database)
+
+	if termMode {
+		if err := term.Run(cfg, database, ag); err != nil {
+			log.Fatal("terminal mode error", "error", err)
+		}
+		return
+	}
 
 	sigGW := signalgw.NewGateway(cfg, database, ag)
 	discGW := discordgw.NewGateway(cfg, database, ag)

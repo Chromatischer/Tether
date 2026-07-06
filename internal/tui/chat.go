@@ -2,9 +2,12 @@ package tui
 
 import (
 	"database/sql"
+	"fmt"
+	"image/color"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +46,20 @@ type chatMessage struct {
 	requestID int
 	dbID      int64
 	expanded  bool
+	ts        time.Time // when the message was created; zero = no timestamp shown
+}
+
+// sessionMetrics is a lightweight snapshot of agent session state rendered in
+// the chat status bar. Populated from agent.SessionStatus by the parent model.
+type sessionMetrics struct {
+	hasData     bool
+	contextPct  float64
+	contextOK   bool // a context limit was known, so the gauge is meaningful
+	totalTokens int
+	lastModel   string
+	totalCost   float64
+	toolCalls   int
+	activeRuns  int
 }
 
 type chatModel struct {
@@ -74,7 +91,18 @@ type chatModel struct {
 	polling bool
 	err     error
 	term    TerminalProfile
+	metrics sessionMetrics
+
+	// Inspector: a right-side debug pane (toggle ctrl+o) pinned to a selected
+	// message. inspectorSel < 0 means "follow the latest message".
+	inspectorOpen bool
+	inspectorSel  int
+	inspectorVP   viewport.Model
 }
+
+// inspectorMinWidth is the terminal width below which the inspector overlays
+// the transcript area instead of splitting beside it.
+const inspectorMinWidth = 100
 
 type chatSendMsg struct {
 	Text string
@@ -94,6 +122,11 @@ type agentReplyMsg struct {
 	Text           string
 	Reasoning      string
 	ToolCalls      []toolCallEntry
+	// ReasoningItems is the signed reasoning behind the answer; Model is the
+	// model that produced it. Persisted so reasoning can be replayed on later
+	// turns (see store.SetMessageReasoning).
+	ReasoningItems []store.ReasoningBlock
+	Model          string
 }
 
 type loginSuccessMsg struct {
@@ -150,10 +183,16 @@ func newChatModel() chatModel {
 	ta.ShowLineNumbers = false
 	// Enter sends a message; keep composing single-line for now.
 	ta.KeyMap.InsertNewline.SetEnabled(false)
+	// Some terminals send a distinct sequence for shift+backspace; treat it as
+	// a normal backspace so it still deletes.
+	ta.KeyMap.DeleteCharacterBackward.SetKeys("backspace", "ctrl+h", "shift+backspace")
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
 	vp.KeyMap.Left.SetEnabled(false)
 	vp.KeyMap.Right.SetEnabled(false)
+
+	ivp := viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
+	ivp.KeyMap = viewport.KeyMap{} // scrolled programmatically, not focused
 
 	return chatModel{
 		viewport:            vp,
@@ -162,6 +201,8 @@ func newChatModel() chatModel {
 		pendingAssistantIdx: map[int]int{},
 		streamingToolCalls:  map[int][]int{},
 		streamStates:        map[int]streamState{},
+		inspectorVP:         ivp,
+		inspectorSel:        -1,
 	}
 }
 
@@ -203,6 +244,13 @@ func (m chatModel) withTerminalProfile(term TerminalProfile) chatModel {
 	return m
 }
 
+// withSessionMetrics updates the snapshot rendered in the status bar. The
+// active-runs count is owned by the parent model and passed through.
+func (m chatModel) withSessionMetrics(mt sessionMetrics) chatModel {
+	m.metrics = mt
+	return m
+}
+
 func (m chatModel) withSize(w, h int) chatModel {
 	if w <= 0 || h <= 0 {
 		return m
@@ -218,12 +266,28 @@ func (m chatModel) withSize(w, h int) chatModel {
 	inputInnerW := max(10, composerW-promptW-styleChatInputBox.GetHorizontalFrameSize())
 	m.textarea.SetWidth(inputInnerW)
 	composerH := m.composerHeight(innerW)
-	viewportH := max(3, h-composerH-styleChatTranscript.GetVerticalFrameSize())
+	const statusBarH = 1 // bottom instrument cluster
+	viewportH := max(3, h-composerH-statusBarH-styleChatTranscript.GetVerticalFrameSize())
+
+	// When the inspector is open on a wide-enough terminal, split the top area:
+	// transcript on the left, inspector on the right, with a 1-col divider.
+	// On narrow terminals it overlays the transcript at full width.
+	if m.inspectorOpen {
+		if innerW >= inspectorMinWidth {
+			inspectorW := min(64, max(36, innerW/3))
+			transcriptW = max(18, innerW-inspectorW-1-styleChatTranscript.GetHorizontalFrameSize())
+			m.inspectorVP.SetWidth(inspectorW)
+		} else {
+			m.inspectorVP.SetWidth(innerW)
+		}
+		m.inspectorVP.SetHeight(viewportH)
+	}
 
 	m.viewport.SetWidth(transcriptW)
 	m.viewport.SetHeight(viewportH)
 	m.reflow()
 	m.viewport.GotoBottom()
+	m.refreshInspector()
 	return m
 }
 
@@ -360,6 +424,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+o":
+			m = m.toggleInspector()
 			return m, nil
 		}
 
@@ -370,6 +435,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
+			if m.inspectorOpen {
+				m = m.selectInspectorAt(msg.Y)
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m, cmd = m.handleClick(msg.Y)
 			return m, cmd
@@ -391,7 +460,20 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 func (m chatModel) View() tea.View {
 	innerW := max(20, m.width)
 
-	transcript := styleChatTranscript.Width(innerW).Render(m.viewport.View())
+	var transcript string
+	switch {
+	case m.inspectorOpen && innerW >= inspectorMinWidth && m.inspectorVP.Width() > 0:
+		left := styleChatTranscript.Width(m.viewport.Width()).Render(m.viewport.View())
+		divLine := styleInspectorDivider.Render("│")
+		divider := strings.TrimSuffix(strings.Repeat(divLine+"\n", lipgloss.Height(left)), "\n")
+		right := styleInspector.Width(m.inspectorVP.Width()).Render(m.inspectorVP.View())
+		transcript = lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+	case m.inspectorOpen && m.inspectorVP.Width() > 0:
+		// Narrow terminal: inspector overlays the transcript.
+		transcript = styleInspector.Width(innerW).Render(m.inspectorVP.View())
+	default:
+		transcript = styleChatTranscript.Width(innerW).Render(m.viewport.View())
+	}
 
 	composerW := max(18, innerW-styleChatComposer.GetHorizontalFrameSize())
 
@@ -420,9 +502,90 @@ func (m chatModel) View() tea.View {
 		composerBody = rendered + "\n" + composerBody
 	}
 	composer := styleChatComposer.Width(innerW).Render(composerBody)
+	statusBar := m.renderStatusBar(innerW)
 
-	content := lipgloss.JoinVertical(lipgloss.Left, transcript, composer)
+	content := lipgloss.JoinVertical(lipgloss.Left, transcript, composer, statusBar)
 	return tea.NewView(content)
+}
+
+// renderStatusBar renders the bottom instrument cluster: context-window gauge,
+// token total, cost, active runs, and the active model — plus key hints.
+func (m chatModel) renderStatusBar(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	seg := func(k, v string) string {
+		return styleStatusKey.Render(k) + styleStatusBar.Render(" ") + styleStatusVal.Render(v)
+	}
+	gap := styleStatusBar.Render("   ")
+
+	parts := []string{}
+	mt := m.metrics
+	if mt.hasData && mt.contextOK {
+		parts = append(parts, seg("ctx", fmt.Sprintf("%.0f%%", mt.contextPct))+styleStatusBar.Render(" ")+renderGauge(mt.contextPct))
+	}
+	if mt.hasData && mt.totalTokens > 0 {
+		parts = append(parts, seg("tok", formatTokens(mt.totalTokens)))
+	}
+	if mt.hasData && mt.totalCost > 0 {
+		parts = append(parts, seg("$", fmt.Sprintf("%.3f", mt.totalCost)))
+	}
+	parts = append(parts, seg("runs", strconv.Itoa(mt.activeRuns)))
+	if mt.hasData {
+		if sm := shortModel(mt.lastModel); sm != "" {
+			parts = append(parts, styleStatusDim.Render(sm))
+		}
+	}
+	left := strings.Join(parts, gap)
+	inspectHint := "^o inspect"
+	if m.inspectorOpen {
+		inspectHint = "^o close"
+	}
+	hint := styleStatusDim.Render("tab cycle · ⏎ send · " + inspectHint)
+
+	leftW := lipgloss.Width(left)
+	hintW := lipgloss.Width(hint)
+	if leftW+hintW+1 > width {
+		hint = ""
+		hintW = 0
+	}
+	fill := max(1, width-leftW-hintW)
+	line := left + styleStatusBar.Render(strings.Repeat(" ", fill)) + hint
+	return styleStatusBar.Width(width).MaxWidth(width).Render(line)
+}
+
+// renderGauge draws an 8-cell context-window meter.
+func renderGauge(pct float64) string {
+	const cells = 8
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := int(pct/100*cells + 0.5)
+	on := styleStatusGaugeOn.Render(strings.Repeat("█", filled))
+	off := styleStatusGaugeOff.Render(strings.Repeat("▁", cells-filled))
+	return styleStatusDim.Render("▕") + on + off + styleStatusDim.Render("▏")
+}
+
+func formatTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return strconv.Itoa(n)
+}
+
+// shortModel trims provider prefixes from a model id for compact display.
+func shortModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	if i := strings.LastIndex(model, "/"); i >= 0 && i < len(model)-1 {
+		return model[i+1:]
+	}
+	return model
 }
 
 func (m chatModel) cursor() *tea.Cursor {
@@ -464,6 +627,160 @@ func (m *chatModel) reflow() {
 	}
 	m.rowHits = hits
 	m.viewport.SetContent(strings.Join(lines, "\n\n"))
+	m.refreshInspector()
+}
+
+// selectedInspectorIndex resolves the message the inspector is pinned to,
+// defaulting to the latest message when following (inspectorSel < 0).
+func (m chatModel) selectedInspectorIndex() int {
+	if len(m.messages) == 0 {
+		return -1
+	}
+	if m.inspectorSel >= 0 && m.inspectorSel < len(m.messages) {
+		return m.inspectorSel
+	}
+	return len(m.messages) - 1
+}
+
+func (m *chatModel) refreshInspector() {
+	if !m.inspectorOpen || m.inspectorVP.Width() <= 0 {
+		return
+	}
+	atBottom := m.inspectorVP.AtBottom()
+	setViewportContent(&m.inspectorVP, m.renderInspectorContent(m.inspectorVP.Width()), colorHeaderBg)
+	if atBottom && m.inspectorSel < 0 {
+		m.inspectorVP.GotoBottom()
+	}
+}
+
+// selectInspectorAt pins the inspector to the transcript row clicked at body
+// row y (1-based screen coords, header consumes row 0).
+func (m chatModel) selectInspectorAt(y int) chatModel {
+	if y <= 0 {
+		return m
+	}
+	line := m.viewport.YOffset() + (y - 1)
+	for _, hit := range m.rowHits {
+		if line < hit.startLine || line >= hit.endLine {
+			continue
+		}
+		if hit.msgIndex >= 0 && hit.msgIndex < len(m.messages) {
+			m.inspectorSel = hit.msgIndex
+			m.refreshInspector()
+		}
+		return m
+	}
+	return m
+}
+
+func inspectorRoleLabel(role string) string {
+	switch role {
+	case "user":
+		return "user"
+	case "assistant", "assistant_pending":
+		return "assistant"
+	case "assistant_reasoning":
+		return "reasoning"
+	case "tool_call":
+		return "tool call"
+	default:
+		return "system"
+	}
+}
+
+// renderInspectorContent builds the read-only debug pane: session metrics plus
+// the full raw detail of the selected message (tool args/results, reasoning…).
+func (m chatModel) renderInspectorContent(width int) string {
+	w := max(20, width-1)
+	rule := styleInspectorDim.Render(strings.Repeat("─", w))
+	kv := func(k, v string) string { return styleInspectorKey.Render(k+": ") + styleInspectorVal.Render(v) }
+
+	var b strings.Builder
+	idx := m.selectedInspectorIndex()
+	if idx < 0 {
+		b.WriteString(styleInspectorTitle.Render("INSPECTOR") + "\n")
+		b.WriteString(styleInspectorDim.Render("no messages yet"))
+		return b.String()
+	}
+
+	follow := ""
+	if m.inspectorSel < 0 {
+		follow = " (live)"
+	}
+	b.WriteString(styleInspectorTitle.Render("INSPECTOR") +
+		styleInspectorDim.Render(fmt.Sprintf("  msg %d/%d%s", idx+1, len(m.messages), follow)) + "\n")
+	b.WriteString(rule + "\n")
+
+	mt := m.metrics
+	if mt.hasData {
+		if sm := shortModel(mt.lastModel); sm != "" {
+			b.WriteString(kv("model", sm) + "\n")
+		}
+		if mt.totalTokens > 0 {
+			b.WriteString(kv("tokens", formatTokens(mt.totalTokens)) + "\n")
+		}
+		if mt.contextOK {
+			b.WriteString(kv("ctx", fmt.Sprintf("%.0f%%", mt.contextPct)) + "\n")
+		}
+		if mt.totalCost > 0 {
+			b.WriteString(kv("cost", fmt.Sprintf("$%.4f", mt.totalCost)) + "\n")
+		}
+		b.WriteString(kv("tools", strconv.Itoa(mt.toolCalls)) + "\n")
+		b.WriteString(kv("runs", strconv.Itoa(mt.activeRuns)) + "\n")
+	} else {
+		b.WriteString(styleInspectorDim.Render("no usage data yet") + "\n")
+	}
+	b.WriteString(rule + "\n")
+
+	msg := m.messages[idx]
+	head := styleInspectorTitle.Render(inspectorRoleLabel(msg.role))
+	if !msg.ts.IsZero() {
+		head += styleInspectorDim.Render("  " + msg.ts.Local().Format("15:04:05"))
+	}
+	b.WriteString(head + "\n\n")
+
+	if msg.role == "tool_call" {
+		if entry, ok := parseToolCallContent(msg.content); ok {
+			b.WriteString(kv("name", entry.Name) + "\n")
+			if args := strings.TrimSpace(entry.Args); args != "" {
+				b.WriteString("\n" + styleInspectorKey.Render("args") + "\n")
+				b.WriteString(styleInspectorDim.Render(lipgloss.Wrap(args, w, " ")) + "\n")
+			}
+			if res := strings.TrimSpace(entry.Result); res != "" {
+				label := "result"
+				resStyle := styleInspectorVal
+				if toolResultIsError(res) {
+					label = "result (error)"
+					resStyle = styleToolErrBody
+				}
+				b.WriteString("\n" + styleInspectorKey.Render(label) + "\n")
+				b.WriteString(resStyle.Render(lipgloss.Wrap(res, w, " ")))
+			} else {
+				b.WriteString("\n" + styleInspectorDim.Render("· running…"))
+			}
+			return b.String()
+		}
+	}
+
+	body := strings.TrimSpace(msg.content)
+	if body == "" {
+		b.WriteString(styleInspectorDim.Render("(empty)"))
+	} else {
+		b.WriteString(styleInspectorVal.Render(lipgloss.Wrap(body, w, " ")))
+	}
+	return b.String()
+}
+
+// toggleInspector opens/closes the inspector and re-lays out the chat.
+func (m chatModel) toggleInspector() chatModel {
+	m.inspectorOpen = !m.inspectorOpen
+	if m.inspectorOpen {
+		m.inspectorSel = -1 // follow latest on open
+	}
+	if m.width > 0 && m.height > 0 {
+		m = m.withSize(m.width, m.height)
+	}
+	return m
 }
 
 func (m chatModel) appendLocal(sender, text string) chatModel {
@@ -480,7 +797,7 @@ func (m chatModel) appendLocal(sender, text string) chatModel {
 	default:
 		role = "system"
 	}
-	m.messages = append(m.messages, chatMessage{role: m.normalizeRole(role, text), content: text})
+	m.messages = append(m.messages, chatMessage{role: m.normalizeRole(role, text), content: text, ts: time.Now()})
 	m.reflow()
 	m.viewport.GotoBottom()
 	return m
@@ -517,6 +834,9 @@ func (m *chatModel) ensureStreamState(requestID int) {
 
 func (m chatModel) appendMessage(msg chatMessage) chatModel {
 	msg.role = m.normalizeRole(msg.role, msg.content)
+	if msg.ts.IsZero() {
+		msg.ts = time.Now()
+	}
 	if msg.role == "assistant_reasoning" || msg.role == "tool_call" {
 		msg.expanded = true
 	}
@@ -695,7 +1015,13 @@ func (m chatModel) hasStreamingToolCall(requestID int, name, args string) bool {
 }
 
 func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) (int, bool) {
-	for _, idx := range m.streamingToolCalls[requestID] {
+	// A call event with no result starts a fresh row.
+	if strings.TrimSpace(entry.Result) == "" {
+		return 0, false
+	}
+	calls := m.streamingToolCalls[requestID]
+	// Prefer an exact name+args match that is still running.
+	for _, idx := range calls {
 		if idx < 0 || idx >= len(m.messages) {
 			continue
 		}
@@ -704,20 +1030,37 @@ func (m chatModel) findStreamingToolCallRow(requestID int, entry toolCallEntry) 
 			continue
 		}
 		parsed, ok := parseToolCallContent(msg.content)
-		if !ok || parsed.Name != entry.Name {
+		if !ok || strings.TrimSpace(parsed.Result) != "" {
 			continue
 		}
-		if strings.TrimSpace(entry.Result) != "" &&
-			toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) &&
-			strings.TrimSpace(parsed.Result) == "" {
+		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
 			return idx, true
 		}
+	}
+	// Fall back to the oldest still-running row with the same name. The args in
+	// the call event can differ from the result event (e.g. streamed/truncated
+	// JSON), so name+running is enough to avoid orphaning a "running…" row.
+	for _, idx := range calls {
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok || parsed.Name != entry.Name || strings.TrimSpace(parsed.Result) != "" {
+			continue
+		}
+		return idx, true
 	}
 	return 0, false
 }
 
 func (m chatModel) findStreamingToolCallRowIncludingCompleted(requestID int, entry toolCallEntry, used map[int]bool) (int, bool) {
-	for _, idx := range m.streamingToolCalls[requestID] {
+	calls := m.streamingToolCalls[requestID]
+	// Prefer an exact name+args match.
+	for _, idx := range calls {
 		if used != nil && used[idx] {
 			continue
 		}
@@ -733,6 +1076,27 @@ func (m chatModel) findStreamingToolCallRowIncludingCompleted(requestID int, ent
 			continue
 		}
 		if toolCallKey(parsed.Name, parsed.Args) == toolCallKey(entry.Name, entry.Args) {
+			return idx, true
+		}
+	}
+	// Fall back to the first unused row with the same name, so the final reply
+	// reconciles with a streamed row whose args differed instead of duplicating.
+	for _, idx := range calls {
+		if used != nil && used[idx] {
+			continue
+		}
+		if idx < 0 || idx >= len(m.messages) {
+			continue
+		}
+		msg := m.messages[idx]
+		if msg.requestID != requestID || msg.role != "tool_call" {
+			continue
+		}
+		parsed, ok := parseToolCallContent(msg.content)
+		if !ok {
+			continue
+		}
+		if parsed.Name == entry.Name {
 			return idx, true
 		}
 	}
@@ -780,6 +1144,24 @@ func (m chatModel) finishStreamingAssistant(requestID int, text string, reasonin
 	delete(m.pendingAssistantIdx, requestID)
 	m.reflow()
 	m.viewport.GotoBottom()
+	return m
+}
+
+// persistReasoningForRequest attaches the signed reasoning blocks to the most
+// recent persisted assistant message for the given request, so it can be
+// replayed on later turns.
+func (m chatModel) persistReasoningForRequest(requestID int, model string, blocks []store.ReasoningBlock) chatModel {
+	if len(blocks) == 0 || m.db == nil || m.convID == 0 {
+		return m
+	}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.requestID != requestID || msg.role != "assistant" || msg.dbID == 0 {
+			continue
+		}
+		_ = store.SetMessageReasoning(m.db, msg.dbID, m.convID, model, blocks)
+		break
+	}
 	return m
 }
 
@@ -903,6 +1285,45 @@ func (m chatModel) movePendingAssistantToEnd(requestID int) chatModel {
 	return m
 }
 
+// parseDBTime parses the SQLite created_at string (strftime
+// '%Y-%m-%dT%H:%M:%fZ') into a time.Time, returning zero on failure.
+func parseDBTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05.000Z", time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+// tsPrefix renders a dim "HH:MM" timestamp prefix for a message label line on
+// the canvas background. Returns "" for zero times so synthetic/local messages
+// don't show "00:00".
+func tsPrefix(t time.Time) string {
+	return tsPrefixBg(t, colorBg)
+}
+
+// tsPrefixBg is like tsPrefix but carries an explicit background. lipgloss v2
+// drops the strip background after the first inner styled span, so the
+// timestamp (and the spacer after it) must paint the strip bg themselves or the
+// rest of the label line renders on the terminal default bg.
+func tsPrefixBg(t time.Time, bg color.Color) string {
+	if t.IsZero() {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(colorDim).Background(bg).Render(t.Local().Format("15:04") + "  ")
+}
+
+// bgSpace renders n spaces carrying a background, used to keep strip bg
+// continuous between inner styled spans.
+func bgSpace(bg color.Color, n int) string {
+	return lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", n))
+}
+
 // formatMessage renders a single chat message as a full-width left-border strip.
 // frame drives the streaming dot animation; pass 0 when not animating.
 func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) string {
@@ -910,74 +1331,94 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 		width = 80
 	}
 
+	pulse := func(bg color.Color) string {
+		dotLevels := []lipgloss.Style{
+			lipgloss.NewStyle().Foreground(colorDim).Background(bg),
+			lipgloss.NewStyle().Foreground(colorMuted).Background(bg),
+			lipgloss.NewStyle().Foreground(colorAmber).Background(bg),
+			lipgloss.NewStyle().Foreground(colorMuted).Background(bg),
+		}
+		d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
+		return d(0) + bgSpace(bg, 1) + d(1) + bgSpace(bg, 1) + d(2)
+	}
+
 	switch msg.role {
 	case "user":
-		label := styleSenderUser.Render("you ›")
+		ub := colorUserMsgBg
+		label := tsPrefixBg(msg.ts, ub) + styleSenderUser.Background(ub).Render("you ›")
 		bodyW := max(16, width-styleUserMsg.GetHorizontalFrameSize())
 		body := lipgloss.Wrap(msg.content, bodyW, " ")
 		return styleUserMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant_pending":
-		dotLevels := []lipgloss.Style{
-			lipgloss.NewStyle().Foreground(colorDim),
-			lipgloss.NewStyle().Foreground(colorMuted),
-			lipgloss.NewStyle().Foreground(colorAmber),
-			lipgloss.NewStyle().Foreground(colorMuted),
-		}
-		d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
-		return styleAgentMsg.Width(width).Render(d(0) + " " + d(1) + " " + d(2))
+		return styleAgentMsg.Width(width).Render(pulse(colorBotMsgBg))
 
 	case "assistant":
-		label := styleSenderBot.Render("◆ Tether")
+		bb := colorBotMsgBg
+		label := tsPrefixBg(msg.ts, bb) + styleSenderBot.Background(bb).Render(glyphAssistant+" Tether")
 		bodyW := max(16, width-styleAgentMsg.GetHorizontalFrameSize())
 		body := strings.TrimSpace(msg.content)
 		if msg.streaming && body == "" {
-			// Animated dot pulse: four brightness levels, each dot offset by 1 frame.
-			dotLevels := []lipgloss.Style{
-				lipgloss.NewStyle().Foreground(colorDim),
-				lipgloss.NewStyle().Foreground(colorMuted),
-				lipgloss.NewStyle().Foreground(colorAmber),
-				lipgloss.NewStyle().Foreground(colorMuted),
-			}
-			d := func(offset int) string { return dotLevels[(frame+offset)%4].Render("●") }
-			body = d(0) + " " + d(1) + " " + d(2)
+			body = pulse(bb)
 		} else if body != "" {
 			body = renderAssistantBody(body, bodyW, term)
 		}
 		return styleAgentMsg.Width(width).Render(label + "\n" + body)
 
 	case "assistant_reasoning":
-		label := styleReasoningHeader.Render("◈ reasoning")
+		label := tsPrefixBg(msg.ts, colorBg) + styleReasoningHeader.Background(colorBg).Render(glyphReasoning+" reasoning")
+		rstyle := styleToolResult.BorderForeground(colorViolet)
 		bodyW := max(16, width-styleToolResult.GetHorizontalFrameSize())
 		body := lipgloss.Wrap(strings.TrimSpace(msg.content), bodyW, " ")
 		if msg.streaming && strings.TrimSpace(body) == "" {
-			body = styleReasoningHint.Render("thinking…")
+			body = styleReasoningHint.Background(colorBg).Render("thinking…")
 		}
 		if !msg.streaming && !msg.expanded {
-			return styleToolResult.Width(width).Render(label + "  " + styleReasoningHint.Render("click to expand"))
+			return rstyle.Width(width).Render(label + bgSpace(colorBg, 2) + styleReasoningHint.Background(colorBg).Render("click to expand"))
 		}
-		return styleToolResult.Width(width).Render(label + "\n" + body)
+		return rstyle.Width(width).Render(label + "\n" + body)
 
 	case "tool_call":
 		if !isValidToolCallContent(msg.content) {
 			senderLabel, s := systemMessageVariant(msg.content)
 			bodyW := max(16, width-s.GetHorizontalFrameSize())
 			rendered := renderRichText(msg.content, bodyW, richTextSystem)
-			return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
+			return s.Width(width).Render(tsPrefixBg(msg.ts, colorBg) + styleSenderSystem.Background(colorBg).Render(senderLabel) + "\n" + rendered)
 		}
 		entry, _ := parseToolCallContent(msg.content)
-		invLine := styleAccent.Render("▷") + "  " + styleTitle.Render(entry.Name)
+		tb := colorToolBg
+		invLine := tsPrefixBg(msg.ts, tb) + styleAccent.Background(tb).Render(glyphTool) + bgSpace(tb, 2) + styleTitle.Background(tb).Render(entry.Name)
 		if args := strings.TrimSpace(entry.Args); args != "" {
-			invLine += "  " + styleMuted.Render("·") + "  " + args
+			invLine += bgSpace(tb, 2) + styleMuted.Background(tb).Render("·") + bgSpace(tb, 2) + styleMuted.Background(tb).Render(args)
 		}
 		invRow := styleToolStrip.Width(width).Render(invLine)
-		if result := strings.TrimSpace(entry.Result); result != "" {
-			if !msg.streaming && !msg.expanded {
-				return styleToolStrip.Width(width).Render(styleInfo.Render("✓") + "  " + styleTitle.Render(entry.Name) + "  " + styleReasoningHint.Render("click to expand"))
-			}
-			return invRow + "\n" + styleToolResult.Width(width).Render("✓  "+result)
+
+		result := strings.TrimSpace(entry.Result)
+		if result == "" {
+			return invRow + "\n" + styleToolResult.Width(width).Render(styleToolRunning.Background(colorBg).Render(glyphRunning+"  running…"))
 		}
-		return invRow + "\n" + styleToolResult.Width(width).Render("·  running…")
+
+		// Completed: pick the state glyph + color from the result.
+		isErr := toolResultIsError(result)
+		mark, markStyle := glyphOK, styleToolOK
+		if isErr {
+			mark, markStyle = glyphError, styleToolErr
+		}
+		if !msg.streaming && !msg.expanded {
+			head := tsPrefixBg(msg.ts, tb) + markStyle.Background(tb).Render(mark) + bgSpace(tb, 2) + styleTitle.Background(tb).Render(entry.Name)
+			if preview := firstResultLine(result, max(12, width/2)); preview != "" {
+				head += bgSpace(tb, 2) + styleMuted.Background(tb).Render(preview)
+			}
+			head += bgSpace(tb, 2) + styleReasoningHint.Background(tb).Render("click to expand")
+			return styleToolStrip.Width(width).Render(head)
+		}
+		resultBody := markStyle.Background(colorBg).Render(mark) + bgSpace(colorBg, 2)
+		if isErr {
+			resultBody += styleToolErrBody.Background(colorBg).Render(result)
+		} else {
+			resultBody += result
+		}
+		return invRow + "\n" + styleToolResult.Width(width).Render(resultBody)
 
 	case "confirm_prompt":
 		label := lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("● confirm")
@@ -1025,8 +1466,47 @@ func formatMessage(msg chatMessage, width int, frame int, term TerminalProfile) 
 		senderLabel, s := systemMessageVariant(msg.content)
 		bodyW := max(16, width-s.GetHorizontalFrameSize())
 		rendered := renderRichText(msg.content, bodyW, richTextSystem)
-		return s.Width(width).Render(styleSenderSystem.Render(senderLabel) + "\n" + rendered)
+		return s.Width(width).Render(tsPrefixBg(msg.ts, colorBg) + styleSenderSystem.Background(colorBg).Render(senderLabel) + "\n" + rendered)
 	}
+}
+
+// toolResultIsError applies a light heuristic to a tool result preview to decide
+// whether to render it with the error state grammar.
+func toolResultIsError(result string) bool {
+	c := strings.ToLower(strings.TrimSpace(result))
+	if c == "" {
+		return false
+	}
+	for _, p := range []string{"✗", "error", "failed", "failure", "timeout", "timed out", "panic", "denied", "not found", "exception"} {
+		if strings.HasPrefix(c, p) {
+			return true
+		}
+	}
+	// A non-zero exit code is a common structured failure signal.
+	if strings.Contains(c, "\"exit_code\"") && !strings.Contains(c, "\"exit_code\": 0") && !strings.Contains(c, "\"exit_code\":0") {
+		return true
+	}
+	return false
+}
+
+// firstResultLine returns the first non-empty line of a tool result, trimmed to
+// maxW runes, for the collapsed one-line preview.
+func firstResultLine(result string, maxW int) string {
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > maxW {
+			if maxW > 1 {
+				return string(runes[:maxW-1]) + "…"
+			}
+			return string(runes[:maxW])
+		}
+		return line
+	}
+	return ""
 }
 
 func renderAssistantBody(text string, width int, term TerminalProfile) string {
@@ -1144,6 +1624,7 @@ func loadChatMessages(db *sql.DB, convID int64, limit int) ([]chatMessage, error
 			content:  mm.Content,
 			dbID:     mm.ID,
 			expanded: !(role == "assistant_reasoning" || role == "tool_call"),
+			ts:       parseDBTime(mm.CreatedAt),
 		})
 	}
 	return chatMsgs, nil

@@ -19,6 +19,7 @@ import (
 	"tether/internal/mcp"
 	"tether/internal/personality"
 	"tether/internal/secrets"
+	"tether/internal/store"
 	"tether/internal/subagents"
 	"tether/internal/tools"
 )
@@ -40,6 +41,10 @@ type Reply struct {
 	Text      string
 	Reasoning string
 	ToolCalls []ToolCallInfo
+	// ReasoningItems carries the provider's signed/encrypted reasoning for the
+	// final answer. Callers persist these (see store.SetMessageReasoning) so the
+	// reasoning can be replayed on later turns.
+	ReasoningItems []store.ReasoningBlock
 }
 
 type llmClient interface {
@@ -412,6 +417,11 @@ func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(Stream
 	if strings.TrimSpace(a.cfg.LLMAPIKey()) == "" {
 		return Reply{}, fmt.Errorf("%s not configured", a.cfg.LLMAPIKeyEnvName())
 	}
+
+	// Bound the whole turn (model calls + tool execution) by a wall-clock budget.
+	ctx, cancel := context.WithTimeout(ctx, a.cfg.AgentTurnTimeout())
+	defer cancel()
+
 	if sess := a.sessionFor(p.UserID, p.ConversationID); sess != nil {
 		sess.TouchActivity()
 	}
@@ -424,12 +434,12 @@ func (a *Agent) ReplyStream(ctx context.Context, p ReplyParams, emit func(Stream
 		return Reply{}, err
 	}
 
-	text, reasoning, toolCalls, err := a.replyWithToolsStream(ctx, sess, p.UserID, p.ConversationID, items, nil, emit)
+	text, reasoning, toolCalls, reasoningItems, err := a.replyWithToolsStream(ctx, sess, p.UserID, p.ConversationID, items, nil, emit)
 	if err != nil {
 		return Reply{}, err
 	}
 
 	// Update rolling summary in the background (context optimization).
 	go a.maybeUpdateSummary(p.ConversationID)
-	return Reply{Text: text, Reasoning: reasoning, ToolCalls: toolCalls}, nil
+	return Reply{Text: text, Reasoning: reasoning, ToolCalls: toolCalls, ReasoningItems: reasoningItems}, nil
 }

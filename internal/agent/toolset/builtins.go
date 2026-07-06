@@ -71,14 +71,16 @@ func (t ToolSearch) Execute(ctx context.Context, s *Session, rawArgs json.RawMes
 	var args toolSearchArgs
 	_ = json.Unmarshal(rawArgs, &args)
 	results := s.Registry.Search(args.Query)
-	if s.Allowed == nil {
-		return results, nil
-	}
 	filtered := make([]tools.ToolInfo, 0, len(results))
 	for _, info := range results {
-		if s.IsAllowed(info.Name) {
-			filtered = append(filtered, info)
+		// view_image is only usable on vision-capable models; hide it otherwise.
+		if info.Name == "view_image" && !s.VisionEnabled {
+			continue
 		}
+		if s.Allowed != nil && !s.IsAllowed(info.Name) {
+			continue
+		}
+		filtered = append(filtered, info)
 	}
 	return filtered, nil
 }

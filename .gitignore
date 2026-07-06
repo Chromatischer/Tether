@@ -34,3 +34,8 @@ tether.exe
 .pi-lens/
 .superpowers/
 .codex
+opencode.json
+
+# Local agent state / scratch (never commit to this public repo)
+.claude/
+redteam-*

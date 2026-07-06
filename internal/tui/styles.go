@@ -20,9 +20,26 @@ var (
 	colorBody       = lipgloss.Color("255")     // main body text
 	colorUserBody   = lipgloss.Color("194")     // high-contrast user body text
 
+	// ── Redesign roles (added) ──────────────────────────────────────────
+	colorCyan   = lipgloss.Color("74")  // debug / inspector / metrics accent
+	colorViolet = lipgloss.Color("140") // reasoning channel (distinct from tools)
+	colorWarn   = lipgloss.Color("214") // degraded / rate-limited state
+
 	// ── Backwards-compat: mapped to new palette ─────────────────────────
 	colorPanel    = colorBotMsgBg // code/table backgrounds
 	colorPanelAlt = colorHeaderBg // composer input bg
+)
+
+// State glyphs — a single grammar shared across screens (see docs/tui-redesign.html).
+const (
+	glyphRunning   = "·"
+	glyphOK        = "✓"
+	glyphError     = "✗"
+	glyphTool      = "▷"
+	glyphReasoning = "◈"
+	glyphAssistant = "◆"
+	glyphGutter    = "▎"
+	glyphOnline    = "●"
 )
 
 var (
@@ -230,9 +247,64 @@ var (
 	styleSenderBot    = lipgloss.NewStyle().Bold(true).Foreground(colorAmber)
 	styleSenderSystem = lipgloss.NewStyle().Foreground(colorMuted)
 
-	// Reasoning
-	styleReasoningHeader = lipgloss.NewStyle().Foreground(colorBody)
+	// Reasoning — its own violet channel, distinct from tools.
+	styleReasoningHeader = lipgloss.NewStyle().Foreground(colorViolet).Bold(true)
 	styleReasoningHint   = lipgloss.NewStyle().Foreground(colorMuted)
+
+	// Tool-call state styling.
+	styleToolOK      = lipgloss.NewStyle().Foreground(colorGreen)
+	styleToolErr     = lipgloss.NewStyle().Foreground(colorRed)
+	styleToolErrBody = lipgloss.NewStyle().Foreground(lipgloss.Color("217"))
+	styleToolRunning = lipgloss.NewStyle().Foreground(colorDim)
+
+	// ── Status bar (bottom instrument cluster) ────────────────────────────
+	styleStatusBar = lipgloss.NewStyle().
+			Background(lipgloss.Color("232")).
+			Foreground(colorMuted)
+	styleStatusKey = lipgloss.NewStyle().
+			Background(lipgloss.Color("232")).
+			Foreground(colorCyan)
+	styleStatusVal = lipgloss.NewStyle().
+			Background(lipgloss.Color("232")).
+			Foreground(colorBody)
+	styleStatusDim = lipgloss.NewStyle().
+			Background(lipgloss.Color("232")).
+			Foreground(colorDim)
+	styleStatusGaugeOn = lipgloss.NewStyle().
+				Background(lipgloss.Color("232")).
+				Foreground(colorCyan)
+	styleStatusGaugeOff = lipgloss.NewStyle().
+				Background(lipgloss.Color("232")).
+				Foreground(colorBorder)
+
+	// ── Inspector pane (ctrl+o) ───────────────────────────────────────────
+	styleInspector      = lipgloss.NewStyle().Background(colorHeaderBg)
+	styleInspectorTitle = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorCyan).
+				Bold(true)
+	styleInspectorKey = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorMuted)
+	styleInspectorVal = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorBody)
+	styleInspectorDim = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorDim)
+	styleInspectorDivider = lipgloss.NewStyle().
+				Background(colorBg).
+				Foreground(colorBorder)
+
+	// ── Header connector cluster ──────────────────────────────────────────
+	styleConnOnline  = lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorGreen)
+	styleConnWarn    = lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorWarn)
+	styleConnOff     = lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorDim)
+	styleConnLabel   = lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorDim)
+	styleHeaderModel = lipgloss.NewStyle().
+				Background(colorHeaderBg).
+				Foreground(colorMuted).
+				Padding(0, 1)
 
 	// ── Composer ─────────────────────────────────────────────────────────
 	styleChatComposer = lipgloss.NewStyle().

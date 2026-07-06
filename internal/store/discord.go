@@ -11,6 +11,52 @@ import (
 
 const identityTypeDiscord = "discord_user_id"
 
+// userSettingDiscordVerbosity controls how much of the agent's streaming output
+// is surfaced in Discord DMs (tool calls, reasoning, final message).
+const userSettingDiscordVerbosity = "discord_verbosity"
+
+// Discord verbosity levels.
+//
+//   - DiscordVerbosityFull: stream tool calls + reasoning + the final message.
+//   - DiscordVerbosityNoThinking: stream tool calls + the final message (no reasoning).
+//   - DiscordVerbosityMessageOnly: only the final message (no tool calls, no reasoning).
+const (
+	DiscordVerbosityFull        = "full"
+	DiscordVerbosityNoThinking  = "no_thinking"
+	DiscordVerbosityMessageOnly = "message_only"
+)
+
+// DiscordVerbosityDefault is used when a user has not chosen a level.
+const DiscordVerbosityDefault = DiscordVerbosityFull
+
+// ValidDiscordVerbosity reports whether v is a recognized verbosity level.
+func ValidDiscordVerbosity(v string) bool {
+	switch v {
+	case DiscordVerbosityFull, DiscordVerbosityNoThinking, DiscordVerbosityMessageOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetDiscordVerbosity returns the user's configured Discord verbosity level,
+// falling back to DiscordVerbosityDefault when unset or invalid.
+func GetDiscordVerbosity(db *sql.DB, userID int64) string {
+	v, ok, err := GetUserSetting(db, userID, userSettingDiscordVerbosity)
+	if err != nil || !ok || !ValidDiscordVerbosity(v) {
+		return DiscordVerbosityDefault
+	}
+	return v
+}
+
+// SetDiscordVerbosity stores the user's preferred Discord verbosity level.
+func SetDiscordVerbosity(db *sql.DB, userID int64, v string) error {
+	if !ValidDiscordVerbosity(v) {
+		return errors.New("invalid discord verbosity level")
+	}
+	return SetUserSetting(db, userID, userSettingDiscordVerbosity, v)
+}
+
 var ErrDiscordAlreadyLinkedForUser = errors.New("discord already linked for user")
 
 func LinkDiscordUserID(db *sql.DB, userID int64, discordUserID string) error {

@@ -3,11 +3,26 @@ package config
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/log/v2"
 	"gopkg.in/yaml.v3"
 )
+
+// Agent runtime defaults. These apply when the corresponding config/admin
+// values are unset.
+const (
+	DefaultAgentMaxToolCalls       = 100
+	DefaultAgentTurnTimeoutSeconds = 180
+	DefaultAgentTemperature        = 0.2
+	DefaultAgentReasoningEffort    = "medium"
+)
+
+// ReasoningEffortAuto turns on adaptive reasoning: reasoning is enabled but the
+// model decides how much to spend instead of a fixed low/medium/high effort.
+const ReasoningEffortAuto = "auto"
 
 type Config struct {
 	LogLevel       string    `yaml:"log_level"`
@@ -73,6 +88,21 @@ type Config struct {
 	Discord struct {
 		Enabled  bool   `yaml:"enabled"`
 		BotToken string `yaml:"bot_token"`
+
+		// Attachments controls ingestion of inbound DM attachments (images,
+		// files, voice notes). Files are saved under the user's sandbox at
+		// discord/context/<id>.<ext> and referenced inline in the prompt.
+		Attachments struct {
+			// Enabled toggles attachment ingestion. Default true.
+			Enabled *bool `yaml:"enabled,omitempty"`
+			// MaxSizeMB caps the size of a single downloaded attachment. Default 25.
+			MaxSizeMB int `yaml:"max_size_mb,omitempty"`
+			// MaxPerMessage caps how many attachments are ingested per message. Default 10.
+			MaxPerMessage int `yaml:"max_per_message,omitempty"`
+			// RetentionDays bounds how long context files are kept before the
+			// prune sweep deletes them. Default 14. Zero disables pruning.
+			RetentionDays int `yaml:"retention_days,omitempty"`
+		} `yaml:"attachments"`
 	} `yaml:"discord"`
 
 	// MCP configures external Model Context Protocol servers.
@@ -85,9 +115,73 @@ type Config struct {
 		Servers []MCPServer `yaml:"servers"`
 	} `yaml:"mcp"`
 
+	// Agent tunes the per-turn tool-calling loop. All fields are optional and
+	// admin-editable at runtime via the admin "agent" tab; zero/unset values
+	// fall back to the Default* constants.
+	Agent struct {
+		// MaxToolCalls is the hard cap on tool calls in a single turn before the
+		// loop stops and returns to the user. Default 100.
+		MaxToolCalls int `yaml:"max_tool_calls,omitempty"`
+		// TurnTimeoutSeconds bounds the wall-clock time for one turn. Default 180.
+		TurnTimeoutSeconds int `yaml:"turn_timeout_seconds,omitempty"`
+		// Temperature is the sampling temperature for the main loop. Pointer so 0
+		// is distinguishable from unset. Default 0.2.
+		Temperature *float64 `yaml:"temperature,omitempty"`
+		// ReasoningEffort is the model reasoning effort (low|medium|high|auto).
+		// "auto" enables adaptive reasoning. Default medium.
+		ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	} `yaml:"agent"`
+
+	// Web tunes outbound HTTP behavior for tools like web-fetch.
+	Web struct {
+		// AllowPrivateNetwork permits web-fetch to reach private, loopback, and
+		// link-local addresses. Default false (SSRF protection). Admin-editable.
+		AllowPrivateNetwork bool `yaml:"allow_private_network,omitempty"`
+	} `yaml:"web"`
+
+	// HostExec gates the non-sandboxed (host) bash tool. Default off; even when
+	// enabled, every host command still requires an explicit per-call /confirm
+	// approval and a stated reason. Admin-editable.
+	HostExec struct {
+		Enabled bool `yaml:"enabled,omitempty"`
+	} `yaml:"host_exec"`
+
 	Paths struct {
 		DataDir string `yaml:"data_dir"`
 	} `yaml:"paths"`
+}
+
+// AgentMaxToolCalls returns the per-turn tool-call cap, or the default.
+func (c *Config) AgentMaxToolCalls() int {
+	if c.Agent.MaxToolCalls > 0 {
+		return c.Agent.MaxToolCalls
+	}
+	return DefaultAgentMaxToolCalls
+}
+
+// AgentTurnTimeout returns the per-turn wall-clock budget, or the default.
+func (c *Config) AgentTurnTimeout() time.Duration {
+	secs := c.Agent.TurnTimeoutSeconds
+	if secs <= 0 {
+		secs = DefaultAgentTurnTimeoutSeconds
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// AgentTemperature returns the main-loop sampling temperature, or the default.
+func (c *Config) AgentTemperature() float64 {
+	if c.Agent.Temperature != nil {
+		return *c.Agent.Temperature
+	}
+	return DefaultAgentTemperature
+}
+
+// AgentReasoningEffort returns the model reasoning effort, or the default.
+func (c *Config) AgentReasoningEffort() string {
+	if e := strings.TrimSpace(c.Agent.ReasoningEffort); e != "" {
+		return e
+	}
+	return DefaultAgentReasoningEffort
 }
 
 type MCPServer struct {
@@ -244,6 +338,39 @@ func Load(path string) (*Config, error) {
 	}
 	if adminEnv.DiscordEnabled != nil {
 		cfg.Discord.Enabled = *adminEnv.DiscordEnabled
+	}
+	if cfg.Discord.Attachments.Enabled == nil {
+		on := true
+		cfg.Discord.Attachments.Enabled = &on
+	}
+	if cfg.Discord.Attachments.MaxSizeMB <= 0 {
+		cfg.Discord.Attachments.MaxSizeMB = 25
+	}
+	if cfg.Discord.Attachments.MaxPerMessage <= 0 {
+		cfg.Discord.Attachments.MaxPerMessage = 10
+	}
+	if cfg.Discord.Attachments.RetentionDays == 0 {
+		cfg.Discord.Attachments.RetentionDays = 14
+	}
+
+	// Agent runtime tuning (admin-editable overrides layered over config/defaults).
+	if n, err := strconv.Atoi(adminEnv.AgentMaxToolCalls); err == nil && n > 0 {
+		cfg.Agent.MaxToolCalls = n
+	}
+	if n, err := strconv.Atoi(adminEnv.AgentTurnTimeoutSeconds); err == nil && n > 0 {
+		cfg.Agent.TurnTimeoutSeconds = n
+	}
+	if f, err := strconv.ParseFloat(adminEnv.AgentTemperature, 64); err == nil && f >= 0 {
+		cfg.Agent.Temperature = &f
+	}
+	if e := strings.TrimSpace(adminEnv.AgentReasoningEffort); e != "" {
+		cfg.Agent.ReasoningEffort = e
+	}
+	if v := strings.TrimSpace(adminEnv.WebAllowPrivateNetwork); v != "" {
+		cfg.Web.AllowPrivateNetwork = strings.EqualFold(v, "true")
+	}
+	if v := strings.TrimSpace(adminEnv.HostExecEnabled); v != "" {
+		cfg.HostExec.Enabled = strings.EqualFold(v, "true")
 	}
 
 	// MCP

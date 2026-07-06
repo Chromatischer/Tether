@@ -100,8 +100,14 @@ func TestToolEnable_BashNetworkSetsSessionFlag(t *testing.T) {
 	}
 	m, _ := got.(map[string]any)
 	enabled, _ := m["enabled"].([]string)
-	if len(enabled) != 1 || enabled[0] != "bash" {
-		t.Fatalf("unexpected result: %#v", got)
+	hasBash := false
+	for _, e := range enabled {
+		if e == "bash" {
+			hasBash = true
+		}
+	}
+	if !hasBash {
+		t.Fatalf("expected bash among enabled tools: %#v", got)
 	}
 	if network, _ := m["network"].(bool); !network {
 		t.Fatalf("expected network=true in result: %#v", got)

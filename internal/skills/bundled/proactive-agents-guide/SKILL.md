@@ -1,106 +1,46 @@
 ---
 name: proactive-agents-guide
-description: Create, modify, remove, and explain proactive agents, recurring proactive behavior, and self.schedule correctly.
-when_to_use: Use when the user asks you to add, edit, remove, inspect, or explain proactive agents, recurring proactive behavior, proactive schedules, proactive actions, or self.schedule.
+description: Explain and route proactive work correctly across built-in rules, folder-based custom agents, and one-off self.schedule follow-ups.
+when_to_use: Use when the user asks to add, edit, remove, inspect, or explain proactive behavior, proactive schedules, proactive actions, recurring proactive agents, or one-time follow-ups.
 allowed-tools: Read Write confirm.scope confirm.request tool.search tool.describe tool.enable
 ---
 
 # Goal
-Help the agent manage the user's proactive setup correctly.
+Help the user manage their proactive setup, and route each request to the right mechanism. There are three, and keeping them straight is the whole job:
 
-When using this skill, keep one distinction clear at all times. A recurring proactive agent belongs in the proactive rules. A one-time delayed follow-up belongs in `self.schedule`. Do not use `self.schedule` when the user is asking for an ongoing recurring proactive agent. Do not describe a recurring proactive rule as if it were just a delayed follow-up.
+1. **Built-in proactive rules** — `daily_brief`, `open_loops`, and `inactivity`. These live in `config/proactive.yaml` in the user sandbox and are edited as YAML.
+2. **Custom proactive agents** — standing agents the assistant owns, each a folder under `agents/`. These are NOT in `proactive.yaml`. To create or change one, use the [[proactive-agent-builder]] skill.
+3. **One-off delayed follow-ups** — a single later run in the current conversation, via `self.schedule`. Not a standing agent.
+
+Do not use `self.schedule` for something recurring. Do not edit `proactive.yaml` to add a custom agent — custom agents are folders. Legacy YAML `agents:` is no longer supported; an `agents:` block in `proactive.yaml` is ignored.
 
 # Inputs
 - `$ARGUMENTS`: what the user wants changed or explained
 
-Typical requests include creating a new proactive agent, changing when one runs, changing its instructions, removing one, turning one on or off, explaining what already exists, or setting up a one-time follow-up instead of a recurring proactive rule.
-
 # Instructions
-1. First decide whether the user wants a recurring proactive rule or a one-time delayed run.
+1. Decide which of the three mechanisms applies.
 
-   If the user wants something that should happen every day, at fixed times, on login, on task changes, or when manually triggered by name later, treat it as a proactive agent rule.
+   Recurring behavior at fixed times, on app events, on manual action, or gated by a condition that should be checked repeatedly → a custom proactive agent. Hand this to [[proactive-agent-builder]].
 
-   If the user wants something that should happen once later in the same conversation, treat it as `self.schedule` instead of a proactive agent edit.
+   Changes to the daily brief, open-loops review, or inactivity nudge → edit `config/proactive.yaml` (built-in rules).
 
-2. If the request is about proactive agents, inspect the current proactive rules before proposing or making changes.
+   Something that should happen once, later, in this conversation → `self.schedule`.
 
-   Read `config/proactive.yaml` from the user sandbox if it exists.
+2. When the request is about a custom proactive agent, defer to [[proactive-agent-builder]] rather than editing YAML. Custom agents are folders under `agents/`, each with `agent.yaml`, `instructions.md`, and an optional condition script.
 
-   If it does not exist, assume the user may still have proactive rules stored elsewhere by the product, so do not claim there are no rules with certainty. Say that no editable `config/proactive.yaml` file is present in the sandbox and proceed carefully.
+3. When explaining the current setup, inspect it first and describe it in plain language.
 
-3. When explaining the current setup, describe it in plain language.
+   Read `config/proactive.yaml` for the built-in rules. List `agents/` and read each agent's `agent.yaml`/`instructions.md` for the custom agents. Explain built-in behavior separately from custom agents.
 
-   Explain built-in proactive behavior separately from custom agents under `agents:`.
+4. When editing built-in rules in `config/proactive.yaml`, change only what the request needs and preserve everything else.
 
-   Built-in behavior includes things like `daily_brief`, `open_loops`, and `inactivity`.
+   Built-in keys: `daily_brief` (`enabled`, `time`), `open_loops` (`enabled`, `time`), `inactivity` (`enabled`, `minutes`). Times are `HH:MM` in UTC.
 
-   Custom proactive agents live under `agents:` and can use fields such as `id`, `enabled`, `instructions`, `schedule_times`, `events`, `actions`, `cooldown_minutes`, `max_per_day`, and `timeout_seconds`.
+5. Overwriting `config/proactive.yaml` is a destructive write. Compute the scope with `confirm.scope` (tool=write, path=config/proactive.yaml), call `confirm.request` with that scope, and after the user approves use the returned token as `confirm_token` in the `write` call. The write tool writes complete file content; it does not patch in place.
 
-4. When creating a new recurring proactive agent, add a new entry under `agents:`.
+6. For a one-time follow-up, use `self.schedule`. If it is not enabled, discover and enable it through the tool system first. Explain that it is a one-off delayed run, not a standing proactive agent.
 
-   Use a simple lowercase id with letters, numbers, underscores, or hyphens.
-
-   Include `enabled: true` unless the user asked to stage it disabled.
-
-   Put the user's desired behavior into `instructions`.
-
-   Use `schedule_times` for recurring times in `HH:MM`.
-
-   Use `events` only when the user asked for event-driven behavior such as login or task changes.
-
-   Use `actions` when the user wants to be able to trigger it intentionally by name.
-
-   Add `cooldown_minutes`, `max_per_day`, or `timeout_seconds` only when they are useful or requested.
-
-5. When modifying an existing proactive agent, preserve everything unrelated to the request.
-
-   Change only the fields needed for the requested outcome.
-
-   Do not silently remove other schedules, events, actions, or instructions unless the user asked for that.
-
-   If multiple agents could match the request and the intended target is unclear, say so clearly instead of making a risky guess.
-
-6. When removing or disabling a proactive agent, prefer the safer option if the user was ambiguous.
-
-   If the user says they want it gone, remove the agent entry.
-
-   If the user says they want it paused or stopped for now, set `enabled: false`.
-
-7. When you need to overwrite `config/proactive.yaml`, handle it as a destructive write.
-
-   First compute the exact write-overwrite confirmation scope with `confirm.scope` using tool=write and path=config/proactive.yaml.
-
-   Then call `confirm.request` with that scope so the host pauses and the user can approve.
-
-   After the user confirms and the run resumes, use the returned `token` as the `confirm_token` in the `write` call.
-
-   Then write the full updated file content with `write` (full file content; no patching).
-
-   Do not pretend you can patch the file in place. The write tool writes complete file content.
-
-8. Keep the user informed about what you are changing in human terms.
-
-   Say what agent you are creating or modifying, what will trigger it, and what it will do.
-
-   If you are editing a schedule, mention the exact new `HH:MM` values you wrote.
-
-   If you are turning a rule off instead of deleting it, say that explicitly.
-
-9. If the request is really a one-time follow-up, use `self.schedule` rather than editing proactive rules.
-
-   If `self.schedule` is not currently enabled, discover and enable it through the tool system before using it.
-
-   Explain that this is a one-off delayed run, not a standing proactive agent.
-
-10. Do not drift into product-internals unless the user asks.
-
-   Mention implementation limitations only when they matter to the task, such as the need for overwrite confirmation or the fact that recurring proactive behavior belongs in the rules rather than `self.schedule`.
+7. Keep the user informed in human terms: what you changed, what will trigger it, and what it will do. If you turned a built-in rule off instead of changing its time, say so.
 
 # Output
-If the task is explanatory, give the user a clear explanation of what proactive agents they have or how the system should be configured.
-
-If the task is a recurring proactive change, leave the user with an updated `config/proactive.yaml` that matches the request and explain the result in plain language.
-
-If the task is a one-time delayed follow-up, create it with `self.schedule` and explain when it will run.
-
-If you could not safely complete the change, say exactly what blocked it, such as missing file context, ambiguous agent targeting, or missing overwrite confirmation.
+Give the user a clear explanation or a completed change. For custom-agent work, route to [[proactive-agent-builder]] and summarize the result. For built-in changes, leave an updated `config/proactive.yaml` and explain it. For a one-off, create it with `self.schedule` and say when it will run. If you could not finish safely, say exactly what blocked you.

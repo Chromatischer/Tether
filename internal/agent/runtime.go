@@ -251,6 +251,9 @@ func (a *Agent) sessionFor(userID, convID int64) *toolset.Session {
 	s.Confirm = auditedConfirmer{mgr: a.confirm, db: a.db}
 	s.MCP = a.mcp
 	s.LLM = a
+	s.Tools = codeToolInvoker{a: a}
+	s.AllowPrivateNetworkFetch = a.cfg.Web.AllowPrivateNetwork
+	s.AllowHostExec = a.cfg.HostExec.Enabled
 	if a.secrets != nil {
 		s.Secrets = auditedSecrets{store: a.secrets, db: a.db}
 	}

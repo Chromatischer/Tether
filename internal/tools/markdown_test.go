@@ -10,7 +10,6 @@ func TestRenderToolsMarkdownSortsAndIncludesSections(t *testing.T) {
 		{
 			Name:        "zeta.run",
 			Summary:     "Run zeta.",
-			WhenToUse:   "Use when zeta is needed.",
 			Safety:      "Confirm before destructive actions.",
 			InputSchema: map[string]any{"type": "object"},
 			OutputSchema: map[string]any{
@@ -40,7 +39,6 @@ func TestRenderToolsMarkdownSortsAndIncludesSections(t *testing.T) {
 	for _, want := range []string{
 		"# Tether tool reference",
 		"- [`alpha.check`](#alphacheck) — Check alpha.",
-		"**When to use**",
 		"**Safety / confirmation**",
 		"### Output shape",
 		"### Example",

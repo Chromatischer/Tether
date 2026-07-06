@@ -2,9 +2,9 @@ package tui
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -20,10 +20,10 @@ import (
 	appmeta "tether"
 	"tether/internal/agent"
 	"tether/internal/appupdate"
+	"tether/internal/config"
 	"tether/internal/personality"
 	"tether/internal/proactive"
 	"tether/internal/redact"
-	"tether/internal/secrets"
 	"tether/internal/store"
 	"tether/internal/subagents"
 	"tether/internal/tools"
@@ -75,6 +75,26 @@ type appModel struct {
 	activeRuns    int
 	waitlist      []string
 	releasedRuns  map[int]bool
+
+	connHealth connectorHealth
+}
+
+// connState is a connector's glanceable health for the header cluster.
+type connState int
+
+const (
+	connOff connState = iota
+	connWarn
+	connOnline
+)
+
+// connectorHealth is a cheap snapshot of connector + job state shown in the
+// header. Refreshed on the periodic poll, never computed per keystroke.
+type connectorHealth struct {
+	signal  connState
+	discord connState
+	jobs    connState
+	model   string
 }
 
 type agentAsyncMsg struct {
@@ -107,6 +127,10 @@ type agentReleaseMsg struct {
 	ConversationID int64
 	RequestID      int
 }
+
+// autoLoginMsg triggers terminal-mode entry as the local root account,
+// bypassing the login/signup view.
+type autoLoginMsg struct{}
 
 type appBackendSyncPollMsg struct{}
 
@@ -189,11 +213,79 @@ func (m appModel) activateConversation(conv *store.Conversation) appModel {
 	return m
 }
 
+// provisionAndEnter sets up per-user state for an authenticated user and
+// transitions into the chat view. Shared by interactive login and the
+// terminal-mode root auto-login.
+func (m appModel) provisionAndEnter(u *store.User) (appModel, tea.Cmd, error) {
+	conv, err := store.GetOrCreateActiveConversation(m.ctx.DB, u.ID)
+	if err != nil {
+		return m, nil, err
+	}
+
+	// Deliver any pending proactive notifications.
+	// If a notification has a conversation_id, inject it into that conversation.
+	// Otherwise, inject into the user's active conversation (backwards-compatible behavior).
+	nots, err := store.ListUndeliveredNotifications(m.ctx.DB, u.ID, 50)
+	if err == nil {
+		for _, n := range nots {
+			targetConvID := conv.ID
+			if n.ConversationID != 0 {
+				targetConvID = n.ConversationID
+			}
+			note := "[Proactive/" + n.Kind + "] " + n.Content
+			_ = store.AddMessage(m.ctx.DB, targetConvID, "system", note)
+			_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
+		}
+	}
+
+	// Ensure per-user sandbox/config directories exist.
+	dirs := userspace.ForUser(m.ctx.Config.Paths.DataDir, u.ID)
+	if err := userspace.Ensure(dirs); err != nil {
+		return m, nil, err
+	}
+	// Ensure default proactive rules exist in SQLite (spec requirement).
+	b, _ := yaml.Marshal(proactive.DefaultRules())
+	_ = store.EnsureDefaultProactiveRulesYAML(m.ctx.DB, u.ID, string(b))
+
+	// Also write legacy per-user proactive rules file for transparency/editing.
+	rulesPath := proactive.DefaultRulesPath(dirs.Config)
+	if _, err := os.Stat(rulesPath); err != nil {
+		_ = os.WriteFile(rulesPath, b, 0o644)
+	}
+
+	// Ensure default agent personalities exist (self-editable by the agent).
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentChat)
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveDailyBrief)
+	_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveOpenLoops)
+	if rules, err := proactive.LoadRules(rulesPath); err == nil {
+		for _, ar := range rules.Agents {
+			if id, ok := personality.NormalizeID(ar.ID); ok {
+				_ = userspace.EnsurePersonalityFile(dirs, personality.ProactiveAgentKey(id))
+			}
+		}
+	}
+
+	m.user = u
+	m = m.activateConversation(conv)
+	m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
+	m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
+	m = m.refreshChatMetrics()
+	return m, tea.Batch(
+		m.chat.loadCmd(),
+		m.triggerProactiveEventCmd(proactive.EventLogin, nil),
+		m.backendSyncTickCmd(),
+	), nil
+}
+
 func (m appModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tea.RequestBackgroundColor,
 		cursor.Blink,
-	)
+	}
+	if m.ctx != nil && m.ctx.AutoLogin {
+		cmds = append(cmds, func() tea.Msg { return autoLoginMsg{} })
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -283,66 +375,27 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
 		}
-		conv, err := store.GetOrCreateActiveConversation(m.ctx.DB, u.ID)
+		var cmd tea.Cmd
+		m, cmd, err = m.provisionAndEnter(u)
 		if err != nil {
 			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
 			return m, nil
 		}
+		return m, cmd
 
-		// Deliver any pending proactive notifications.
-		// If a notification has a conversation_id, inject it into that conversation.
-		// Otherwise, inject into the user's active conversation (backwards-compatible behavior).
-		nots, err := store.ListUndeliveredNotifications(m.ctx.DB, u.ID, 50)
+	case autoLoginMsg:
+		// Terminal mode: enter as the local root account, no login screen.
+		u, err := store.EnsureRootUser(m.ctx.DB)
 		if err == nil {
-			for _, n := range nots {
-				targetConvID := conv.ID
-				if n.ConversationID != 0 {
-					targetConvID = n.ConversationID
-				}
-				msg := "[Proactive/" + n.Kind + "] " + n.Content
-				_ = store.AddMessage(m.ctx.DB, targetConvID, "system", msg)
-				_ = store.MarkNotificationDelivered(m.ctx.DB, n.ID)
+			var cmd tea.Cmd
+			m, cmd, err = m.provisionAndEnter(u)
+			if err == nil {
+				return m, cmd
 			}
 		}
-
-		// Ensure per-user sandbox/config directories exist.
-		dirs := userspace.ForUser(m.ctx.Config.Paths.DataDir, u.ID)
-		if err := userspace.Ensure(dirs); err != nil {
-			m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
-			return m, nil
-		}
-		// Ensure default proactive rules exist in SQLite (spec requirement).
-		b, _ := yaml.Marshal(proactive.DefaultRules())
-		_ = store.EnsureDefaultProactiveRulesYAML(m.ctx.DB, u.ID, string(b))
-
-		// Also write legacy per-user proactive rules file for transparency/editing.
-		rulesPath := proactive.DefaultRulesPath(dirs.Config)
-		if _, err := os.Stat(rulesPath); err != nil {
-			_ = os.WriteFile(rulesPath, b, 0o644)
-		}
-
-		// Ensure default agent personalities exist (self-editable by the agent).
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentChat)
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveDailyBrief)
-		_ = userspace.EnsurePersonalityFile(dirs, personality.AgentProactiveOpenLoops)
-		if rules, err := proactive.LoadRules(rulesPath); err == nil {
-			for _, ar := range rules.Agents {
-				if id, ok := personality.NormalizeID(ar.ID); ok {
-					_ = userspace.EnsurePersonalityFile(dirs, personality.ProactiveAgentKey(id))
-				}
-			}
-		}
-
-		m.user = u
-		m = m.activateConversation(conv)
-		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
-		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
-		m = m.maybeOpenLoginChangelog()
-		return m, tea.Batch(
-			m.chat.loadCmd(),
-			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
-			m.backendSyncTickCmd(),
-		)
+		// Fall back to the login view so the error is visible.
+		m.auth, _ = m.auth.Update(authStatusMsg{Text: err.Error(), IsErr: true})
+		return m, nil
 
 	case loginSuccessMsg:
 		m.user = msg.User
@@ -350,6 +403,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.memory = m.memory.withUser(m.ctx.DB, m.user.ID).withSize(m.w, m.h-1)
 		m.settings = m.settings.withUser(m.user.ID).withSize(m.w, m.h-1)
 		m = m.maybeOpenLoginChangelog()
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(
 			m.chat.loadCmd(),
 			m.triggerProactiveEventCmd(proactive.EventLogin, nil),
@@ -357,6 +411,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case appBackendSyncPollMsg:
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(m.backendSyncNowCmd(), m.backendSyncTickCmd())
 
 	case appBackendSyncMsg:
@@ -418,6 +473,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat = m.chat.appendLocal("You", clean)
 		m.waitlist = append(m.waitlist, clean)
 		runCmd := m.maybeDispatchWaitlist()
+		m = m.refreshChatMetrics()
 		return m, tea.Batch(
 			runCmd,
 			m.triggerProactiveEventCmd(proactive.EventUserMessage, map[string]string{"text": clean}),
@@ -565,9 +621,17 @@ func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs str
 	}
 	tabs = lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
 
-	// Right side: terminal compatibility notice + online dot + username.
+	// Right side: connector cluster + model badge + terminal notice + account.
+	if m.user != nil {
+		userBadge = renderConnectorCluster(m.connHealth)
+	}
 	if label := strings.TrimSpace(term.HeaderLabel); label != "" {
-		userBadge = styleHeaderNotice.Render(label)
+		notice := styleHeaderNotice.Render(label)
+		if userBadge != "" {
+			userBadge = lipgloss.JoinHorizontal(lipgloss.Top, userBadge, notice)
+		} else {
+			userBadge = notice
+		}
 	}
 
 	if m.user != nil {
@@ -610,6 +674,29 @@ func (m appModel) headerLayout() (brand string, buttons []headerButton, tabs str
 	return brand, buttons, tabs, userBadge
 }
 
+// renderConnectorCluster renders the header's "●sig ●dsc ●job  model" block.
+func renderConnectorCluster(h connectorHealth) string {
+	dot := func(st connState) lipgloss.Style {
+		switch st {
+		case connOnline:
+			return styleConnOnline
+		case connWarn:
+			return styleConnWarn
+		default:
+			return styleConnOff
+		}
+	}
+	one := func(st connState, label string) string {
+		return dot(st).Render(glyphOnline) + styleConnLabel.Render(label+" ")
+	}
+	cluster := styleConnLabel.Render(" ") +
+		one(h.signal, "sig") + one(h.discord, "dsc") + one(h.jobs, "job")
+	if m := strings.TrimSpace(h.model); m != "" {
+		cluster = lipgloss.JoinHorizontal(lipgloss.Top, cluster, styleHeaderModel.Render(m))
+	}
+	return cluster
+}
+
 func (m appModel) headerButtons() []headerButton {
 	// Keep this in sync with renderHeader.
 	if m.user == nil {
@@ -621,7 +708,7 @@ func (m appModel) headerButtons() []headerButton {
 		{ID: "settings", Label: "Settings"},
 	}
 	if m.user.Role == "admin" {
-		btns = append(btns, headerButton{ID: "admin", Label: "Admin"})
+		btns = append(btns, headerButton{ID: "admin", Label: "Console"})
 	}
 	return btns
 }
@@ -673,1286 +760,6 @@ func (m appModel) markCurrentChangelogSeen() appModel {
 	_ = store.SetUserLastSeenChangelogVersion(m.ctx.DB, m.user.ID, current)
 	m.user.LastSeenChangelogVersion = current
 	return m
-}
-
-func (m appModel) handleCommand(text string) (appModel, bool, tea.Cmd) {
-	fields := strings.Fields(text)
-	if len(fields) == 0 {
-		return m, true, nil
-	}
-
-	switch fields[0] {
-	case "/changelog":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) > 2 {
-			resp := "usage: /changelog [version]"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-		version := appmeta.CurrentVersion()
-		if len(fields) == 2 {
-			version = fields[1]
-		}
-		body, err := appmeta.RenderChangelogFrom(version)
-		if err != nil {
-			resp := err.Error()
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		m.changelog = m.changelog.openModal("Changelog", body, false)
-		return m, true, nil
-
-	case "/status":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-		resp := renderSessionStatusTUI(m.ag.SessionStatus(m.user.ID, m.conv.ID))
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "status", resp)
-		m.chat = m.chat.appendLocal("Status", resp)
-		return m, true, nil
-
-	case "/clear":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		oldConv := m.conv
-		resumeCode := store.EncodeResumeCode(oldConv.ID)
-		_ = store.AddMessage(m.ctx.DB, oldConv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-
-		newConv, err := store.CreateConversation(m.ctx.DB, m.user.ID, "")
-		if err != nil {
-			resp := "failed to clear chat: " + err.Error()
-			_ = store.AddMessage(m.ctx.DB, oldConv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		if err := store.SetActiveConversation(m.ctx.DB, m.user.ID, newConv.ID); err != nil {
-			resp := "failed to switch chat: " + err.Error()
-			_ = store.AddMessage(m.ctx.DB, oldConv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		m.ag.ResetConversationSession(newConv.ID)
-		m = m.activateConversation(newConv)
-		resp := "Started a fresh conversation with a clean agent context. Resume the previous chat with `/resume " + resumeCode + "`."
-		_ = store.AddMessage(m.ctx.DB, newConv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, m.chat.loadCmd()
-
-	case "/resume":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) != 2 {
-			resp := "usage: /resume <code>"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-		convID, err := store.DecodeResumeCode(fields[1])
-		if err != nil {
-			resp := err.Error()
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		conv, ok, err := store.GetConversation(m.ctx.DB, m.user.ID, convID)
-		if err != nil {
-			resp := "failed to resume chat: " + err.Error()
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		if !ok {
-			resp := "conversation not found for that resume code"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		if err := store.SetActiveConversation(m.ctx.DB, m.user.ID, conv.ID); err != nil {
-			resp := "failed to switch chat: " + err.Error()
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		m = m.activateConversation(conv)
-		return m, true, m.chat.loadCmd()
-
-	case "/confirm":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) != 2 {
-			resp := "usage: /confirm <token>"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-		requestID := m.nextRequestID
-		m.nextRequestID++
-		m.activeRuns++
-		m.releasedRuns[requestID] = false
-		m.chat = m.chat.startStreamingAssistant(requestID)
-		return m, true, tea.Batch(m.resumeConfirmationCmd(requestID, fields[1]), m.chat.streamTickCmd())
-
-	case "/admin":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if m.user.Role != "admin" {
-			resp := "admin only"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/admin users list",
-				"/admin users promote <username>",
-				"/admin users demote <username>",
-				"/admin audit tail [n]",
-				"/admin signal status",
-				"/admin jobs status",
-				"/admin update status",
-				"/admin update check",
-				"/admin update run",
-				"/admin update auto <on|off>",
-				"/admin update source <release|branch> [branch]",
-				"/admin update time <HH:MM>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		section := fields[1]
-		switch section {
-		case "users":
-			if len(fields) < 3 {
-				resp := usageBlock(
-					"/admin users list",
-					"/admin users promote <username>",
-					"/admin users demote <username>",
-				)
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			sub := fields[2]
-			switch sub {
-			case "list":
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-				m.chat = m.chat.appendLocal("You", text)
-				users, err := store.ListUsers(m.ctx.DB)
-				if err != nil {
-					resp := "failed: " + err.Error()
-					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-					m.chat = m.chat.appendLocal("System", resp)
-					return m, true, nil
-				}
-				var b strings.Builder
-				b.WriteString("Users:\n")
-				for _, u := range users {
-					b.WriteString("- ")
-					b.WriteString(u.Username)
-					b.WriteString(" (")
-					b.WriteString(u.Role)
-					b.WriteString(")\n")
-				}
-				resp := strings.TrimSpace(b.String())
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-
-			case "promote", "demote":
-				if len(fields) < 4 {
-					resp := usageBlock(
-						"/admin users promote <username>",
-						"/admin users demote <username>",
-					)
-					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-					m.chat = m.chat.appendLocal("System", resp)
-					return m, true, nil
-				}
-				user := fields[3]
-				role := "user"
-				if sub == "promote" {
-					role = "admin"
-				}
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-				m.chat = m.chat.appendLocal("You", text)
-				if err := store.SetUserRole(m.ctx.DB, user, role); err != nil {
-					resp := "failed: " + err.Error()
-					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-					m.chat = m.chat.appendLocal("System", resp)
-					return m, true, nil
-				}
-				resp := "updated role for " + user + " to " + role
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := usageBlock(
-				"/admin users list",
-				"/admin users promote <username>",
-				"/admin users demote <username>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		case "audit":
-			if len(fields) < 3 || fields[2] != "tail" {
-				resp := "usage: /admin audit tail [n]"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			limit := 50
-			if len(fields) >= 4 {
-				if n, err := strconv.Atoi(fields[3]); err == nil {
-					limit = n
-				}
-			}
-			evs, err := store.ListAuditEvents(m.ctx.DB, limit)
-			if err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			var b strings.Builder
-			b.WriteString("Audit events (latest first):\n")
-			for _, ev := range evs {
-				b.WriteString("- ")
-				b.WriteString(ev.CreatedAt.UTC().Format(time.RFC3339))
-				b.WriteString(" ")
-				b.WriteString(ev.Type)
-				if ev.UserID != nil {
-					b.WriteString(" user=")
-					b.WriteString(fmt.Sprintf("%d", *ev.UserID))
-				}
-				if ev.Payload != "" {
-					b.WriteString(" ")
-					b.WriteString(ev.Payload)
-				}
-				b.WriteString("\n")
-			}
-			resp := strings.TrimSpace(b.String())
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "signal":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if len(fields) < 3 || fields[2] != "status" {
-				resp := "usage: /admin signal status"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if !m.ctx.Config.Signal.Enabled {
-				resp := "Signal: disabled"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			addr := strings.TrimSpace(m.ctx.Config.Signal.HTTPAddr)
-			base := addr
-			if !strings.HasPrefix(base, "http") {
-				base = "http://" + base
-			}
-			req, _ := http.NewRequest(http.MethodGet, base+"/api/v1/check", nil)
-			resp2, err := http.DefaultClient.Do(req)
-			if err != nil {
-				resp := "Signal: enabled (check failed: " + err.Error() + ")"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp2.Body.Close()
-
-			linked, _ := store.CountLinkedSignalNumbers(m.ctx.DB)
-			lastIn, okIn, _ := store.LatestAuditEventTime(m.ctx.DB, "signal_inbound")
-			lastOut, okOut, _ := store.LatestAuditEventTime(m.ctx.DB, "signal_send")
-			li := "(never)"
-			lo := "(never)"
-			if okIn {
-				li = lastIn.UTC().Format(time.RFC3339)
-			}
-			if okOut {
-				lo = lastOut.UTC().Format(time.RFC3339)
-			}
-
-			resp := fmt.Sprintf("Signal status:\n- enabled: true\n- account: %s\n- http: %s\n- check_status: %d\n- linked_numbers: %d\n- last_inbound_utc: %s\n- last_send_utc: %s", m.ctx.Config.Signal.AccountNumber, addr, resp2.StatusCode, linked, li, lo)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "jobs":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if len(fields) < 3 || fields[2] != "status" {
-				resp := "usage: /admin jobs status"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			lastTick, ok, err := store.LatestAuditEventTime(m.ctx.DB, "proactive_tick")
-			if err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			undelivered, _ := store.CountUndeliveredNotifications(m.ctx.DB)
-			lt := "(never)"
-			if ok {
-				lt = lastTick.UTC().Format(time.RFC3339)
-			}
-
-			lastTrig, okT, _ := store.LatestAuditEventTime(m.ctx.DB, "proactive_trigger")
-			lastSkip, okS, _ := store.LatestAuditEventTime(m.ctx.DB, "proactive_skip_rate_limit")
-			ltt := "(never)"
-			lts := "(never)"
-			if okT {
-				ltt = lastTrig.UTC().Format(time.RFC3339)
-			}
-			if okS {
-				lts = lastSkip.UTC().Format(time.RFC3339)
-			}
-
-			nDaily, okD, _ := store.LatestNotificationTime(m.ctx.DB, "daily_brief")
-			nOpen, okO, _ := store.LatestNotificationTime(m.ctx.DB, "open_loops")
-			nInact, okI, _ := store.LatestNotificationTime(m.ctx.DB, "inactivity_nudge")
-			daily := "(never)"
-			open := "(never)"
-			inact := "(never)"
-			if okD {
-				daily = nDaily.UTC().Format(time.RFC3339)
-			}
-			if okO {
-				open = nOpen.UTC().Format(time.RFC3339)
-			}
-			if okI {
-				inact = nInact.UTC().Format(time.RFC3339)
-			}
-
-			resp := fmt.Sprintf("Jobs status:\n- proactive_tick_last_utc: %s\n- proactive_trigger_last_utc: %s\n- proactive_rate_limit_skip_last_utc: %s\n- latest_daily_brief_utc: %s\n- latest_open_loops_utc: %s\n- latest_inactivity_nudge_utc: %s\n- undelivered_notifications: %d", lt, ltt, lts, daily, open, inact, undelivered)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "update":
-			return m.handleAdminUpdateCommand(text, fields)
-		}
-
-		resp := usageBlock(
-			"/admin users list",
-			"/admin users promote <username>",
-			"/admin users demote <username>",
-			"/admin audit tail [n]",
-			"/admin signal status",
-			"/admin jobs status",
-			"/admin update status",
-			"/admin update check",
-			"/admin update run",
-			"/admin update auto <on|off>",
-			"/admin update source <release|branch> [branch]",
-			"/admin update time <HH:MM>",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/help":
-		if m.conv != nil {
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			var resp string
-			if len(fields) >= 2 {
-				resp = helpSubcommand(fields[1])
-			} else {
-				resp = "Commands:\n" +
-					"- /status\n" +
-					"- /changelog [version]\n" +
-					"- /clear\n" +
-					"- /resume <code>\n" +
-					"- /confirm <token>\n" +
-					"- /logout\n" +
-					"- /help [command]\n" +
-					"- /tools <list|search|describe>\n" +
-					"- /subagent <spawn|status>\n" +
-					"- /proactive <action|agent>\n" +
-					"- /signal <link|status|unlink>\n" +
-					"- /discord <status|link|unlink>\n" +
-					"- /memory <list|add|update|delete>\n" +
-					"- /task <list|add|edit|done>\n" +
-					"- /secret <add|list|delete|clear>\n"
-				if m.user != nil && m.user.Role == "admin" {
-					resp += "- /admin <users|audit|signal|jobs>\n"
-				}
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "system", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-		}
-		return m, true, nil
-
-	case "/tools":
-		if m.conv == nil {
-			return m, true, nil
-		}
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-
-		if len(fields) > 1 && fields[1] == "describe" {
-			if len(fields) < 3 {
-				resp := "usage: /tools describe <name>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			name := strings.TrimSpace(fields[2])
-			spec, ok := m.toolReg.Get(name)
-			if !ok {
-				resp := "unknown tool: " + name
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := strings.TrimSpace(tools.RenderToolMarkdown(spec))
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		if len(fields) > 1 && fields[1] == "categories" {
-			var b strings.Builder
-			b.WriteString("Tool categories (enabled by group):\n")
-			for _, c := range m.toolReg.Categories() {
-				state := "off by default"
-				switch {
-				case c.AlwaysOn:
-					state = "always on"
-				case c.DefaultOn:
-					state = "on by default"
-				}
-				b.WriteString("- " + c.Name + " [" + state + "] — " + c.Description + "\n")
-				if len(c.Tools) > 0 {
-					b.WriteString("    " + strings.Join(c.Tools, ", ") + "\n")
-				}
-			}
-			resp := strings.TrimSpace(b.String())
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		var infos []tools.ToolInfo
-		if len(fields) == 1 || fields[1] == "list" {
-			infos = m.toolReg.List()
-		} else if fields[1] == "search" {
-			q := ""
-			if len(fields) > 2 {
-				q = strings.Join(fields[2:], " ")
-			}
-			infos = m.toolReg.Search(q)
-		} else {
-			resp := usageBlock(
-				"/tools list",
-				"/tools categories",
-				"/tools search <query>",
-				"/tools describe <name>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		var b strings.Builder
-		b.WriteString("Tools:\n")
-		for _, t := range infos {
-			b.WriteString("- ")
-			b.WriteString(t.Name)
-			if t.Category != "" {
-				b.WriteString(" [" + t.Category + "]")
-			}
-			if t.Description != "" {
-				b.WriteString(" — ")
-				b.WriteString(t.Description)
-			}
-			b.WriteString("\n")
-		}
-		resp := strings.TrimSpace(b.String())
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/signal":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/signal link",
-				"/signal status",
-				"/signal unlink",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "link":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			code, err := store.CreateSignalLinkCode(m.ctx.DB, m.user.ID, 10*time.Minute)
-			if err != nil {
-				resp := "failed to create link code: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			acct := strings.TrimSpace(m.ctx.Config.Signal.AccountNumber)
-			if acct == "" {
-				acct = "<signal account not configured>"
-			}
-			resp := "Signal link code: " + code + "\nSend this code from your phone number to the Tether Signal account: " + acct + "\n(Code expires in ~10 minutes.)"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "status":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			n, ok, err := store.GetSignalNumber(m.ctx.DB, m.user.ID)
-			if err != nil {
-				resp := "failed to get signal status: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if !ok {
-				resp := "Signal: not linked"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "Signal linked: " + n
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "unlink":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if err := store.UnlinkSignalNumber(m.ctx.DB, m.user.ID); err != nil {
-				resp := "failed to unlink: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "Signal unlinked"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		resp := usageBlock(
-			"/signal link",
-			"/signal status",
-			"/signal unlink",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/discord":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/discord status",
-				"/discord link <code>",
-				"/discord unlink",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "status":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			did, ok, err := store.GetDiscordUserID(m.ctx.DB, m.user.ID)
-			if err != nil {
-				resp := "failed to get discord status: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if !ok {
-				resp := "Discord: not linked"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "Discord linked: " + did
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "unlink":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if err := store.UnlinkDiscordUserID(m.ctx.DB, m.user.ID); err != nil {
-				resp := "failed to unlink: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "Discord unlinked"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "link":
-			if len(fields) < 3 {
-				resp := "usage: /discord link <code>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-
-			if _, ok, err := store.GetDiscordUserID(m.ctx.DB, m.user.ID); err != nil {
-				resp := "failed to get discord status: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			} else if ok {
-				resp := "Discord already linked. Run /discord unlink first."
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-
-			code := strings.TrimSpace(fields[2])
-			discordUID, ok, err := store.ConsumeDiscordLinkCode(m.ctx.DB, code)
-			if err != nil {
-				resp := "failed to consume link code: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if !ok {
-				resp := "invalid or expired link code"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-
-			if otherUID, ok2, err := store.FindUserIDByDiscordUserID(m.ctx.DB, discordUID); err != nil {
-				resp := "failed to check discord link: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			} else if ok2 {
-				if otherUID == m.user.ID {
-					resp := "Discord already linked."
-					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-					m.chat = m.chat.appendLocal("System", resp)
-					return m, true, nil
-				}
-				resp := "That Discord account is already linked to another Tether user."
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-
-			if err := store.LinkDiscordUserID(m.ctx.DB, m.user.ID, discordUID); err != nil {
-				if err == store.ErrDiscordAlreadyLinkedForUser {
-					resp := "Discord already linked. Run /discord unlink first."
-					_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-					m.chat = m.chat.appendLocal("System", resp)
-					return m, true, nil
-				}
-				resp := "failed to link discord: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-
-			// Best-effort: DM a welcome/introduction into the Discord chat.
-			// Runs in the background so the SSH UI isn't blocked on network I/O.
-			if n := m.ctx.Discord; n != nil {
-				go func() { _ = n.SendIntroduction(discordUID) }()
-			}
-
-			resp := "Discord linked."
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		resp := usageBlock(
-			"/discord status",
-			"/discord link <code>",
-			"/discord unlink",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/memory":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/memory list [kind]",
-				"/memory add <kind> <content>",
-				"/memory update <id> <content>",
-				"/memory delete <id>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "list":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			kind := ""
-			if len(fields) >= 3 {
-				kind = fields[2]
-			}
-			items, err := store.ListMemoryItems(m.ctx.DB, m.user.ID, kind, 100)
-			if err != nil {
-				resp := "failed to list memory: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if len(items) == 0 {
-				resp := "no memory items"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			var b strings.Builder
-			b.WriteString("Memory:\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(fmt.Sprintf("%d", it.ID))
-				b.WriteString(" [")
-				b.WriteString(it.Kind)
-				b.WriteString("] ")
-				b.WriteString(it.Content)
-				b.WriteString("\n")
-			}
-			resp := strings.TrimSpace(b.String())
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "add":
-			if len(fields) < 4 {
-				resp := "usage: /memory add <kind> <content>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			kind := fields[2]
-			content := strings.Join(fields[3:], " ")
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			id, err := store.AddMemoryItem(m.ctx.DB, m.user.ID, kind, content)
-			if err != nil {
-				resp := "failed to add memory: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "memory added (id " + fmt.Sprintf("%d", id) + ")"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "update":
-			if len(fields) < 4 {
-				resp := "usage: /memory update <id> <content>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				resp := "invalid id"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			content := strings.Join(fields[3:], " ")
-			if err := store.UpdateMemoryItem(m.ctx.DB, m.user.ID, id, content); err != nil {
-				resp := "failed to update memory: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "memory updated"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "delete":
-			if len(fields) < 3 {
-				resp := "usage: /memory delete <id>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				resp := "invalid id"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if err := store.DeleteMemoryItem(m.ctx.DB, m.user.ID, id); err != nil {
-				resp := "failed to delete memory: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "memory deleted"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		resp := usageBlock(
-			"/memory list [kind]",
-			"/memory add <kind> <content>",
-			"/memory update <id> <content>",
-			"/memory delete <id>",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/task":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/task list",
-				"/task add <text>",
-				"/task edit <id> <text>",
-				"/task done <id>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "list":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			items, err := store.ListMemoryItems(m.ctx.DB, m.user.ID, "task", 100)
-			if err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if len(items) == 0 {
-				resp := "no tasks"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			var b strings.Builder
-			b.WriteString("Tasks:\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(fmt.Sprintf("%d", it.ID))
-				b.WriteString(": ")
-				b.WriteString(it.Content)
-				b.WriteString("\n")
-			}
-			resp := strings.TrimSpace(b.String())
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "add":
-			if len(fields) < 3 {
-				resp := "usage: /task add <text>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			content := strings.Join(fields[2:], " ")
-			id, err := store.AddMemoryItem(m.ctx.DB, m.user.ID, "task", content)
-			if err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "task added (id " + fmt.Sprintf("%d", id) + ")"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": content})
-
-		case "edit":
-			if len(fields) < 4 {
-				resp := "usage: /task edit <id> <text>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				resp := "invalid id"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			content := strings.Join(fields[3:], " ")
-			if err := store.UpdateMemoryItem(m.ctx.DB, m.user.ID, id, content); err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "task updated"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": content})
-
-		case "done":
-			if len(fields) < 3 {
-				resp := "usage: /task done <id>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			id, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				resp := "invalid id"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if err := store.DeleteMemoryItem(m.ctx.DB, m.user.ID, id); err != nil {
-				resp := "failed: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "task marked done"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, m.triggerProactiveEventCmd(proactive.EventTaskChanged, map[string]string{"text": text})
-		}
-
-		resp := usageBlock(
-			"/task list",
-			"/task add <text>",
-			"/task edit <id> <text>",
-			"/task done <id>",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/secret":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		// NOTE: we never persist or display secret plaintext.
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/secret add <label> <secret>",
-				"/secret list",
-				"/secret delete <label>",
-				"/secret clear",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		s, err := secrets.NewStore(m.ctx.DB, m.ctx.Config.Secrets.MasterKey, time.Duration(m.ctx.Config.Secrets.TTLHours)*time.Hour)
-		if err != nil {
-			resp := "secrets unavailable: " + err.Error() + " (set TETHER_MASTER_KEY; generate with: go run ./cmd/tether-keygen)"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		sub := fields[1]
-		switch sub {
-		case "add":
-			if len(fields) < 4 {
-				resp := "usage: /secret add <label> <secret>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			label := fields[2]
-			secretText := strings.Join(fields[3:], " ")
-			// Record command without the secret.
-			redactedCmd := "/secret add " + label + " [REDACTED]"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", redactedCmd)
-			m.chat = m.chat.appendLocal("You", redactedCmd)
-
-			if err := s.Put(context.Background(), m.user.ID, label, secretText); err != nil {
-				resp := "failed to store secret: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			exp := time.Now().Add(time.Duration(m.ctx.Config.Secrets.TTLHours) * time.Hour).Format(time.RFC3339)
-			resp := "secret stored as '" + label + "' (expires ~" + exp + ")"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "list":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			items, err := s.List(context.Background(), m.user.ID)
-			if err != nil {
-				resp := "failed to list secrets: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			if len(items) == 0 {
-				resp := "no secrets set"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			var b strings.Builder
-			b.WriteString("Secrets (labels only):\n")
-			for _, it := range items {
-				b.WriteString("- ")
-				b.WriteString(it.Label)
-				b.WriteString(" (expires ")
-				b.WriteString(it.ExpiresAt.Format(time.RFC3339))
-				b.WriteString(")\n")
-			}
-			resp := strings.TrimSpace(b.String())
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "delete":
-			if len(fields) < 3 {
-				resp := "usage: /secret delete <label>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			label := fields[2]
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if err := s.Delete(context.Background(), m.user.ID, label); err != nil {
-				resp := "failed to delete secret: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "deleted secret '" + label + "'"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "clear":
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			if err := s.Clear(context.Background(), m.user.ID); err != nil {
-				resp := "failed to clear secrets: " + err.Error()
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "cleared all secrets"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-
-		resp := usageBlock(
-			"/secret add <label> <secret>",
-			"/secret list",
-			"/secret delete <label>",
-			"/secret clear",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/subagent":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 2 {
-			resp := usageBlock(
-				"/subagent spawn <prompt>",
-				"/subagent status <id>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "spawn":
-			prompt := strings.TrimSpace(strings.TrimPrefix(text, "/subagent spawn"))
-			if prompt == "" {
-				resp := "usage: /subagent spawn <prompt>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			run := m.subMgr.Spawn(m.user.ID, subagents.RunRequest{Prompt: prompt})
-			resp := "spawned subagent: " + run.ID + " (status: " + string(run.Status) + ")"
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-
-		case "status":
-			if len(fields) < 3 {
-				resp := "usage: /subagent status <id>"
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			id := fields[2]
-			run, ok := m.subMgr.GetForUser(m.user.ID, id)
-			if !ok {
-				resp := "subagent not found: " + id
-				_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-				m.chat = m.chat.appendLocal("System", resp)
-				return m, true, nil
-			}
-			resp := "subagent " + run.ID + ": " + string(run.Status)
-			if run.Err != "" {
-				resp += "\nerror: " + run.Err
-			}
-			if run.Result != "" {
-				resp += "\nresult:\n" + run.Result
-			}
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		resp := usageBlock(
-			"/subagent spawn <prompt>",
-			"/subagent status <id>",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/proactive":
-		if m.conv == nil || m.user == nil {
-			return m, true, nil
-		}
-		if len(fields) < 3 {
-			resp := usageBlock(
-				"/proactive action <name>",
-				"/proactive agent <id>",
-			)
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, nil
-		}
-		sub := fields[1]
-		switch sub {
-		case "action":
-			action := fields[2]
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			resp := "triggered proactive action: " + action
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, m.triggerProactiveActionCmd(action, map[string]string{"text": text})
-
-		case "agent":
-			agID := fields[2]
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-			m.chat = m.chat.appendLocal("You", text)
-			resp := "triggered proactive agent: " + agID
-			_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-			m.chat = m.chat.appendLocal("System", resp)
-			return m, true, m.triggerProactiveAgentCmd(agID, map[string]string{"text": text})
-		}
-
-		resp := usageBlock(
-			"/proactive action <name>",
-			"/proactive agent <id>",
-		)
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-
-	case "/logout":
-		// No need to record; drop to login screen.
-		m.user = nil
-		m.conv = nil
-		m.view = viewLogin
-		m.auth = newAuthModel(authModeLogin).withDisclaimer(m.termProfile().Disclaimer).withSize(m.w, m.h-1)
-		m.chat = newChatModel().withTerminalProfile(m.termProfile()).withSize(m.w, m.h-1)
-		return m, true, nil
-	}
-
-	if m.conv != nil && strings.HasPrefix(fields[0], "/") {
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "user", text)
-		m.chat = m.chat.appendLocal("You", text)
-		resp := "unknown command: " + fields[0] + "\nUse /help for commands or $" + strings.TrimPrefix(fields[0], "/") + " to invoke a skill."
-		_ = store.AddMessage(m.ctx.DB, m.conv.ID, "assistant", resp)
-		m.chat = m.chat.appendLocal("System", resp)
-		return m, true, nil
-	}
-
-	return m, false, nil
 }
 
 func (m appModel) handleAdminUpdateCommand(text string, fields []string) (appModel, bool, tea.Cmd) {
@@ -2295,7 +1102,7 @@ func (m appModel) askAgentCmdWithID(requestID int, text string) tea.Cmd {
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}()
 	return waitAgentAsyncCmd(ch)
 }
@@ -2368,7 +1175,7 @@ func (m appModel) resumeConfirmationCmd(requestID int, token string) tea.Cmd {
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		ch <- agentReplyMsg{ConversationID: convID, RequestID: requestID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}()
 	return waitAgentAsyncCmd(ch)
 }
@@ -2391,7 +1198,7 @@ func (m appModel) invokeSkillAndAskAgentCmd(skillName string, args string) tea.C
 		for i, tc := range reply.ToolCalls {
 			entries[i] = toolCallEntry{Name: tc.Name, Args: tc.Args, Result: tc.Result}
 		}
-		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries}
+		return agentReplyMsg{ConversationID: convID, Text: reply.Text, Reasoning: reply.Reasoning, ToolCalls: entries, ReasoningItems: reply.ReasoningItems, Model: ag.Model()}
 	}
 }
 
@@ -2583,6 +1390,78 @@ func formatYesNo(v bool) string {
 	return "no"
 }
 
+// refreshChatMetrics snapshots agent session + connector state for the status
+// bar and header cluster. Cheap enough for the periodic poll; never per-keystroke.
+func (m appModel) refreshChatMetrics() appModel {
+	if m.user == nil || m.ag == nil {
+		return m
+	}
+	m.connHealth = m.computeConnectorHealth()
+	if m.conv == nil {
+		return m
+	}
+	st := m.ag.SessionStatus(m.user.ID, m.conv.ID)
+	m.chat = m.chat.withSessionMetrics(sessionMetrics{
+		hasData:     st.UsageSource != "none",
+		contextPct:  st.LastContextPct,
+		contextOK:   st.LastContextLimit > 0,
+		totalTokens: st.TotalTokens,
+		lastModel:   st.LastModel,
+		totalCost:   st.TotalCost,
+		toolCalls:   st.TotalToolCalls,
+		activeRuns:  m.activeRuns,
+	})
+	return m
+}
+
+// computeConnectorHealth derives connector + job state from config and recent
+// audit activity. Uses only cheap count/latest queries (no live HTTP probes).
+func (m appModel) computeConnectorHealth() connectorHealth {
+	model := ""
+	if m.ag != nil {
+		model = m.ag.Model()
+	}
+	if m.ctx == nil {
+		return connectorHealth{model: shortModel(model)}
+	}
+	return connectorHealthFor(m.ctx.DB, m.ctx.Config, model, m.ctx.ConnectorsLive)
+}
+
+// connectorHealthFor is the shared health computation used by both the chat
+// header cluster and the Console strip. When live is false (terminal mode), no
+// gateways are running in this process, so every connector reports offline.
+func connectorHealthFor(db *sql.DB, cfg *config.Config, model string, live bool) connectorHealth {
+	h := connectorHealth{model: shortModel(model)}
+	if !live || db == nil || cfg == nil {
+		return h
+	}
+	now := time.Now().UTC()
+
+	// Signal: enabled + at least one linked number is healthy; enabled but
+	// unlinked is degraded; disabled is off.
+	if cfg.Signal.Enabled {
+		h.signal = connWarn
+		if linked, err := store.CountLinkedSignalNumbers(db); err == nil && linked > 0 {
+			h.signal = connOnline
+		}
+	}
+
+	// Discord: gateway runs when enabled.
+	if cfg.Discord.Enabled {
+		h.discord = connOnline
+	}
+
+	// Proactive jobs: recent tick = healthy, stale = degraded, never = off.
+	if lastTick, ok, err := store.LatestAuditEventTime(db, "proactive_tick"); err == nil && ok {
+		if now.Sub(lastTick.UTC()) < 10*time.Minute {
+			h.jobs = connOnline
+		} else {
+			h.jobs = connWarn
+		}
+	}
+	return h
+}
+
 func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 	if m.activeRuns > 0 {
 		m.activeRuns--
@@ -2629,16 +1508,19 @@ func (m appModel) handleAgentReply(msg agentReplyMsg) (appModel, tea.Cmd) {
 			m.chat = m.chat.finishStreamingAssistant(msg.RequestID, "", msg.Reasoning)
 			m = m.maybeShowConfirmPrompt(targetConvID)
 		}
-		return m, m.maybeDispatchWaitlist()
+		cmd := m.maybeDispatchWaitlist()
+		return m.refreshChatMetrics(), cmd
 	}
 	if targetConvID != 0 && !renderInActiveChat {
-		_ = store.AddMessage(m.ctx.DB, targetConvID, "assistant", clean)
+		_, _ = store.AddAssistantMessageWithReasoning(m.ctx.DB, targetConvID, clean, msg.Model, msg.ReasoningItems)
 	}
 	if renderInActiveChat {
 		m.chat = m.chat.finishStreamingAssistant(msg.RequestID, clean, msg.Reasoning)
 		m = m.maybeShowConfirmPrompt(targetConvID)
+		m.chat = m.chat.persistReasoningForRequest(msg.RequestID, msg.Model, msg.ReasoningItems)
 	}
-	return m, m.maybeDispatchWaitlist()
+	cmd := m.maybeDispatchWaitlist()
+	return m.refreshChatMetrics(), cmd
 }
 
 func (m appModel) maybeShowConfirmPrompt(convID int64) appModel {

@@ -57,7 +57,7 @@ func (a *Agent) RunSelfSchedule(ctx context.Context, job store.SelfSchedule) (st
 		Content: []openrouter.ContentPart{{Type: "input_text", Text: prompt}},
 	})
 
-	text, _, _, err := a.replyWithToolsStream(ctx, sess, job.UserID, job.ConversationID, items, nil, nil)
+	text, _, _, _, err := a.replyWithToolsStream(ctx, sess, job.UserID, job.ConversationID, items, nil, nil)
 	if err != nil {
 		return "", err
 	}

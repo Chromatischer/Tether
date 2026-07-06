@@ -28,9 +28,10 @@ const (
 	adminTabJobs
 	adminTabSignal
 	adminTabSetup
+	adminTabAgent
 )
 
-var adminTabLabels = []string{"audit", "users", "jobs", "signal", "setup"}
+var adminTabLabels = []string{"audit", "users", "jobs", "signal", "setup", "agent"}
 
 type adminModel struct {
 	ctx  *SessionContext
@@ -42,6 +43,7 @@ type adminModel struct {
 	jobs   viewport.Model
 	signal viewport.Model
 	setup  viewport.Model
+	agent  viewport.Model
 
 	userList []store.User
 	userSel  int
@@ -63,6 +65,16 @@ type adminModel struct {
 	setupEndpoints      []openrouter.ModelEndpoint
 	setupEndpointID     string
 	setupEndpointErr    string
+
+	agentMaxCalls  textinput.Model
+	agentTimeout   textinput.Model
+	agentTemp      textinput.Model
+	agentEffort    textinput.Model
+	agentAllowPriv textinput.Model
+	agentAllowHost textinput.Model
+	agentFocus     int
+	agentStatus    string
+	agentStatusErr bool
 }
 
 type adminLoadMsg struct {
@@ -74,6 +86,11 @@ type adminLoadMsg struct {
 }
 
 type adminSetupSavedMsg struct {
+	err    error
+	status string
+}
+
+type adminAgentSavedMsg struct {
 	err    error
 	status string
 }
@@ -118,6 +135,7 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		jobs:                mk(),
 		signal:              mk(),
 		setup:               mk(),
+		agent:               mk(),
 		setupPath:           config.AdminEnvPath(ctx.Config.Paths.DataDir),
 		setupOpenRouter:     masked("OpenRouter API key: "),
 		setupModel:          plain("OpenRouter model: "),
@@ -125,6 +143,12 @@ func newAdminModel(ctx *SessionContext) adminModel {
 		setupDiscord:        masked("Discord bot token: "),
 		setupSignal:         plain("Signal account number: "),
 		setupMasterKey:      masked("Secrets master key: "),
+		agentMaxCalls:       plain("Max tool calls/turn: "),
+		agentTimeout:        plain("Turn timeout (seconds): "),
+		agentTemp:           plain("Temperature: "),
+		agentEffort:         plain("Reasoning effort (low|medium|high|auto): "),
+		agentAllowPriv:      plain("Allow private/internal web-fetch (true|false): "),
+		agentAllowHost:      plain("Allow non-sandboxed host bash (true|false): "),
 	}
 	m.setSetupFocus(0)
 	return m
@@ -135,7 +159,7 @@ func (m adminModel) withSize(w, h int) adminModel {
 		return m
 	}
 	m.w, m.h = w, h
-	ch := max(1, h-1)
+	ch := max(1, h-2) // 1 line for the connector strip + 1 for the tab bar
 	m.audit.SetWidth(w)
 	m.audit.SetHeight(ch)
 	m.users.SetWidth(w)
@@ -146,6 +170,8 @@ func (m adminModel) withSize(w, h int) adminModel {
 	m.signal.SetHeight(ch)
 	m.setup.SetWidth(w)
 	m.setup.SetHeight(ch)
+	m.agent.SetWidth(w)
+	m.agent.SetHeight(ch)
 	inputW := max(24, w-6)
 	m.setupOpenRouter.SetWidth(inputW)
 	m.setupModel.SetWidth(inputW)
@@ -153,6 +179,12 @@ func (m adminModel) withSize(w, h int) adminModel {
 	m.setupDiscord.SetWidth(inputW)
 	m.setupSignal.SetWidth(inputW)
 	m.setupMasterKey.SetWidth(inputW)
+	m.agentMaxCalls.SetWidth(inputW)
+	m.agentTimeout.SetWidth(inputW)
+	m.agentTemp.SetWidth(inputW)
+	m.agentEffort.SetWidth(inputW)
+	m.agentAllowPriv.SetWidth(inputW)
+	m.agentAllowHost.SetWidth(inputW)
 	return m
 }
 
@@ -344,8 +376,17 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 		}
 		return m, nil
 
+	case adminAgentSavedMsg:
+		m.agentStatus = msg.status
+		m.agentStatusErr = msg.err != nil
+		if msg.err != nil {
+			m.agentStatus = "error: " + msg.err.Error()
+		}
+		return m, nil
+
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && msg.Y == 1 {
+		// Screen rows: 0 = app header, 1 = connector strip, 2 = tab bar.
+		if msg.Button == tea.MouseLeft && msg.Y == 2 {
 			if tab, ok := m.hitTab(msg.X); ok {
 				return m.switchTab(tab)
 			}
@@ -354,6 +395,9 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if m.tab == adminTabSetup {
 			return m.updateSetupKey(msg)
+		}
+		if m.tab == adminTabAgent {
+			return m.updateAgentKey(msg)
 		}
 		switch msg.String() {
 		case "1":
@@ -366,10 +410,12 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 			return m.switchTab(adminTabSignal)
 		case "5":
 			return m.switchTab(adminTabSetup)
-		case "[":
+		case "6":
+			return m.switchTab(adminTabAgent)
+		case "[", "left", "shift+tab":
 			next := (int(m.tab) - 1 + len(adminTabLabels)) % len(adminTabLabels)
 			return m.switchTab(adminTab(next))
-		case "]":
+		case "]", "right", "tab":
 			next := (int(m.tab) + 1) % len(adminTabLabels)
 			return m.switchTab(adminTab(next))
 		case "r":
@@ -413,6 +459,8 @@ func (m adminModel) Update(msg tea.Msg) (adminModel, tea.Cmd) {
 		m.signal, cmd = m.signal.Update(msg)
 	case adminTabSetup:
 		m, cmd = m.updateSetupMsg(msg)
+	case adminTabAgent:
+		m, cmd = m.updateAgentMsg(msg)
 	}
 	return m, cmd
 }
@@ -526,8 +574,176 @@ func (m adminModel) saveSetupCmd() tea.Cmd {
 	}
 }
 
+// agentFocusCount is the number of focusable items on the agent tab:
+// 6 inputs + the save button.
+const agentFocusCount = 7
+
+func (m adminModel) loadAgentInputs() adminModel {
+	c := m.ctx.Config
+	m.agentMaxCalls.SetValue(strconv.Itoa(c.AgentMaxToolCalls()))
+	m.agentTimeout.SetValue(strconv.Itoa(int(c.AgentTurnTimeout().Seconds())))
+	m.agentTemp.SetValue(strconv.FormatFloat(c.AgentTemperature(), 'g', -1, 64))
+	m.agentEffort.SetValue(c.AgentReasoningEffort())
+	m.agentAllowPriv.SetValue(strconv.FormatBool(c.Web.AllowPrivateNetwork))
+	m.agentAllowHost.SetValue(strconv.FormatBool(c.HostExec.Enabled))
+	m.setAgentFocus(0)
+	return m
+}
+
+func (m *adminModel) setAgentFocus(focus int) {
+	m.agentFocus = focus
+	inputs := []*textinput.Model{&m.agentMaxCalls, &m.agentTimeout, &m.agentTemp, &m.agentEffort, &m.agentAllowPriv, &m.agentAllowHost}
+	for i, in := range inputs {
+		if i == focus {
+			in.Focus()
+		} else {
+			in.Blur()
+		}
+	}
+}
+
+func (m adminModel) updateAgentKey(msg tea.KeyPressMsg) (adminModel, tea.Cmd) {
+	switch msg.String() {
+	case "tab":
+		m.setAgentFocus((m.agentFocus + 1) % agentFocusCount)
+		return m, nil
+	case "shift+tab":
+		m.setAgentFocus((m.agentFocus - 1 + agentFocusCount) % agentFocusCount)
+		return m, nil
+	case "ctrl+s":
+		return m, m.saveAgentCmd()
+	case "enter":
+		if m.agentFocus == agentFocusCount-1 {
+			return m, m.saveAgentCmd()
+		}
+	}
+	return m.updateAgentMsg(msg)
+}
+
+func (m adminModel) updateAgentMsg(msg tea.Msg) (adminModel, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.agentFocus {
+	case 0:
+		m.agentMaxCalls, cmd = m.agentMaxCalls.Update(msg)
+	case 1:
+		m.agentTimeout, cmd = m.agentTimeout.Update(msg)
+	case 2:
+		m.agentTemp, cmd = m.agentTemp.Update(msg)
+	case 3:
+		m.agentEffort, cmd = m.agentEffort.Update(msg)
+	case 4:
+		m.agentAllowPriv, cmd = m.agentAllowPriv.Update(msg)
+	case 5:
+		m.agentAllowHost, cmd = m.agentAllowHost.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m adminModel) saveAgentCmd() tea.Cmd {
+	ctx := m.ctx
+	maxCalls := strings.TrimSpace(m.agentMaxCalls.Value())
+	timeout := strings.TrimSpace(m.agentTimeout.Value())
+	temp := strings.TrimSpace(m.agentTemp.Value())
+	effort := strings.TrimSpace(m.agentEffort.Value())
+	allowPriv := strings.TrimSpace(m.agentAllowPriv.Value())
+	allowHost := strings.TrimSpace(m.agentAllowHost.Value())
+	return func() tea.Msg {
+		// Validate before persisting so we never write garbage that the loader
+		// would silently ignore.
+		nCalls, err := strconv.Atoi(maxCalls)
+		if err != nil || nCalls <= 0 {
+			return adminAgentSavedMsg{err: fmt.Errorf("max tool calls must be a positive integer")}
+		}
+		nTimeout, err := strconv.Atoi(timeout)
+		if err != nil || nTimeout <= 0 {
+			return adminAgentSavedMsg{err: fmt.Errorf("turn timeout must be a positive integer (seconds)")}
+		}
+		fTemp, err := strconv.ParseFloat(temp, 64)
+		if err != nil || fTemp < 0 {
+			return adminAgentSavedMsg{err: fmt.Errorf("temperature must be a number >= 0")}
+		}
+		switch effort {
+		case "low", "medium", "high", config.ReasoningEffortAuto:
+		default:
+			return adminAgentSavedMsg{err: fmt.Errorf("reasoning effort must be low, medium, high, or auto")}
+		}
+		bAllowPriv, err := strconv.ParseBool(allowPriv)
+		if err != nil {
+			return adminAgentSavedMsg{err: fmt.Errorf("allow private/internal web-fetch must be true or false")}
+		}
+		bAllowHost, err := strconv.ParseBool(allowHost)
+		if err != nil {
+			return adminAgentSavedMsg{err: fmt.Errorf("allow non-sandboxed host bash must be true or false")}
+		}
+
+		env, err := config.LoadAdminEnv(ctx.Config.Paths.DataDir)
+		if err != nil {
+			return adminAgentSavedMsg{err: err}
+		}
+		env.AgentMaxToolCalls = maxCalls
+		env.AgentTurnTimeoutSeconds = timeout
+		env.AgentTemperature = temp
+		env.AgentReasoningEffort = effort
+		env.WebAllowPrivateNetwork = strconv.FormatBool(bAllowPriv)
+		env.HostExecEnabled = strconv.FormatBool(bAllowHost)
+		if err := config.SaveAdminEnv(ctx.Config.Paths.DataDir, env); err != nil {
+			return adminAgentSavedMsg{err: err}
+		}
+
+		// Apply live: the tool loop, web-fetch, and host bash read these from the
+		// shared config each turn.
+		ctx.Config.Agent.MaxToolCalls = nCalls
+		ctx.Config.Agent.TurnTimeoutSeconds = nTimeout
+		ctx.Config.Agent.Temperature = &fTemp
+		ctx.Config.Agent.ReasoningEffort = effort
+		ctx.Config.Web.AllowPrivateNetwork = bAllowPriv
+		ctx.Config.HostExec.Enabled = bAllowHost
+
+		return adminAgentSavedMsg{status: "saved to " + config.AdminEnvPath(ctx.Config.Paths.DataDir) + "  applies to the next turn"}
+	}
+}
+
+func (m adminModel) renderAgent() string {
+	saveLabel := styleTab.Render(" save ")
+	if m.agentFocus == agentFocusCount-1 {
+		saveLabel = styleTabActive.Render(" save ")
+	}
+
+	var b strings.Builder
+	b.WriteString(styleTitleBg.Render("agent runtime") + "\n\n")
+	b.WriteString(styleMutedBg.Render("per-turn tool-calling limits and sampling") + "\n")
+	b.WriteString(styleDimBg.Render("  "+config.AdminEnvPath(m.ctx.Config.Paths.DataDir)) + "\n\n")
+	b.WriteString(m.agentMaxCalls.View() + "\n\n")
+	b.WriteString(m.agentTimeout.View() + "\n\n")
+	b.WriteString(m.agentTemp.View() + "\n\n")
+	b.WriteString(m.agentEffort.View() + "\n\n")
+	b.WriteString(m.agentAllowPriv.View() + "\n\n")
+	b.WriteString(m.agentAllowHost.View() + "\n\n")
+	b.WriteString(saveLabel + "\n\n")
+	b.WriteString(styleDimBg.Render("tab/shift+tab · move   ctrl+s · save"))
+	b.WriteString("\n" + styleDimBg.Render(fmt.Sprintf(
+		"defaults: %d calls · %ds timeout · temp %s · %s effort",
+		config.DefaultAgentMaxToolCalls,
+		config.DefaultAgentTurnTimeoutSeconds,
+		strconv.FormatFloat(config.DefaultAgentTemperature, 'g', -1, 64),
+		config.DefaultAgentReasoningEffort,
+	)))
+	if m.agentStatus != "" {
+		line := styleInfoBg.Render(m.agentStatus)
+		if m.agentStatusErr {
+			line = styleErrorBg.Render(m.agentStatus)
+		}
+		b.WriteString("\n\n" + line)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (m adminModel) switchTab(tab adminTab) (adminModel, tea.Cmd) {
 	m.tab = tab
+	if tab == adminTabAgent {
+		m = m.loadAgentInputs()
+		return m, nil
+	}
 	return m, m.loadTabCmd(tab)
 }
 
@@ -1006,9 +1222,49 @@ func (m adminModel) View() tea.View {
 	case adminTabSetup:
 		setViewportContent(&m.setup, m.renderSetup(), colorBg)
 		body = m.setup.View()
+	case adminTabAgent:
+		setViewportContent(&m.agent, m.renderAgent(), colorBg)
+		body = m.agent.View()
 	}
 	if m.w > 0 || m.h > 0 {
-		body = fillArea(body, m.w, max(0, m.h-1), colorBg)
+		body = fillArea(body, m.w, max(0, m.h-2), colorBg)
 	}
-	return tea.NewView(tabBar + "\n" + body)
+	return tea.NewView(m.renderConnectorStrip() + "\n" + tabBar + "\n" + body)
+}
+
+// renderConnectorStrip renders the Console's shared connector-health line.
+func (m adminModel) renderConnectorStrip() string {
+	model := ""
+	if m.ctx != nil && m.ctx.Agent != nil {
+		model = m.ctx.Agent.Model()
+	}
+	var h connectorHealth
+	if m.ctx != nil {
+		h = connectorHealthFor(m.ctx.DB, m.ctx.Config, model, m.ctx.ConnectorsLive)
+	}
+	bg := lipgloss.NewStyle().Background(lipgloss.Color("232"))
+	dot := func(st connState) string {
+		c := colorDim
+		switch st {
+		case connOnline:
+			c = colorGreen
+		case connWarn:
+			c = colorWarn
+		}
+		return bg.Foreground(c).Render(glyphOnline)
+	}
+	seg := func(st connState, label string) string {
+		return dot(st) + styleStatusVal.Render(" ") + styleStatusDim.Render(label)
+	}
+	gap3 := bg.Render("   ")
+	line := bg.Render("  ") + seg(h.signal, "signal") + gap3 + seg(h.discord, "discord") + gap3 + seg(h.jobs, "proactive")
+	if h.model != "" {
+		line += gap3 + styleStatusDim.Render("· "+h.model)
+	}
+	if m.w > 0 {
+		if gapW := m.w - lipgloss.Width(line); gapW > 0 {
+			line += bg.Render(strings.Repeat(" ", gapW))
+		}
+	}
+	return line
 }
