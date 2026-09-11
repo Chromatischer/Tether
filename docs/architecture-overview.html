@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Tether — Architecture review</title>
+  <style>
+    :root {
+      --paper: #101419;
+      --panel: #161c22;
+      --panel-hi: #1c242c;
+      --ink: #eff4f5;
+      --muted: #9aa8ad;
+      --line: #2f3b43;
+      --blue: #78d7ff;
+      --violet: #c9a9ff;
+      --amber: #ffc975;
+      --green: #8de1ae;
+      --red: #ff9992;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
+    button { font: inherit; }
+    a { color: inherit; }
+
+    .shell { max-width: 1520px; margin: 0 auto; padding: 0 30px 60px; }
+    .masthead { padding: 54px 0 30px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end; }
+    .eyebrow, .section-kicker, .lane-label, .tag { font: 11px/1.1 var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    .eyebrow { color: var(--blue); margin-bottom: 13px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 10px; font-size: clamp(2.6rem, 6vw, 5.6rem); line-height: .94; letter-spacing: -.065em; font-weight: 650; }
+    .subtitle { max-width: 780px; margin: 0; color: var(--muted); font-size: 17px; }
+    .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .button { padding: 9px 12px; cursor: pointer; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; }
+    .button:hover { border-color: var(--blue); color: var(--blue); }
+    .button.primary { background: var(--blue); color: #071116; border-color: var(--blue); }
+    .button.primary:hover { background: #a6e8ff; color: #071116; }
+    .save-state { min-width: 85px; color: var(--muted); font: 11px var(--mono); align-self: center; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: var(--blue); }
+    .legend .l-external::before { background: var(--violet); }
+    .legend .l-state::before { background: var(--green); }
+    .legend .l-risk::before { background: var(--amber); }
+
+    section { padding: 52px 0; border-bottom: 1px solid var(--line); }
+    .section-header { display: flex; justify-content: space-between; gap: 30px; margin-bottom: 26px; align-items: end; }
+    .section-kicker { color: var(--blue); margin-bottom: 9px; }
+    h2 { margin-bottom: 0; font-size: clamp(1.65rem, 3vw, 2.5rem); letter-spacing: -.045em; line-height: 1; }
+    .section-header > p { max-width: 560px; margin: 0; color: var(--muted); }
+
+    .map { overflow-x: auto; padding-bottom: 8px; }
+    .map-grid { min-width: 1040px; display: grid; grid-template-columns: 180px 1fr 1.1fr 1fr 180px; gap: 0; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+    .lane-label { min-height: 48px; padding: 15px; color: var(--muted); background: #131920; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .map-cell { min-height: 48px; padding: 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .map-heading { color: var(--blue); background: #131920; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .node { position: relative; padding: 11px 12px; min-height: 78px; border-left: 3px solid var(--blue); background: var(--panel); }
+    .node small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .node.external { border-color: var(--violet); }
+    .node.state { border-color: var(--green); }
+    .node.risk { border-color: var(--amber); }
+    .node .tag { display: block; color: var(--muted); margin-bottom: 4px; font-size: 9px; }
+    .flow { color: var(--blue); font: 16px var(--mono); text-align: center; padding-top: 26px; }
+    .empty { background: repeating-linear-gradient(135deg, transparent, transparent 8px, rgba(255,255,255,.018) 8px, rgba(255,255,255,.018) 9px); }
+
+    .paths { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+    .path { min-height: 235px; padding: 20px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .path h3 { font-size: 15px; margin-bottom: 13px; }
+    .path ol { margin: 0; padding-left: 19px; color: var(--muted); font-size: 13px; }
+    .path li + li { margin-top: 5px; }
+    code { color: var(--blue); font: 11px var(--mono); }
+
+    .inventory { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 42px; }
+    .module-list { border-top: 1px solid var(--line); }
+    .module { display: grid; grid-template-columns: 180px 1fr 100px; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+    .module-name { color: var(--blue); font: 12px var(--mono); }
+    .module p { margin: 0; color: var(--muted); font-size: 13px; }
+    .module .kind { color: var(--muted); text-align: right; font: 10px var(--mono); text-transform: uppercase; }
+    .boundaries { border-top: 1px solid var(--line); }
+    .boundary { padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .boundary h3 { margin-bottom: 6px; font-size: 14px; }
+    .boundary p { margin-bottom: 0; color: var(--muted); font-size: 13px; }
+    .boundary .tag { color: var(--amber); margin-bottom: 7px; }
+
+    .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .review { min-height: 180px; padding: 20px; border: 1px solid var(--line); background: var(--panel); }
+    .review h3 { margin-bottom: 7px; font-size: 16px; }
+    .review p { color: var(--muted); font-size: 13px; margin-bottom: 15px; }
+    .note { min-height: 75px; padding: 11px; outline: none; border: 1px dashed #52636e; background: #11171c; color: var(--ink); font-size: 13px; white-space: pre-wrap; }
+    .note:focus { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+    .note:empty::before { content: attr(data-placeholder); color: #71818a; }
+    .note-label { display: block; margin-bottom: 6px; color: var(--blue); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+
+    .notes-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 28px; }
+    .big-note { min-height: 280px; padding: 20px; background: var(--panel); border: 1px solid var(--line); outline: none; white-space: pre-wrap; }
+    .big-note:empty::before { content: attr(data-placeholder); color: #71818a; }
+    .big-note:focus { border-color: var(--blue); }
+    .prompt-list { margin: 0; padding: 0; list-style: none; }
+    .prompt-list li { padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    .prompt-list strong { color: var(--ink); display: block; font-size: 12px; margin-bottom: 2px; }
+    .footer { padding: 26px 0; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
+
+    @media (max-width: 800px) {
+      .shell { padding: 0 18px 36px; }
+      .masthead, .section-header, .inventory, .notes-workspace { display: block; }
+      .actions { justify-content: flex-start; margin-top: 21px; }
+      .section-header > p { margin-top: 14px; }
+      .paths, .review-grid { grid-template-columns: 1fr; }
+      .module { grid-template-columns: 125px 1fr; gap: 10px; }
+      .module .kind { display: none; }
+      .boundaries { margin-top: 34px; }
+      .notes-workspace aside { margin-top: 32px; }
+    }
+
+    @media print {
+      body { background: white; color: #101419; }
+      .actions, .legend { display: none; }
+      .masthead, section, .map-grid, .map-cell, .lane-label, .paths, .path, .module-list, .module, .boundaries, .boundary, .review, .big-note { border-color: #bbb; }
+      .node, .review, .big-note { background: #f3f6f7; }
+      .subtitle, .section-header > p, .module p, .boundary p, .review p, .path ol, .footer { color: #44525a; }
+      .node small { color: #44525a; }
+      .map { overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">Repository architecture review · August 2026</div>
+        <h1>Tether,<br>as it runs today.</h1>
+        <p class="subtitle">A writable map of the Go service: entry points, message paths, shared infrastructure, persistence, and the seams worth challenging before a modernization pass.</p>
+      </div>
+      <div class="actions">
+        <span class="save-state" id="save-state">Draft is local</span>
+        <button class="button" type="button" id="print">Print / PDF</button>
+        <button class="button" type="button" id="export">Export notes</button>
+        <button class="button primary" type="button" id="reset">Reset my notes</button>
+      </div>
+    </header>
+
+    <div class="legend" aria-label="Diagram legend">
+      <span>In-process component</span>
+      <span class="l-external">External boundary</span>
+      <span class="l-state">Persistent state</span>
+      <span class="l-risk">Review / trust boundary</span>
+    </div>
+
+    <section>
+      <div class="section-header">
+        <div><div class="section-kicker">01 · Runtime map</div><h2>One binary, several ways in.</h2></div>
+        <p><code>cmd/tether/main.go</code> is the composition root. It opens SQLite, builds one shared agent, starts connectors and the proactive scheduler, then serves the SSH TUI.</p>
+      </div>
+      <div class="map">
+        <div class="map-grid">
+          <div class="lane-label"></div><div class="map-cell map-heading">Entry / transport</div><div class="map-cell map-heading">Interaction layer</div><div class="map-cell map-heading">Core runtime</div><div class="map-cell map-heading">State &amp; external systems</div>
+
+          <div class="lane-label">Interactive chat</div>
+          <div class="map-cell"><div class="node external"><span class="tag">network</span>SSH :2222<small>Wish server · password / optional key auth</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/portal → internal/tui</span>Bubble Tea TUI<small>Per-session app model; in-app login and commands</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/agent</span>Shared Agent<small>Context, streaming, tool loop, confirmations, subagents</small></div></div>
+          <div class="map-cell"><div class="node state"><span class="tag">internal/store + internal/db</span>SQLite<small>Users, conversations, messages, tasks, audit, cache, settings</small></div></div>
+
+          <div class="lane-label">Local mode</div>
+          <div class="map-cell"><div class="node external"><span class="tag">flag: --term</span>Local terminal<small>stdin / stdout, no SSH and no connectors</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/term</span>Same TUI model<small>Auto-logs into local root account</small></div></div>
+          <div class="map-cell"><div class="flow">→ same Agent →</div></div>
+          <div class="map-cell empty"></div>
+
+          <div class="lane-label">External chat</div>
+          <div class="map-cell"><div class="node external"><span class="tag">network</span>Discord DMs<small>discordgo gateway, reactions, attachment ingest</small></div><br><div class="node external"><span class="tag">local daemon + SSE</span>Signal<small>signal-cli HTTP daemon</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/discord · internal/signal</span>Gateway adapters<small>Link identity, commands, redaction, streaming/replies</small></div></div>
+          <div class="map-cell"><div class="flow">→ same Agent →</div></div>
+          <div class="map-cell"><div class="node external"><span class="tag">provider API</span>OpenRouter / DeepSeek<small>Streaming Responses-style requests</small></div></div>
+
+          <div class="lane-label">Background work</div>
+          <div class="map-cell"><div class="node"><span class="tag">1 minute ticker</span>Scheduler<small>Started alongside portal</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/proactive</span>Engine<small>Rules, custom agents, self-schedules, delivery routing</small></div></div>
+          <div class="map-cell"><div class="node"><span class="tag">internal/subagents</span>Subagent manager<small>Concurrent scoped agent runs</small></div></div>
+          <div class="map-cell"><div class="node risk"><span class="tag">delivery + side effects</span>Discord / Signal / notifications<small>Falls back to in-app notification queue</small></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div><div class="section-kicker">02 · Critical paths</div><h2>Follow the work, not just the folders.</h2></div>
+        <p>These are the highest-value execution paths to keep stable while changing architecture. They share the same <code>Agent</code> and SQLite database but arrive through different adapters.</p>
+      </div>
+      <div class="paths">
+        <article class="path"><h3>Interactive reply</h3><ol><li>SSH portal builds a TUI session; local <code>--term</code> builds the same model directly.</li><li>TUI login / command handler resolves user and active conversation through <code>store</code>.</li><li><code>Agent.ReplyStream</code> builds context and sends a streaming LLM request.</li><li>Tool calls loop through the session registry; confirmation can suspend and resume a turn.</li><li>Message, signed reasoning items, audit and UI state are persisted.</li></ol></article>
+        <article class="path"><h3>Discord or Signal message</h3><ol><li>Gateway receives a DM / event and resolves its linked Tether user.</li><li>It gets or creates that user’s active conversation, handles slash-like commands, and redacts incoming text.</li><li>Discord may download attachments into the user’s sandbox before invoking the agent.</li><li>The same agent stream produces an outbound reply; reactions represent confirmation choices.</li><li>Gateway chunks / streams response back to the provider.</li></ol></article>
+        <article class="path"><h3>Proactive / scheduled work</h3><ol><li>Scheduler ticks once a minute and loads rules plus users from SQLite.</li><li>Engine decides what is due, applies rate limits, and spawns a scoped background run.</li><li>Agent uses proactive prompt construction / self-schedule runner and can use subagents.</li><li>Result attempts delivery through linked Signal / Discord gateways.</li><li>Without an external route it becomes an in-app notification for the next TUI poll.</li></ol></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div><div class="section-kicker">03 · Codebase inventory</div><h2>Responsibilities by package.</h2></div>
+        <p>The project is organized by technical feature. The most central dependency direction is adapters → agent/store → infrastructure, though several feature packages currently reach across that line.</p>
+      </div>
+      <div class="inventory">
+        <div class="module-list">
+          <div class="module"><div class="module-name">cmd/</div><p>Executable entry points: server, backup, key generation, password hash, tool docs.</p><div class="kind">composition</div></div>
+          <div class="module"><div class="module-name">internal/tui + portal + term</div><p>SSH transport, terminal compatibility, Bubble Tea rendering, auth and interactive UI commands.</p><div class="kind">delivery</div></div>
+          <div class="module"><div class="module-name">internal/agent</div><p>Primary orchestrator: provider calls, context compaction, system prompts, tool calling, streaming, confirmations and subagent sessions.</p><div class="kind">core</div></div>
+          <div class="module"><div class="module-name">internal/agent/toolset + tools</div><p>Built-in tool implementations and declarative registry/specs: filesystem, bash, web, MCP, skills, confirmation and scheduling.</p><div class="kind">capabilities</div></div>
+          <div class="module"><div class="module-name">internal/store + db</div><p>SQLite query layer, schema migrations and cache-backed application state. Modernc SQLite uses WAL, foreign keys and a busy timeout.</p><div class="kind">state</div></div>
+          <div class="module"><div class="module-name">internal/llm + mcp</div><p>Provider adapters for OpenRouter / DeepSeek plus stdio MCP discovery and per-user MCP enablement.</p><div class="kind">integration</div></div>
+          <div class="module"><div class="module-name">internal/discord + signal</div><p>Channel-specific lifecycle, identity linking, inbound handling, outbound delivery and confirmation reactions.</p><div class="kind">delivery</div></div>
+          <div class="module"><div class="module-name">internal/proactive + subagents</div><p>Periodic rules engine, self-scheduling, background subagent lifecycle and notification delivery decisions.</p><div class="kind">automation</div></div>
+          <div class="module"><div class="module-name">config, sandbox, secrets, redact, userspace</div><p>Cross-cutting configuration, command isolation, encrypted secrets, content redaction and per-user on-disk workspaces.</p><div class="kind">foundation</div></div>
+        </div>
+        <aside class="boundaries">
+          <div class="boundary"><div class="tag">Trust boundary</div><h3>LLM ↔ tools</h3><p>The agent turns model output into tool calls. The registry, per-session allow-list and confirmation flow are the main policy gates.</p></div>
+          <div class="boundary"><div class="tag">Trust boundary</div><h3>Remote identity ↔ local account</h3><p>SSH portal access and in-app user login are intentionally separate. Discord and Signal are joined through link codes stored in SQLite.</p></div>
+          <div class="boundary"><div class="tag">Trust boundary</div><h3>Tool sandbox ↔ host</h3><p>Normal bash uses bubblewrap with no network. Host bash is config-gated and requires an explicit confirmation per call.</p></div>
+          <div class="boundary"><div class="tag">Operational constraint</div><h3>Migration baseline</h3><p>The active release baseline is <code>v0.7 / 0020</code>; existing databases older than it are rejected and must upgrade via an earlier compatible release.</p></div>
+        </aside>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div><div class="section-kicker">04 · Modernization review board</div><h2>Write against the seams.</h2></div>
+        <p>These are prompts, not a verdict. Click any dark input area to add your assessment. Your notes are stored only in this browser until you export them.</p>
+      </div>
+      <div class="review-grid">
+        <article class="review"><h3>Composition &amp; lifecycle</h3><p><code>main.go</code> constructs the database, agent, both gateways, portal and scheduler. Is one process and a shared agent still the desired deployment unit?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="lifecycle" data-placeholder="e.g. Separate connector workers from the interactive server…"></div></article>
+        <article class="review"><h3>Core agent boundaries</h3><p><code>internal/agent</code> owns provider access, persistence-aware context, tool execution, secrets, MCP and subagents. Which responsibilities need an explicit port or service boundary?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="agent" data-placeholder="e.g. Move tool policy and execution behind an interface…"></div></article>
+        <article class="review"><h3>Channel adapters</h3><p>Discord and Signal each contain identity, command parsing, conversation lookup, agent streaming and reaction confirmation behavior. What should be unified, and what must remain channel-native?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="channels" data-placeholder="e.g. Define one inbound/outbound conversation adapter contract…"></div></article>
+        <article class="review"><h3>Persistence &amp; data ownership</h3><p>SQLite is the shared source for conversations, runtime settings, cache, audit, connector links and schedules. Which data needs clearer ownership, retention or migration guarantees?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="state" data-placeholder="e.g. Split cache retention from user conversation data…"></div></article>
+        <article class="review"><h3>Reliability &amp; concurrency</h3><p>Gateway handlers, proactive work and subagents run concurrently against shared SQLite and Agent state. Where should cancellation, retries, queues, idempotency or observability be made explicit?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="reliability" data-placeholder="e.g. Add a durable job record before external delivery…"></div></article>
+        <article class="review"><h3>Security model</h3><p>Policy is distributed across configuration, registry metadata, confirmations, sandboxing, redaction, per-user directories and gateway link flows. Which policy should become centrally testable?</p><span class="note-label">Your decision / concern</span><div class="note" contenteditable="true" data-note="security" data-placeholder="e.g. Make an explicit authorization decision object for every tool call…"></div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-header">
+        <div><div class="section-kicker">05 · Your target state</div><h2>Turn observations into a direction.</h2></div>
+        <p>This is intentionally free-form. It exports with the review notes above, so it can become the brief for the next modernization phase.</p>
+      </div>
+      <div class="notes-workspace">
+        <div class="big-note" contenteditable="true" data-note="target-state" data-placeholder="Write the architecture you want here. Useful framing:&#10;&#10;• What should be the stable core?&#10;• Which interfaces should isolate delivery channels, providers and tools?&#10;• What can be deleted or consolidated?&#10;• What must stay backward-compatible for users and databases?&#10;• What is the smallest first milestone?"></div>
+        <aside>
+          <div class="section-kicker">Prompts to close with</div>
+          <ul class="prompt-list">
+            <li><strong>North star</strong>What should Tether make easy in 12 months?</li>
+            <li><strong>Non-negotiables</strong>Which data, CLI, protocol or user behavior cannot break?</li>
+            <li><strong>First extraction</strong>Which seam gives the biggest risk reduction with the least rewrite?</li>
+            <li><strong>Proof</strong>What tests, telemetry or migration rehearsal proves the change is safe?</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <footer class="footer"><span>Derived from the current repository structure and runtime wiring.</span><span>Editable fields save to this browser only.</span></footer>
+  </main>
+  <script>
+    (() => {
+      const key = 'tether-architecture-review-v1';
+      const notes = [...document.querySelectorAll('[data-note]')];
+      const state = document.getElementById('save-state');
+      let timer;
+      const setState = (text) => { state.textContent = text; };
+      const read = () => JSON.parse(localStorage.getItem(key) || '{}');
+      const write = () => {
+        const draft = Object.fromEntries(notes.map((note) => [note.dataset.note, note.innerText.trimEnd()]));
+        localStorage.setItem(key, JSON.stringify(draft));
+        setState('Saved locally');
+      };
+      try {
+        const draft = read();
+        notes.forEach((note) => { if (draft[note.dataset.note]) note.innerText = draft[note.dataset.note]; });
+      } catch (_) { setState('Local save unavailable'); }
+      notes.forEach((note) => note.addEventListener('input', () => {
+        setState('Saving…'); clearTimeout(timer); timer = setTimeout(write, 350);
+      }));
+      document.getElementById('reset').addEventListener('click', () => {
+        if (!confirm('Remove all notes saved in this browser?')) return;
+        localStorage.removeItem(key); notes.forEach((note) => { note.innerText = ''; }); setState('Notes reset');
+      });
+      document.getElementById('print').addEventListener('click', () => window.print());
+      document.getElementById('export').addEventListener('click', () => {
+        const draft = Object.fromEntries(notes.map((note) => [note.dataset.note, note.innerText.trimEnd()]));
+        const text = ['# Tether architecture review', '', ...Object.entries(draft).map(([name, value]) => `## ${name}\n${value || '_No notes._'}`)].join('\n\n');
+        const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob); const a = document.createElement('a');
+        a.href = url; a.download = 'tether-architecture-review-notes.md'; a.click(); URL.revokeObjectURL(url);
+      });
+    })();
+  </script>
+</body>
+</html>
